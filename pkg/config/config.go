@@ -93,14 +93,11 @@ func Load(configPath string) (*Config, error) {
 	// 设置默认值
 	setDefaults(v)
 
-	// 读取配置文件
+	// 读取配置文件。默认优先使用 config.yml，并兼容旧的 config.yaml。
 	if configPath != "" {
 		v.SetConfigFile(configPath)
 	} else {
-		v.SetConfigName("config")
-		v.SetConfigType("yaml")
-		v.AddConfigPath(".")
-		v.AddConfigPath("./config")
+		v.SetConfigFile(defaultConfigFile())
 	}
 
 	// 如果配置文件不存在，使用默认值
@@ -115,6 +112,7 @@ func Load(configPath string) (*Config, error) {
 	v.AutomaticEnv()
 
 	// 特定环境变量绑定
+	v.BindEnv("server.host", "APIRELAY_HOST")
 	v.BindEnv("server.port", "APIRELAY_PORT")
 	v.BindEnv("auth.admin_key", "APIRELAY_ADMIN_KEY")
 	v.BindEnv("database.path", "APIRELAY_DB_PATH")
@@ -133,9 +131,26 @@ func Load(configPath string) (*Config, error) {
 	return &cfg, nil
 }
 
+func defaultConfigFile() string {
+	candidates := []string{
+		"config.yml",
+		"config.yaml",
+		"config/config.yml",
+		"config/config.yaml",
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	return "config.yml"
+}
+
 func setDefaults(v *viper.Viper) {
-	v.SetDefault("server.host", "0.0.0.0")
-	v.SetDefault("server.port", 8080)
+	v.SetDefault("server.host", "127.0.0.1")
+	v.SetDefault("server.port", 15722)
 	v.SetDefault("server.mode", "release")
 	v.SetDefault("server.static_path", "./web/dist")
 

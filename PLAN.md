@@ -38,8 +38,8 @@
 
 ### 1.2 本地启动测试
 
-- [ ] 启动后端：`./apirelay --config config.yaml.example`
-- [ ] 确认服务监听 `http://localhost:8080`
+- [ ] 启动后端：`./apirelay --config config.yml.example`
+- [ ] 确认服务监听 `http://localhost:15722`
 - [ ] 访问健康检查：`GET /api/system/health`（应返回 200 OK）
 - [ ] 前端开发模式：`cd web && npm run dev`
 - [ ] 访问前端：`http://localhost:5173`
@@ -57,7 +57,7 @@ export ADMIN_KEY="change-me-in-production"
 
 1. **创建渠道**：
    ```bash
-   curl -X POST http://localhost:8080/api/channels \
+   curl -X POST http://localhost:15722/api/channels \
      -H "Authorization: Bearer $ADMIN_KEY" \
      -H "Content-Type: application/json" \
      -d '{
@@ -74,25 +74,25 @@ export ADMIN_KEY="change-me-in-production"
 
 2. **获取渠道列表**：
    ```bash
-   curl http://localhost:8080/api/channels \
+   curl http://localhost:15722/api/channels \
      -H "Authorization: Bearer $ADMIN_KEY"
    ```
 
 3. **测试渠道连接**（需要真实 API Key）：
    ```bash
-   curl -X POST http://localhost:8080/api/channels/1/test \
+   curl -X POST http://localhost:15722/api/channels/1/test \
      -H "Authorization: Bearer $ADMIN_KEY"
    ```
 
 4. **自动获取模型**：
    ```bash
-   curl -X POST http://localhost:8080/api/channels/1/models \
+   curl -X POST http://localhost:15722/api/channels/1/models \
      -H "Authorization: Bearer $ADMIN_KEY"
    ```
 
 5. **批量调整优先级**：
    ```bash
-   curl -X PUT http://localhost:8080/api/channels/reorder \
+   curl -X PUT http://localhost:15722/api/channels/reorder \
      -H "Authorization: Bearer $ADMIN_KEY" \
      -H "Content-Type: application/json" \
      -d '{
@@ -109,13 +109,13 @@ export ADMIN_KEY="change-me-in-production"
 
 1. **获取可用模型**：
    ```bash
-   curl http://localhost:8080/v1/models \
+   curl http://localhost:15722/v1/models \
      -H "Authorization: Bearer $ADMIN_KEY"
    ```
 
 2. **聊天补全**（需要真实上游 API）：
    ```bash
-   curl -X POST http://localhost:8080/v1/chat/completions \
+   curl -X POST http://localhost:15722/v1/chat/completions \
      -H "Authorization: Bearer $ADMIN_KEY" \
      -H "Content-Type: application/json" \
      -d '{
@@ -126,7 +126,7 @@ export ADMIN_KEY="change-me-in-production"
 
 3. **检查请求日志**：
    ```bash
-   curl http://localhost:8080/api/logs \
+   curl http://localhost:15722/api/logs \
      -H "Authorization: Bearer $ADMIN_KEY"
    ```
 
@@ -167,7 +167,7 @@ export ADMIN_KEY="change-me-in-production"
 
 **验证**：
 ```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:15722/v1/chat/completions \
   -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -383,7 +383,7 @@ POST /api/models/redirect
 - [ ] 健康检查：
   ```dockerfile
   HEALTHCHECK --interval=30s --timeout=3s \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/system/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:15722/api/system/health || exit 1
   ```
 
 ### 4.6 文档编写
@@ -407,8 +407,8 @@ API 调度中心，支持多渠道统一管理和 OpenAI 兼容转发。
 
 2. 修改配置：
    ```bash
-   cp config.yaml.example config.yaml
-   vim config.yaml  # 修改 admin_key
+   cp config.yml.example config.yml
+   vim config.yml  # 修改 admin_key
    ```
 
 3. 启动服务：
@@ -418,7 +418,7 @@ API 调度中心，支持多渠道统一管理和 OpenAI 兼容转发。
 
 4. 访问管理后台：
    ```
-   http://localhost:8080
+   http://localhost:15722
    ```
 
 ### 本地开发
@@ -448,7 +448,7 @@ npm run dev
 ### OpenAI 兼容调用
 
 ```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:15722/v1/chat/completions \
   -H "Authorization: Bearer YOUR_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -459,7 +459,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ## 配置说明
 
-见 `config.yaml.example`。
+见 `config.yml.example`。
 
 ## API 文档
 

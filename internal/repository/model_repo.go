@@ -3,6 +3,7 @@ package repository
 import (
 	"github.com/TheFloodDragon/APIRelay/internal/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ModelRepository struct {
@@ -44,14 +45,17 @@ func (r *ModelRepository) GetByChannelID(channelID uint) ([]model.Model, error) 
 	return models, err
 }
 
-// Create 创建模型
+// Create 创建模型，遇到已存在的模型名时忽略。
 func (r *ModelRepository) Create(m *model.Model) error {
-	return r.db.Create(m).Error
+	return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(m).Error
 }
 
-// CreateBatch 批量创建模型
+// CreateBatch 批量创建模型，遇到已存在的模型名时忽略。
 func (r *ModelRepository) CreateBatch(models []model.Model) error {
-	return r.db.Create(&models).Error
+	if len(models) == 0 {
+		return nil
+	}
+	return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&models).Error
 }
 
 // Update 更新模型

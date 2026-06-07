@@ -110,13 +110,8 @@ func (s *ChannelService) FetchModels(channelID uint) ([]string, error) {
 		})
 	}
 
-	if len(modelRecords) > 0 {
-		if err := s.modelRepo.CreateBatch(modelRecords); err != nil {
-			// 如果批量插入失败（可能因模型名唯一冲突），逐个插入/忽略
-			for _, m := range modelRecords {
-				_ = s.modelRepo.Create(&m)
-			}
-		}
+	if err := s.modelRepo.CreateBatch(modelRecords); err != nil {
+		return nil, err
 	}
 
 	return models, nil

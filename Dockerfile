@@ -1,5 +1,5 @@
 # 构建前端
-FROM node:20-alpine AS frontend-builder
+FROM node:24-alpine AS frontend-builder
 WORKDIR /web
 
 COPY web/package*.json ./
@@ -29,10 +29,10 @@ RUN apk --no-cache add ca-certificates sqlite-libs
 WORKDIR /app
 
 COPY --from=backend-builder /app/apirelay ./apirelay
-COPY config.yaml.example ./config.yaml
+COPY config.yml.example ./config.yml
 
 RUN mkdir -p /app/data /app/logs
 
-EXPOSE 8080
+EXPOSE 15722
 
 CMD ["./apirelay"]

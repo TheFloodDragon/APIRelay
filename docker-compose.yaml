@@ -4,12 +4,14 @@ services:
   apirelay:
     build: .
     ports:
-      - "8080:8080"
+      - "15722:15722"
     volumes:
-      - ./config.yaml:/app/config.yaml
+      - ./config.yml:/app/config.yml
       - ./data:/app/data
       - ./logs:/app/logs
     environment:
+      - APIRELAY_HOST=0.0.0.0
+      - APIRELAY_PORT=15722
       - APIRELAY_ADMIN_KEY=${ADMIN_KEY:-change-me-in-production}
     restart: unless-stopped
 
