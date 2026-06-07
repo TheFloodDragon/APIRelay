@@ -6,6 +6,8 @@ type RelayFormat string
 const (
 	RelayFormatOpenAI          RelayFormat = "openai"
 	RelayFormatOpenAIResponses RelayFormat = "openai_responses"
+	RelayFormatAnthropic       RelayFormat = "anthropic"
+	RelayFormatGemini          RelayFormat = "gemini"
 )
 
 func (f RelayFormat) String() string {

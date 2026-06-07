@@ -113,15 +113,22 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 		apiGroup.POST("/routes/reload", routeHandler.ReloadRoutes)
 	}
 
-	// OpenAI兼容API
+	// OpenAI / Anthropic / Gemini 兼容 API
 	v1Group := r.Group("/v1")
 	v1Group.Use(middleware.APIKeyAuthMiddleware(keyRepo))
 	{
 		v1Group.GET("/models", relayController.GetModels)
+		v1Group.POST("/messages", relayController.AnthropicMessages)
 		v1Group.POST("/responses", relayController.Responses)
 		v1Group.POST("/chat/completions", relayController.ChatCompletions)
 		v1Group.POST("/completions", relayController.Completions)
 		v1Group.POST("/embeddings", relayController.Embeddings)
+	}
+
+	v1BetaGroup := r.Group("/v1beta")
+	v1BetaGroup.Use(middleware.APIKeyAuthMiddleware(keyRepo))
+	{
+		v1BetaGroup.POST("/models/*modelAction", relayController.GeminiGenerateContent)
 	}
 
 	return r
@@ -236,7 +243,9 @@ func serveEmbeddedFile(c *gin.Context, embeddedFS fs.FS, filePath string) bool {
 func isAPIRoute(path string) bool {
 	return strings.HasPrefix(path, "/api/") ||
 		strings.HasPrefix(path, "/v1/") ||
+		strings.HasPrefix(path, "/v1beta/") ||
 		path == "/models" ||
+		path == "/messages" ||
 		path == "/responses" ||
 		path == "/chat/completions" ||
 		path == "/completions" ||

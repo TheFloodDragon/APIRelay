@@ -19,7 +19,7 @@ func (rc *RelayController) relayJSON(c *gin.Context, requestID string, startTime
 		info := buildRelayInfo(c, requestID, startTime, mode, format, meta, candidate, false)
 		protocolAdaptor := adaptor.GetAdaptor(info.APIType)
 
-		requestBody, err := bodyWithResolvedModel(body, info.ResolvedModel)
+		requestBody, err := bodyWithResolvedModel(body, info.ResolvedModel, format)
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
@@ -27,7 +27,7 @@ func (rc *RelayController) relayJSON(c *gin.Context, requestID string, startTime
 			continue
 		}
 
-		convertedBody, err := protocolAdaptor.ConvertRequest(requestBody, mode, format)
+		convertedBody, err := convertRelayRequest(protocolAdaptor, requestBody, info)
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()

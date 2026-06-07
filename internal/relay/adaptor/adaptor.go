@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/TheFloodDragon/APIRelay/internal/relay/constant"
+	"github.com/TheFloodDragon/APIRelay/internal/relay/protocol"
 )
 
 // Adaptor 负责在 APIRelay 入口格式与上游协议之间进行请求、响应和流式事件转换。
@@ -15,6 +16,11 @@ type Adaptor interface {
 	ConvertResponse(resp []byte, mode constant.RelayMode, format constant.RelayFormat) ([]byte, error)
 	ConvertStreamChunk(chunk []byte, mode constant.RelayMode, format constant.RelayFormat) ([]byte, error)
 	ErrorMessage(resp []byte) string
+}
+
+// RequestMetaAwareAdaptor 可在不改变基础接口的前提下接收请求元信息。
+type RequestMetaAwareAdaptor interface {
+	ConvertRequestWithMeta(req []byte, mode constant.RelayMode, format constant.RelayFormat, meta protocol.RequestMeta) ([]byte, error)
 }
 
 // ModelAwareURLAdaptor 是官方协议中 URL 依赖模型名的可选扩展。

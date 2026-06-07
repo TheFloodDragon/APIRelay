@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/relay/adaptor"
 	"github.com/TheFloodDragon/APIRelay/internal/relay/constant"
+	"github.com/TheFloodDragon/APIRelay/internal/relay/protocol"
 	"github.com/TheFloodDragon/APIRelay/internal/relay/relayinfo"
 	"github.com/gin-gonic/gin"
 )
@@ -35,7 +39,7 @@ func (rc *RelayController) handleRelay(c *gin.Context, mode constant.RelayMode, 
 		return
 	}
 
-	meta, err := parseRequestMeta(body)
+	meta, err := parseRequestMeta(c, body, mode, format)
 	if err != nil {
 		rc.logNoChannel(c, requestID, startTime, mode, format, "", http.StatusBadRequest, err.Error())
 		writeRelayError(c, http.StatusBadRequest, "请求格式错误", "invalid_request_error", err.Error())
@@ -66,10 +70,50 @@ func (rc *RelayController) handleRelay(c *gin.Context, mode constant.RelayMode, 
 	rc.relayJSON(c, requestID, startTime, mode, format, meta, body, candidates)
 }
 
-func parseRequestMeta(body []byte) (relayRequestMeta, error) {
+func parseRequestMeta(c *gin.Context, body []byte, mode constant.RelayMode, format constant.RelayFormat) (relayRequestMeta, error) {
+	if format == constant.RelayFormatGemini {
+		return parseGeminiRequestMeta(c, body)
+	}
+
 	var meta relayRequestMeta
 	if err := json.Unmarshal(body, &meta); err != nil {
 		return meta, err
+	}
+	return meta, nil
+}
+
+func parseGeminiRequestMeta(c *gin.Context, body []byte) (relayRequestMeta, error) {
+	meta := relayRequestMeta{}
+	modelAction := strings.TrimPrefix(c.Param("modelAction"), "/")
+	if modelAction != "" {
+		if decoded, err := url.PathUnescape(modelAction); err == nil {
+			modelAction = decoded
+		}
+		model, action, _ := strings.Cut(modelAction, ":")
+		meta.Model = strings.TrimPrefix(model, "models/")
+		switch action {
+		case "generateContent":
+			meta.Stream = false
+		case "streamGenerateContent":
+			meta.Stream = true
+		case "":
+			return meta, fmt.Errorf("Gemini 路径缺少 generateContent 或 streamGenerateContent 操作")
+		default:
+			return meta, fmt.Errorf("不支持的 Gemini 操作: %s", action)
+		}
+	}
+
+	var payload relayRequestMeta
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return meta, err
+		}
+	}
+	if meta.Model == "" {
+		meta.Model = payload.Model
+	}
+	if payload.Stream {
+		meta.Stream = true
 	}
 	return meta, nil
 }
@@ -110,8 +154,8 @@ func buildRelayInfo(c *gin.Context, requestID string, startTime time.Time, mode 
 	}
 }
 
-func bodyWithResolvedModel(body []byte, resolvedModel string) ([]byte, error) {
-	if resolvedModel == "" {
+func bodyWithResolvedModel(body []byte, resolvedModel string, format constant.RelayFormat) ([]byte, error) {
+	if resolvedModel == "" || format == constant.RelayFormatGemini {
 		return body, nil
 	}
 
@@ -121,6 +165,14 @@ func bodyWithResolvedModel(body []byte, resolvedModel string) ([]byte, error) {
 	}
 	payload["model"] = resolvedModel
 	return json.Marshal(payload)
+}
+
+func convertRelayRequest(protocolAdaptor adaptor.Adaptor, requestBody []byte, info *relayinfo.RelayInfo) ([]byte, error) {
+	meta := protocol.RequestMeta{Model: info.ResolvedModel, Stream: info.IsStream}
+	if metaAware, ok := protocolAdaptor.(adaptor.RequestMetaAwareAdaptor); ok {
+		return metaAware.ConvertRequestWithMeta(requestBody, info.RelayMode, info.RelayFormat, meta)
+	}
+	return protocolAdaptor.ConvertRequest(requestBody, info.RelayMode, info.RelayFormat)
 }
 
 func requestID(c *gin.Context) string {

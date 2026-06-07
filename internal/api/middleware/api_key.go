@@ -14,8 +14,8 @@ import (
 // APIKeyAuthMiddleware OpenAI兼容API认证中间件
 func APIKeyAuthMiddleware(keyRepo *repository.APIKeyRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
+		token, formatOK := extractRelayAPIKey(c)
+		if token == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{
 					"message": "缺少 API Key",
@@ -26,8 +26,7 @@ func APIKeyAuthMiddleware(keyRepo *repository.APIKeyRepository) gin.HandlerFunc 
 			return
 		}
 
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
+		if !formatOK {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{
 					"message": "API Key 格式错误",
@@ -38,9 +37,7 @@ func APIKeyAuthMiddleware(keyRepo *repository.APIKeyRepository) gin.HandlerFunc 
 			return
 		}
 
-		token := parts[1]
-
-		// 管理密钥可用于调试 /v1 接口
+		// 管理密钥可用于调试兼容 API 接口
 		if token == config.GlobalConfig.Auth.AdminKey {
 			c.Next()
 			return
@@ -74,6 +71,31 @@ func APIKeyAuthMiddleware(keyRepo *repository.APIKeyRepository) gin.HandlerFunc 
 		c.Set("api_key_id", apiKey.ID)
 		c.Next()
 	}
+}
+
+func extractRelayAPIKey(c *gin.Context) (string, bool) {
+	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			return "", false
+		}
+		return strings.TrimSpace(parts[1]), true
+	}
+
+	// Anthropic 官方 SDK 默认使用 x-api-key。
+	if token := strings.TrimSpace(c.GetHeader("x-api-key")); token != "" {
+		return token, true
+	}
+
+	// Gemini 官方 SDK/REST 常用 x-goog-api-key 或 ?key=。
+	if token := strings.TrimSpace(c.GetHeader("x-goog-api-key")); token != "" {
+		return token, true
+	}
+	if token := strings.TrimSpace(c.Query("key")); token != "" {
+		return token, true
+	}
+
+	return "", true
 }
 
 // GetAPIKeyFromContext 从上下文获取API Key

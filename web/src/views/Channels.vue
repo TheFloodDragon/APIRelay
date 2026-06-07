@@ -73,7 +73,7 @@
           <el-form-item label="渠道名称">
             <el-input v-model="form.name" placeholder="如 OpenAI Primary" />
           </el-form-item>
-          <el-form-item label="渠道类型">
+          <el-form-item label="上游协议/渠道类型">
             <el-select v-model="form.type" allow-create filterable default-first-option style="width: 100%">
               <el-option v-for="item in channelTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
@@ -81,8 +81,9 @@
           <el-form-item label="API Key" class="span-2">
             <el-input v-model="form.api_key" show-password placeholder="sk-..." />
           </el-form-item>
-          <el-form-item label="Base URL" class="span-2">
-            <el-input v-model="form.base_url" placeholder="https://api.openai.com/v1" />
+          <el-form-item label="Base URL（留空使用默认）" class="span-2">
+            <el-input v-model="form.base_url" :placeholder="baseURLPlaceholder" />
+            <small class="form-tip">根据上游协议自动建议默认地址；OpenAI 兼容渠道通常填写服务商的 /v1 地址。</small>
           </el-form-item>
         </div>
       </div>
@@ -153,15 +154,15 @@ const editingChannel = ref<Channel | null>(null)
 const modelsText = ref('')
 
 const channelTypeOptions = [
-  { label: 'OpenAI Compatible / NewAPI（推荐）', value: 'openai_compatible' },
-  { label: 'NewAPI', value: 'newapi' },
-  { label: 'OneAPI', value: 'oneapi' },
-  { label: 'OpenAI', value: 'openai' },
-  { label: 'DeepSeek', value: 'deepseek' },
-  { label: 'OpenRouter', value: 'openrouter' },
-  { label: 'Anthropic 官方', value: 'anthropic' },
-  { label: 'Gemini 官方', value: 'gemini' },
-  { label: '自定义', value: 'custom' }
+  { label: 'OpenAI 兼容（OpenAI / NewAPI / OneAPI 等）', value: 'openai_compatible' },
+  { label: 'NewAPI（OpenAI 兼容）', value: 'newapi' },
+  { label: 'OneAPI（OpenAI 兼容）', value: 'oneapi' },
+  { label: 'OpenAI 官方协议', value: 'openai' },
+  { label: 'DeepSeek（OpenAI 兼容）', value: 'deepseek' },
+  { label: 'OpenRouter（OpenAI 兼容）', value: 'openrouter' },
+  { label: 'Anthropic 官方协议', value: 'anthropic' },
+  { label: 'Gemini 官方协议', value: 'gemini' },
+  { label: '自定义 OpenAI 兼容', value: 'custom' }
 ]
 
 const form = reactive<Partial<Channel>>(defaultForm())
@@ -170,6 +171,7 @@ const enabledCount = computed(() => channels.value.filter((item) => item.enabled
 const healthyCount = computed(() => channels.value.filter((item) => item.health_status === 'healthy').length)
 const unhealthyCount = computed(() => channels.value.filter((item) => item.health_status === 'unhealthy').length)
 const modelCount = computed(() => new Set(channels.value.flatMap((item) => item.models || [])).size)
+const baseURLPlaceholder = computed(() => baseURLSuggestion(form.type))
 
 onMounted(loadChannels)
 
@@ -185,6 +187,29 @@ function defaultForm(): Partial<Channel> {
     enabled: true,
     timeout: 60000,
     max_retries: 3
+  }
+}
+
+function baseURLSuggestion(type?: string) {
+  switch ((type || '').toLowerCase()) {
+    case 'anthropic':
+    case 'claude':
+      return 'https://api.anthropic.com/v1'
+    case 'gemini':
+    case 'google':
+      return 'https://generativelanguage.googleapis.com/v1beta'
+    case 'newapi':
+    case 'oneapi':
+    case 'custom':
+      return 'https://your-relay.example.com/v1'
+    case 'openrouter':
+      return 'https://openrouter.ai/api/v1'
+    case 'deepseek':
+      return 'https://api.deepseek.com/v1'
+    case 'openai':
+    case 'openai_compatible':
+    default:
+      return 'https://api.openai.com/v1'
   }
 }
 
