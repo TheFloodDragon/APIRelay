@@ -1,6 +1,9 @@
 package api
 
 import (
+	"io"
+	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +15,7 @@ import (
 	"github.com/yourusername/apirelay/internal/repository"
 	"github.com/yourusername/apirelay/internal/scheduler"
 	"github.com/yourusername/apirelay/internal/service"
+	"github.com/yourusername/apirelay/internal/ui"
 	"github.com/yourusername/apirelay/pkg/config"
 	"gorm.io/gorm"
 )
@@ -102,17 +106,32 @@ func setupStaticRoutes(r *gin.Engine, cfg *config.Config) {
 	staticPath := cfg.Server.StaticPath
 	indexPath := filepath.Join(staticPath, "index.html")
 
-	if _, err := os.Stat(indexPath); err != nil {
-		r.GET("/", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{
-				"name":    "APIRelay",
-				"version": "1.0.0",
-				"status":  "running",
-			})
-		})
+	// 开发/部署时如果提供了外部 static_path，优先使用外部文件，方便热替换前端。
+	if _, err := os.Stat(indexPath); err == nil {
+		setupExternalStaticRoutes(r, staticPath, indexPath)
 		return
 	}
 
+	// 发布构建时，GitHub Actions / Docker 会把 web/dist 嵌入二进制，实现前后端一体。
+	if embeddedFS, ok := ui.EmbeddedFS(); ok {
+		setupEmbeddedStaticRoutes(r, embeddedFS)
+		return
+	}
+
+	setupStatusRoute(r)
+}
+
+func setupStatusRoute(r *gin.Engine) {
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"name":    "APIRelay",
+			"version": "1.0.0",
+			"status":  "running",
+		})
+	})
+}
+
+func setupExternalStaticRoutes(r *gin.Engine, staticPath, indexPath string) {
 	assetsPath := filepath.Join(staticPath, "assets")
 	if _, err := os.Stat(assetsPath); err == nil {
 		r.Static("/assets", assetsPath)
@@ -124,7 +143,7 @@ func setupStaticRoutes(r *gin.Engine, cfg *config.Config) {
 
 	r.NoRoute(func(c *gin.Context) {
 		requestPath := c.Request.URL.Path
-		if strings.HasPrefix(requestPath, "/api/") || strings.HasPrefix(requestPath, "/v1/") {
+		if isAPIRoute(requestPath) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
@@ -137,4 +156,58 @@ func setupStaticRoutes(r *gin.Engine, cfg *config.Config) {
 
 		c.File(indexPath)
 	})
+}
+
+func setupEmbeddedStaticRoutes(r *gin.Engine, embeddedFS fs.FS) {
+	if assetsFS, err := fs.Sub(embeddedFS, "assets"); err == nil {
+		r.StaticFS("/assets", http.FS(assetsFS))
+	}
+
+	r.GET("/", func(c *gin.Context) {
+		serveEmbeddedFile(c, embeddedFS, "index.html")
+	})
+
+	r.NoRoute(func(c *gin.Context) {
+		requestPath := c.Request.URL.Path
+		if isAPIRoute(requestPath) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+
+		filePath := strings.TrimPrefix(requestPath, "/")
+		if filePath != "" && serveEmbeddedFile(c, embeddedFS, filePath) {
+			return
+		}
+
+		serveEmbeddedFile(c, embeddedFS, "index.html")
+	})
+}
+
+func serveEmbeddedFile(c *gin.Context, embeddedFS fs.FS, filePath string) bool {
+	file, err := embeddedFS.Open(filePath)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		return false
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return false
+	}
+
+	contentType := mime.TypeByExtension(filepath.Ext(filePath))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Data(http.StatusOK, contentType, data)
+	return true
+}
+
+func isAPIRoute(path string) bool {
+	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/v1/")
 }

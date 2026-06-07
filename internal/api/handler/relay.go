@@ -399,10 +399,10 @@ func (h *RelayHandler) forwardStreamRequest(c *gin.Context, channel *model.Chann
 }
 
 // logRequest 记录请求日志
-func (h *RelayHandler) logRequest(channelID *uint, model, method, path string, statusCode, latency int, duration time.Duration, errMsg, ip string) {
+func (h *RelayHandler) logRequest(channelID *uint, modelName, method, path string, statusCode, latency int, duration time.Duration, errMsg, ip string) {
 	log := &model.RequestLog{
 		ChannelID:  channelID,
-		Model:      model,
+		Model:      modelName,
 		Method:     method,
 		Path:       path,
 		StatusCode: statusCode,

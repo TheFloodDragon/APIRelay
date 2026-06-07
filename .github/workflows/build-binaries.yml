@@ -2,9 +2,6 @@ name: Build Release Binaries
 
 on:
   push:
-    paths-ignore:
-      - '.narrafork/**'
-      - '.worktrees/**'
   workflow_dispatch:
 
 permissions:
@@ -94,11 +91,11 @@ jobs:
             go.mod
             go.sum
 
-      - name: Download frontend dist
+      - name: Download frontend dist for embedding
         uses: actions/download-artifact@v4
         with:
           name: web-dist
-          path: web/dist
+          path: internal/ui/assets
 
       - name: Install Linux build dependencies
         if: matrix.needs_linux_deps == true
@@ -137,10 +134,7 @@ jobs:
 
       - name: Copy runtime files
         shell: pwsh
-        run: |
-          Copy-Item config.yaml.example dist/config.yaml.example
-          New-Item -ItemType Directory -Force -Path dist/web | Out-Null
-          Copy-Item -Recurse web/dist dist/web/dist
+        run: Copy-Item config.yaml.example dist/config.yaml.example
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -149,5 +143,4 @@ jobs:
           path: |
             dist/${{ matrix.output }}
             dist/config.yaml.example
-            dist/web
           if-no-files-found: error
