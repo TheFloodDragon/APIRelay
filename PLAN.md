@@ -401,7 +401,7 @@ API 调度中心，支持多渠道统一管理和 OpenAI 兼容转发。
 
 1. 克隆仓库：
    ```bash
-   git clone https://github.com/yourusername/apirelay.git
+   git clone https://github.com/TheFloodDragon/APIRelay.git
    cd apirelay
    ```
 

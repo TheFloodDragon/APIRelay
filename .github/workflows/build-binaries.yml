@@ -7,9 +7,8 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   frontend:
@@ -23,7 +22,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -53,7 +52,7 @@ jobs:
       matrix:
         include:
           - name: windows-amd64
-            runner: windows-latest
+            runner: windows-2022
             goos: windows
             goarch: amd64
             output: apirelay-windows-amd64.exe

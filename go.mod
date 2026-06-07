@@ -1,4 +1,4 @@
-module github.com/yourusername/apirelay
+module github.com/TheFloodDragon/APIRelay
 
 go 1.21
 

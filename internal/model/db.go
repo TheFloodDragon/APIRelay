@@ -14,10 +14,10 @@ var DB *gorm.DB
 // InitDB 初始化数据库
 func InitDB(dbPath string) error {
 	var err error
-	
+
 	// 打开数据库连接
 	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: logger.Default.LogMode(logger.Warn),
 	})
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)

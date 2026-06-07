@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/apirelay/internal/model"
-	"github.com/yourusername/apirelay/internal/repository"
 )
 
 type KeyHandler struct {

@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/apirelay/internal/model"
-	"github.com/yourusername/apirelay/internal/service"
 )
 
 type ChannelHandler struct {

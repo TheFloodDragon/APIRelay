@@ -1,7 +1,7 @@
 package repository
 
 import (
-	"github.com/yourusername/apirelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/model"
 	"gorm.io/gorm"
 )
 

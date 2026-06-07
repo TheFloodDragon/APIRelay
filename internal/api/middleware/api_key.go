@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
+	"github.com/TheFloodDragon/APIRelay/pkg/config"
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/apirelay/internal/model"
-	"github.com/yourusername/apirelay/internal/repository"
-	"github.com/yourusername/apirelay/pkg/config"
 	"gorm.io/gorm"
 )
 

@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
+	"github.com/TheFloodDragon/APIRelay/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"github.com/go-resty/resty/v2"
-	"github.com/yourusername/apirelay/internal/model"
-	"github.com/yourusername/apirelay/internal/repository"
-	"github.com/yourusername/apirelay/internal/scheduler"
 )
 
 type RelayHandler struct {
@@ -45,9 +45,9 @@ func (h *RelayHandler) GetModels(c *gin.Context) {
 	data := make([]gin.H, 0, len(models))
 	for _, m := range models {
 		data = append(data, gin.H{
-			"id":      m.Name,
-			"object":  "model",
-			"created": m.CreatedAt.Unix(),
+			"id":       m.Name,
+			"object":   "model",
+			"created":  m.CreatedAt.Unix(),
 			"owned_by": "apirelay",
 		})
 	}

@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/TheFloodDragon/APIRelay/pkg/config"
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/apirelay/pkg/config"
 )
 
 // AuthMiddleware 管理API认证中间件

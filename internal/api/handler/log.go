@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/apirelay/internal/repository"
 )
 
 type LogHandler struct {

@@ -53,21 +53,21 @@ type APIKey struct {
 
 // RequestLog 请求日志
 type RequestLog struct {
-	ID             uint       `json:"id" gorm:"primaryKey"`
-	ChannelID      *uint      `json:"channel_id" gorm:"index"`
-	Channel        *Channel   `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
-	Model          string     `json:"model" gorm:"size:100;index"`
-	Method         string     `json:"method" gorm:"size:20"`
-	Path           string     `json:"path" gorm:"size:255"`
-	StatusCode     int        `json:"status_code"`
-	RequestTokens  int        `json:"request_tokens"`
-	ResponseTokens int        `json:"response_tokens"`
-	Latency        int        `json:"latency"` // 毫秒
-	Error          string     `json:"error" gorm:"type:text"`
-	IP             string     `json:"ip" gorm:"size:50"`
-	APIKeyID       *uint      `json:"api_key_id" gorm:"index"`
-	APIKey         *APIKey    `json:"api_key,omitempty" gorm:"foreignKey:APIKeyID"`
-	CreatedAt      time.Time  `json:"created_at" gorm:"index"`
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	ChannelID      *uint     `json:"channel_id" gorm:"index"`
+	Channel        *Channel  `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
+	Model          string    `json:"model" gorm:"size:100;index"`
+	Method         string    `json:"method" gorm:"size:20"`
+	Path           string    `json:"path" gorm:"size:255"`
+	StatusCode     int       `json:"status_code"`
+	RequestTokens  int       `json:"request_tokens"`
+	ResponseTokens int       `json:"response_tokens"`
+	Latency        int       `json:"latency"` // 毫秒
+	Error          string    `json:"error" gorm:"type:text"`
+	IP             string    `json:"ip" gorm:"size:50"`
+	APIKeyID       *uint     `json:"api_key_id" gorm:"index"`
+	APIKey         *APIKey   `json:"api_key,omitempty" gorm:"foreignKey:APIKeyID"`
+	CreatedAt      time.Time `json:"created_at" gorm:"index"`
 }
 
 // SystemConfig 系统配置

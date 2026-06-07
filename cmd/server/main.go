@@ -8,11 +8,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/yourusername/apirelay/internal/api"
-	"github.com/yourusername/apirelay/internal/model"
-	"github.com/yourusername/apirelay/internal/repository"
-	"github.com/yourusername/apirelay/internal/service"
-	"github.com/yourusername/apirelay/pkg/config"
+	"github.com/TheFloodDragon/APIRelay/internal/api"
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
+	"github.com/TheFloodDragon/APIRelay/internal/service"
+	"github.com/TheFloodDragon/APIRelay/pkg/config"
 )
 
 func main() {

@@ -3,9 +3,9 @@ package service
 import (
 	"fmt"
 
-	"github.com/yourusername/apirelay/internal/adapter"
-	"github.com/yourusername/apirelay/internal/model"
-	"github.com/yourusername/apirelay/internal/repository"
+	"github.com/TheFloodDragon/APIRelay/internal/adapter"
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
 )
 
 type ChannelService struct {
@@ -44,7 +44,7 @@ func (s *ChannelService) CreateChannel(channel *model.Channel) error {
 	if channel.HealthStatus == "" {
 		channel.HealthStatus = "unknown"
 	}
-	
+
 	return s.channelRepo.Create(channel)
 }
 

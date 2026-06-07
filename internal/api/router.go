@@ -9,14 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/TheFloodDragon/APIRelay/internal/api/handler"
+	"github.com/TheFloodDragon/APIRelay/internal/api/middleware"
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
+	"github.com/TheFloodDragon/APIRelay/internal/scheduler"
+	"github.com/TheFloodDragon/APIRelay/internal/service"
+	"github.com/TheFloodDragon/APIRelay/internal/ui"
+	"github.com/TheFloodDragon/APIRelay/pkg/config"
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/apirelay/internal/api/handler"
-	"github.com/yourusername/apirelay/internal/api/middleware"
-	"github.com/yourusername/apirelay/internal/repository"
-	"github.com/yourusername/apirelay/internal/scheduler"
-	"github.com/yourusername/apirelay/internal/service"
-	"github.com/yourusername/apirelay/internal/ui"
-	"github.com/yourusername/apirelay/pkg/config"
 	"gorm.io/gorm"
 )
 
@@ -58,10 +58,10 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	{
 		// 健康检查无需认证
 		apiGroup.GET("/system/health", systemHandler.Health)
-		
+
 		// 其他管理接口需要认证
 		apiGroup.Use(middleware.AuthMiddleware())
-		
+
 		// 系统管理
 		apiGroup.GET("/system/info", systemHandler.Info)
 

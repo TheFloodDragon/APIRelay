@@ -1,9 +1,9 @@
 package middleware
 
 import (
+	"github.com/TheFloodDragon/APIRelay/pkg/config"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/apirelay/pkg/config"
 )
 
 // CORSMiddleware CORS中间件
@@ -18,9 +18,11 @@ func CORSMiddleware() gin.HandlerFunc {
 		AllowCredentials: true,
 	}
 
-	// 如果允许所有源
+	// 如果允许所有源，不能同时设置 AllowOrigins；同时通配符来源不能携带凭据。
 	if len(cfg.AllowOrigins) == 1 && cfg.AllowOrigins[0] == "*" {
 		corsConfig.AllowAllOrigins = true
+		corsConfig.AllowOrigins = nil
+		corsConfig.AllowCredentials = false
 	}
 
 	return cors.New(corsConfig)

@@ -5,9 +5,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/yourusername/apirelay/internal/adapter"
-	"github.com/yourusername/apirelay/internal/model"
-	"github.com/yourusername/apirelay/internal/repository"
+	"github.com/TheFloodDragon/APIRelay/internal/adapter"
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
 )
 
 // HealthChecker 健康检查服务
@@ -37,12 +37,13 @@ func NewHealthChecker(channelRepo *repository.ChannelRepository, intervalSeconds
 func (h *HealthChecker) Start() {
 	log.Printf("健康检查服务已启动，检查间隔: %v", h.interval)
 
-	// 立即执行一次
-	h.checkAll()
-
 	ticker := time.NewTicker(h.interval)
 	go func() {
 		defer ticker.Stop()
+
+		// 立即执行一次，但不阻塞 HTTP 服务启动。
+		h.checkAll()
+
 		for {
 			select {
 			case <-ticker.C:
@@ -73,30 +74,19 @@ func (h *HealthChecker) checkAll() {
 		}
 
 		status := h.checkChannel(&channel)
-		now := time.Now()
-
-		// 更新健康状态
-		updates := map[string]interface{}{
-			"health_status": status,
-			"last_check":    &now,
-		}
-
-		if err := h.channelRepo.Update(channel.ID, updates); err != nil {
+		if err := h.channelRepo.UpdateHealthStatus(channel.ID, status); err != nil {
 			log.Printf("健康检查: 更新渠道 %s 状态失败: %v", channel.Name, err)
 		}
 	}
 }
 
 func (h *HealthChecker) checkChannel(channel *model.Channel) string {
-	fetcher := adapter.GetFetcher(channel.Type)
+	fetcher := adapter.GetModelFetcher(channel.Type, channel.APIKey, channel.BaseURL)
 	if fetcher == nil {
 		return "unknown"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	_, err := fetcher.FetchModels(ctx, channel.BaseURL, channel.APIKey)
+	_, err := fetcher.FetchModels()
 	if err != nil {
 		log.Printf("健康检查: 渠道 %s 检查失败: %v", channel.Name, err)
 		return "unhealthy"

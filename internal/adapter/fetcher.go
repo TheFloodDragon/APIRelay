@@ -3,6 +3,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 )
@@ -40,7 +41,7 @@ func NewOpenAIFetcher(apiKey, baseURL string) *OpenAIFetcher {
 	return &OpenAIFetcher{
 		APIKey:  apiKey,
 		BaseURL: baseURL,
-		Client:  resty.New(),
+		Client:  resty.New().SetTimeout(10 * time.Second),
 	}
 }
 
