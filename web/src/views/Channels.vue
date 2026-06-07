@@ -69,23 +69,32 @@
     <el-form :model="form" label-position="top">
       <!-- 协议选择区 -->
       <div class="form-section protocol-section">
-        <h3>协议选择</h3>
-        <div class="protocol-cards">
-          <div
+        <div class="section-heading inline">
+          <div>
+            <h3>协议选择</h3>
+            <p>选择上游接口协议，系统会自动给出默认地址和转发提示。</p>
+          </div>
+          <el-tag effect="plain" type="info">{{ selectedProtocol.name }}</el-tag>
+        </div>
+        <div class="protocol-switcher" role="radiogroup" aria-label="协议选择">
+          <button
             v-for="protocol in protocolOptions"
             :key="protocol.type"
-            class="protocol-card"
+            type="button"
+            class="protocol-pill"
             :class="{ active: form.type === protocol.type }"
+            :aria-pressed="form.type === protocol.type"
             @click="selectProtocol(protocol)"
           >
-            <div class="protocol-header">
-              <strong>{{ protocol.name }}</strong>
-              <span v-if="form.type === protocol.type" class="active-badge">已选</span>
-            </div>
-            <ul class="protocol-features">
-              <li v-for="(feature, idx) in protocol.features" :key="idx">{{ feature }}</li>
-            </ul>
-          </div>
+            <span>{{ protocol.name }}</span>
+            <small>{{ protocol.hint }}</small>
+          </button>
+        </div>
+        <div class="protocol-summary">
+          <span class="summary-label">当前协议要点</span>
+          <span v-for="(feature, idx) in selectedProtocol.features" :key="idx" class="summary-chip">
+            {{ feature }}
+          </span>
         </div>
       </div>
 
@@ -129,24 +138,37 @@
         </div>
       </div>
 
-      <div class="form-section">
-        <h3>上游真实模型列表</h3>
-        <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
-          <template #title>
-            <span style="font-size: 14px">
-              这里填写上游渠道实际支持的模型名称（如 gpt-4o、claude-3-5-sonnet-20241022）；
-              对外调用时的显示名称可在"模型列表"页编辑。
-            </span>
-          </template>
-        </el-alert>
-        <el-form-item label="模型列表">
+      <div class="form-section model-form-section">
+        <div class="section-heading inline">
+          <div>
+            <h3>上游真实模型列表</h3>
+            <p>填写渠道实际支持的模型名；对外调用名称可到“模型列表”页单独调整。</p>
+          </div>
+          <el-tag :type="parsedModelNames.length ? 'success' : 'info'" effect="plain">
+            {{ parsedModelNames.length }} 个模型
+          </el-tag>
+        </div>
+        <div class="model-editor">
           <el-input
             v-model="modelsText"
             type="textarea"
-            :rows="5"
-            placeholder="每行一个模型,如 gpt-4o；也支持用逗号分隔"
+            :autosize="{ minRows: 5, maxRows: 10 }"
+            placeholder="每行一个模型，例如：gpt-4o\nclaude-3-5-sonnet-20241022\n也支持用逗号分隔"
           />
-        </el-form-item>
+          <div class="model-editor-footer">
+            <span>支持换行或逗号分隔，保存时会自动去除空项。</span>
+            <strong v-if="parsedModelNames.length">保存后同步 {{ parsedModelNames.length }} 个模型</strong>
+            <strong v-else>暂无待同步模型</strong>
+          </div>
+          <div v-if="previewModelNames.length" class="model-chip-preview">
+            <el-tag v-for="model in previewModelNames" :key="model" effect="plain" size="small">
+              {{ model }}
+            </el-tag>
+            <el-tag v-if="hiddenPreviewModelCount" effect="plain" size="small" type="info">
+              +{{ hiddenPreviewModelCount }}
+            </el-tag>
+          </div>
+        </div>
       </div>
 
       <div class="form-section">
@@ -239,15 +261,16 @@ const healthyCount = computed(() => channels.value.filter((item) => item.health_
 const unhealthyCount = computed(() => channels.value.filter((item) => item.health_status === 'unhealthy').length)
 const modelCount = computed(() => new Set(channels.value.flatMap((item) => item.models || [])).size)
 
-const baseURLPlaceholder = computed(() => {
-  const protocol = protocolOptions.find((p) => p.type === form.type)
-  return protocol?.defaultURL || 'https://api.example.com/v1'
-})
+const selectedProtocol = computed(
+  () => protocolOptions.find((protocol) => protocol.type === form.type) || protocolOptions[0]
+)
+const parsedModelNames = computed(() => parseModelsText(modelsText.value))
+const previewModelNames = computed(() => parsedModelNames.value.slice(0, 10))
+const hiddenPreviewModelCount = computed(() => Math.max(0, parsedModelNames.value.length - previewModelNames.value.length))
 
-const baseURLHint = computed(() => {
-  const protocol = protocolOptions.find((p) => p.type === form.type)
-  return protocol?.hint || '根据协议选择填写对应的 Base URL'
-})
+const baseURLPlaceholder = computed(() => selectedProtocol.value.defaultURL || 'https://api.example.com/v1')
+
+const baseURLHint = computed(() => selectedProtocol.value.hint || '根据协议选择填写对应的 Base URL')
 
 onMounted(loadChannels)
 
@@ -304,13 +327,17 @@ function openEditDialog(channel: Channel) {
   dialogVisible.value = true
 }
 
+function parseModelsText(value: string) {
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
 async function saveChannel() {
   const payload: Partial<Channel> = {
     ...form,
-    models: modelsText.value
-      .split(/[\n,]+/)
-      .map((item) => item.trim())
-      .filter(Boolean)
+    models: parseModelsText(modelsText.value)
   }
 
   saving.value = true
@@ -399,62 +426,169 @@ async function onDragEnd() {
 
 <style scoped>
 .protocol-section {
-  padding-bottom: 16px;
+  padding-bottom: 18px;
+  border-color: rgba(37, 99, 235, 0.14);
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.72), #fbfcff 62%);
 }
 
-.protocol-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
+.section-heading {
+  margin-bottom: 14px;
 }
 
-.protocol-card {
-  border: 2px solid var(--el-border-color);
-  border-radius: 8px;
-  padding: 14px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.protocol-card:hover {
-  border-color: var(--el-color-primary-light-5);
-  background: var(--el-fill-color-light);
-}
-
-.protocol-card.active {
-  border-color: var(--el-color-primary);
-  background: var(--el-color-primary-light-9);
-}
-
-.protocol-header {
+.section-heading.inline {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+  gap: 16px;
 }
 
-.protocol-header strong {
-  font-size: 15px;
-  color: var(--el-text-color-primary);
+.section-heading h3 {
+  margin: 0 0 4px;
 }
 
-.active-badge {
-  font-size: 12px;
-  color: var(--el-color-primary);
-  font-weight: 600;
-}
-
-.protocol-features {
-  list-style: none;
-  padding: 0;
+.section-heading p {
   margin: 0;
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
-  color: var(--el-text-color-regular);
 }
 
-.protocol-features li {
-  margin-bottom: 4px;
+.protocol-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.protocol-pill {
+  display: flex;
+  min-height: 84px;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 14px;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  transition: var(--transition-fast);
+}
+
+.protocol-pill:hover {
+  color: var(--primary);
+  border-color: rgba(37, 99, 235, 0.16);
+  background: var(--primary-light);
+}
+
+.protocol-pill.active {
+  color: var(--primary-strong);
+  border-color: rgba(37, 99, 235, 0.28);
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(37, 99, 235, 0.1);
+}
+
+.protocol-pill span {
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.protocol-pill small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.protocol-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed rgba(37, 99, 235, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.summary-label {
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.summary-chip {
+  padding: 5px 9px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  border-radius: 999px;
+  background: #f8fafc;
+}
+
+.model-form-section {
+  border-color: rgba(18, 183, 106, 0.14);
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.62), #fbfcff 58%);
+}
+
+.model-editor {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.model-editor :deep(.el-textarea__inner) {
+  min-height: 132px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.65;
+  border-radius: 14px;
+}
+
+.model-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-editor-footer strong {
+  color: var(--success);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.model-chip-preview {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+}
+
+.model-chip-preview :deep(.el-tag__content) {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .section-heading.inline,
+  .model-editor-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .protocol-switcher {
+    grid-template-columns: 1fr;
+  }
 }
 
 .form-tip {

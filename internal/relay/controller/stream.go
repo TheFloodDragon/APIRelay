@@ -93,6 +93,7 @@ func writeStreamHeaders(c *gin.Context, statusCode int) {
 	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Connection", "keep-alive")
+	writer.Header().Set("X-Accel-Buffering", "no")
 	writer.WriteHeader(statusCode)
 	writer.Flush()
 }

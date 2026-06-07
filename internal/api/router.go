@@ -242,13 +242,9 @@ func serveEmbeddedFile(c *gin.Context, embeddedFS fs.FS, filePath string) bool {
 }
 
 func isAPIRoute(path string) bool {
-	return strings.HasPrefix(path, "/api/") ||
-		strings.HasPrefix(path, "/v1/") ||
-		strings.HasPrefix(path, "/v1beta/") ||
-		path == "/models" ||
-		path == "/messages" ||
-		path == "/responses" ||
-		path == "/chat/completions" ||
-		path == "/completions" ||
-		path == "/embeddings"
+	// 管理台使用 HTML5 history 路由（例如 /models）。这些前端路径刷新时
+	// 必须回退到 index.html；真正的 API 都在 /api、/v1 或 /v1beta 前缀下。
+	return path == "/api" || strings.HasPrefix(path, "/api/") ||
+		path == "/v1" || strings.HasPrefix(path, "/v1/") ||
+		path == "/v1beta" || strings.HasPrefix(path, "/v1beta/")
 }

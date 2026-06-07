@@ -42,13 +42,25 @@
     </div>
 
     <div class="model-preview">
-      <div class="section-label">上游模型 ({{ totalModels }})</div>
+      <div class="model-preview-head">
+        <div class="section-label">上游模型 ({{ totalModels }})</div>
+        <el-button v-if="totalModels" text size="small" class="view-models-btn" @click.stop="openModelDialog">
+          查看全部
+        </el-button>
+      </div>
       <div v-if="visibleModels.length" class="model-tags">
         <el-tag v-for="model in visibleModels" :key="model" effect="plain" size="small">
           {{ model }}
         </el-tag>
-        <el-tag v-if="hiddenModelCount > 0" effect="plain" size="small" type="info">
-          +{{ hiddenModelCount }}
+        <el-tag
+          v-if="hiddenModelCount > 0"
+          effect="plain"
+          size="small"
+          type="info"
+          class="more-model-tag"
+          @click.stop="openModelDialog"
+        >
+          +{{ hiddenModelCount }}，查看全部
         </el-tag>
       </div>
       <p v-else class="empty-hint">暂无模型,点击"获取模型"同步。</p>
@@ -71,14 +83,32 @@
       </div>
     </div>
   </article>
+
+  <el-dialog
+    v-model="modelDialogVisible"
+    :title="`${channel.name} 的上游模型`"
+    width="620px"
+    class="model-list-dialog"
+  >
+    <div class="model-dialog-summary">
+      <span>共 {{ totalModels }} 个模型</span>
+      <small>这些名称是该渠道上游实际支持的模型，可在模型列表页调整对外调用名称。</small>
+    </div>
+    <div class="full-model-list">
+      <el-tag v-for="model in allModels" :key="model" effect="plain" size="large">
+        {{ model }}
+      </el-tag>
+    </div>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Connection, Delete, EditPen, Rank, Refresh, Clock } from '@element-plus/icons-vue'
 import type { Channel } from '@/api/channels'
 
 const props = defineProps<{ channel: Channel }>()
+const modelDialogVisible = ref(false)
 const emit = defineEmits<{
   toggle: [channel: Channel, enabled: boolean]
   test: [channel: Channel]
@@ -97,9 +127,10 @@ const healthMeta = computed(() => {
 })
 
 const timeoutSeconds = computed(() => Math.round((props.channel.timeout || 60000) / 1000))
-const totalModels = computed(() => props.channel.models?.length || 0)
-const visibleModels = computed(() => (props.channel.models || []).slice(0, 6))
-const hiddenModelCount = computed(() => Math.max(0, totalModels.value - 6))
+const allModels = computed(() => props.channel.models || [])
+const totalModels = computed(() => allModels.value.length)
+const visibleModels = computed(() => allModels.value.slice(0, 8))
+const hiddenModelCount = computed(() => Math.max(0, totalModels.value - visibleModels.value.length))
 
 const lastCheckText = computed(() => {
   if (!props.channel.last_check) return '从未检查'
@@ -115,12 +146,83 @@ const lastCheckText = computed(() => {
   return `${days} 天前`
 })
 
+function openModelDialog() {
+  if (totalModels.value > 0) {
+    modelDialogVisible.value = true
+  }
+}
+
 function onToggle(value: boolean | string | number) {
   emit('toggle', props.channel, Boolean(value))
 }
 </script>
 
 <style scoped>
+.model-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.model-preview-head .section-label {
+  margin-bottom: 0;
+}
+
+.view-models-btn {
+  height: auto;
+  padding: 0 2px;
+  font-size: 12px;
+}
+
+.model-tags :deep(.el-tag__content) {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.more-model-tag {
+  cursor: pointer;
+  border-style: dashed;
+}
+
+.model-dialog-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  color: var(--muted);
+}
+
+.model-dialog-summary span {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.model-dialog-summary small {
+  line-height: 1.6;
+  text-align: right;
+}
+
+.full-model-list {
+  display: flex;
+  max-height: 52vh;
+  overflow: auto;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 2px 4px 4px 0;
+}
+
+.full-model-list :deep(.el-tag__content) {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .health-indicator {
   display: inline-block;
   width: 8px;

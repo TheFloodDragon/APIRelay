@@ -965,6 +965,12 @@ func (e *responsesStreamEmitter) start() error {
 	}); err != nil {
 		return err
 	}
+	if err := e.write("response.in_progress", map[string]interface{}{
+		"type":     "response.in_progress",
+		"response": baseResponsesObject(e.responseID, e.messageID, e.modelName, "in_progress", ""),
+	}); err != nil {
+		return err
+	}
 	if err := e.write("response.output_item.added", map[string]interface{}{
 		"type":         "response.output_item.added",
 		"output_index": 0,
@@ -992,15 +998,13 @@ func (e *responsesStreamEmitter) start() error {
 }
 
 func (e *responsesStreamEmitter) delta(content string) error {
-	e.sequence++
 	e.collectedText.WriteString(content)
 	return e.write("response.output_text.delta", map[string]interface{}{
-		"type":            "response.output_text.delta",
-		"item_id":         e.messageID,
-		"output_index":    0,
-		"content_index":   0,
-		"delta":           content,
-		"sequence_number": e.sequence,
+		"type":          "response.output_text.delta",
+		"item_id":       e.messageID,
+		"output_index":  0,
+		"content_index": 0,
+		"delta":         content,
 	})
 }
 
@@ -1054,6 +1058,9 @@ func (e *responsesStreamEmitter) complete() error {
 }
 
 func (e *responsesStreamEmitter) write(eventName string, payload map[string]interface{}) error {
+	e.sequence++
+	payload["sequence_number"] = e.sequence
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err

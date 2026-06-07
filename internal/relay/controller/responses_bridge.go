@@ -28,7 +28,7 @@ func (rc *RelayController) handleResponsesBridge(c *gin.Context) {
 		return
 	}
 
-	chatBody, modelName, stream, err := responsesRequestToChatCompletions(body)
+	chatBody, modelName, stream, err := responsesRequestToChatCompletions(body, clientRequestedEventStream(c))
 	if err != nil {
 		rc.logNoChannel(c, requestID, startTime, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, "", http.StatusBadRequest, err.Error())
 		writeRelayError(c, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
@@ -258,7 +258,7 @@ func copyResponsesStream(c *gin.Context, body io.Reader, protocolAdaptor adaptor
 	return emitter.complete()
 }
 
-func responsesRequestToChatCompletions(body []byte) ([]byte, string, bool, error) {
+func responsesRequestToChatCompletions(body []byte, streamRequested bool) ([]byte, string, bool, error) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, "", false, err
@@ -279,7 +279,7 @@ func responsesRequestToChatCompletions(body []byte) ([]byte, string, bool, error
 		return nil, "", false, fmt.Errorf("缺少 input 参数")
 	}
 
-	stream, _ := raw["stream"].(bool)
+	stream := responseStreamRequested(raw["stream"], streamRequested)
 	chatReq := map[string]interface{}{
 		"model":    modelName,
 		"messages": messages,
@@ -294,6 +294,27 @@ func responsesRequestToChatCompletions(body []byte) ([]byte, string, bool, error
 
 	chatBody, err := json.Marshal(chatReq)
 	return chatBody, modelName, stream, err
+}
+
+func clientRequestedEventStream(c *gin.Context) bool {
+	accept := strings.ToLower(c.GetHeader("Accept"))
+	return strings.Contains(accept, "text/event-stream") || strings.EqualFold(c.Query("stream"), "true")
+}
+
+func responseStreamRequested(value interface{}, headerRequested bool) bool {
+	// Responses API 的部分客户端通过 Accept: text/event-stream 或 query 参数
+	// 表达流式意图，而请求体里可能没有 stream 字段（或保留默认 false）。
+	// 一旦客户端按 SSE 解析，返回普通 JSON 会导致 “No Responses API events were parsed”。
+	if headerRequested {
+		return true
+	}
+	if stream, ok := value.(bool); ok {
+		return stream
+	}
+	if stream, ok := value.(string); ok {
+		return strings.EqualFold(stream, "true")
+	}
+	return false
 }
 
 func responsesInputToMessages(input interface{}) []map[string]interface{} {
@@ -410,35 +431,52 @@ func chatCompletionsResponseToResponses(respBody []byte, requestedModel string) 
 func extractChatStreamContent(chunk []byte) []string {
 	scanner := bufio.NewScanner(bytes.NewReader(chunk))
 	contents := make([]string, 0)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
+	var dataLines []string
+
+	flushData := func() {
+		if len(dataLines) == 0 {
+			return
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		data := strings.TrimSpace(strings.Join(dataLines, "\n"))
+		dataLines = dataLines[:0]
 		if data == "" || data == "[DONE]" {
-			continue
+			return
 		}
 
 		var chatChunk map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &chatChunk); err != nil {
-			continue
+			return
 		}
 		choices, ok := chatChunk["choices"].([]interface{})
 		if !ok || len(choices) == 0 {
-			continue
+			return
 		}
 		choice, ok := choices[0].(map[string]interface{})
 		if !ok {
-			continue
+			return
 		}
 		delta, ok := choice["delta"].(map[string]interface{})
 		if !ok {
-			continue
+			return
 		}
 		content, _ := delta["content"].(string)
 		contents = append(contents, content)
 	}
+
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r")
+		if line == "" {
+			flushData()
+			continue
+		}
+		if strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	flushData()
 	return contents
 }
 
@@ -463,6 +501,12 @@ func newResponsesStreamEmitter(writer gin.ResponseWriter, responseID, messageID,
 func (e *responsesStreamEmitter) start() error {
 	if err := e.write("response.created", map[string]interface{}{
 		"type":     "response.created",
+		"response": baseResponsesObject(e.responseID, e.messageID, e.modelName, "in_progress", ""),
+	}); err != nil {
+		return err
+	}
+	if err := e.write("response.in_progress", map[string]interface{}{
+		"type":     "response.in_progress",
 		"response": baseResponsesObject(e.responseID, e.messageID, e.modelName, "in_progress", ""),
 	}); err != nil {
 		return err
@@ -494,15 +538,13 @@ func (e *responsesStreamEmitter) start() error {
 }
 
 func (e *responsesStreamEmitter) delta(content string) error {
-	e.sequence++
 	e.collectedText.WriteString(content)
 	return e.write("response.output_text.delta", map[string]interface{}{
-		"type":            "response.output_text.delta",
-		"item_id":         e.messageID,
-		"output_index":    0,
-		"content_index":   0,
-		"delta":           content,
-		"sequence_number": e.sequence,
+		"type":          "response.output_text.delta",
+		"item_id":       e.messageID,
+		"output_index":  0,
+		"content_index": 0,
+		"delta":         content,
 	})
 }
 
@@ -556,6 +598,9 @@ func (e *responsesStreamEmitter) complete() error {
 }
 
 func (e *responsesStreamEmitter) write(eventName string, payload map[string]interface{}) error {
+	e.sequence++
+	payload["sequence_number"] = e.sequence
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -577,28 +622,60 @@ func (e *responsesStreamEmitter) write(eventName string, payload map[string]inte
 }
 
 func baseResponsesObject(responseID, messageID, modelName, status, outputText string) map[string]interface{} {
-	return map[string]interface{}{
-		"id":         responseID,
-		"object":     "response",
-		"created_at": time.Now().Unix(),
-		"status":     status,
-		"model":      modelName,
-		"output": []interface{}{
-			map[string]interface{}{
-				"id":     messageID,
-				"type":   "message",
-				"status": status,
-				"role":   "assistant",
-				"content": []interface{}{
-					map[string]interface{}{
-						"type":        "output_text",
-						"text":        outputText,
-						"annotations": []interface{}{},
-					},
+	now := time.Now().Unix()
+	var completedAt interface{}
+	if status == "completed" {
+		completedAt = now
+	}
+
+	output := []interface{}{}
+	if status == "completed" || outputText != "" {
+		output = append(output, map[string]interface{}{
+			"id":     messageID,
+			"type":   "message",
+			"status": status,
+			"role":   "assistant",
+			"content": []interface{}{
+				map[string]interface{}{
+					"type":        "output_text",
+					"text":        outputText,
+					"annotations": []interface{}{},
 				},
 			},
+		})
+	}
+
+	return map[string]interface{}{
+		"id":                   responseID,
+		"object":               "response",
+		"created_at":           now,
+		"completed_at":         completedAt,
+		"status":               status,
+		"error":                nil,
+		"incomplete_details":   nil,
+		"instructions":         nil,
+		"max_output_tokens":    nil,
+		"metadata":             map[string]interface{}{},
+		"model":                modelName,
+		"output":               output,
+		"output_text":          outputText,
+		"parallel_tool_calls":  true,
+		"previous_response_id": nil,
+		"reasoning": map[string]interface{}{
+			"effort":  nil,
+			"summary": nil,
 		},
-		"output_text": outputText,
+		"store":       false,
+		"temperature": nil,
+		"text": map[string]interface{}{
+			"format": map[string]interface{}{"type": "text"},
+		},
+		"tool_choice": "auto",
+		"tools":       []interface{}{},
+		"top_p":       nil,
+		"truncation":  "disabled",
+		"usage":       nil,
+		"user":        nil,
 	}
 }
 

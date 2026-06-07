@@ -58,9 +58,10 @@ func (c *HTTPClient) DoJSON(ctx context.Context, method, url string, headers htt
 }
 
 func (c *HTTPClient) DoStream(ctx context.Context, method, url string, headers http.Header, body []byte, timeout time.Duration) (*http.Response, error) {
-	if timeout > 0 {
-		ctx, _ = context.WithTimeout(ctx, timeout)
-	}
+	// 流式响应不能把渠道 timeout 作为整个响应体的 deadline，否则长输出会在
+	// response.completed / [DONE] 前被 context 截断。连接阶段已有 Dial/TLS 超时，
+	// 客户端断开时 ctx 仍会取消请求。
+	_ = timeout
 
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
