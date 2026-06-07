@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"fmt"
 	"log"
 	"time"
 
@@ -33,29 +32,22 @@ func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo,
 		apiType = "-"
 	}
 
-	dbError := errMsg
-	if dbError != "" {
-		dbError = fmt.Sprintf(
-			"request_id=%s api_type=%s relay_mode=%s relay_format=%s resolved_model=%s error=%s",
-			info.RequestID,
-			apiType,
-			info.RelayMode,
-			info.RelayFormat,
-			info.ResolvedModel,
-			errMsg,
-		)
-	}
-
 	requestLog := &model.RequestLog{
-		ChannelID:  channelID,
-		Model:      info.RequestedModel,
-		Method:     c.Request.Method,
-		Path:       c.Request.URL.Path,
-		StatusCode: statusCode,
-		Latency:    latencyMS,
-		Error:      dbError,
-		IP:         info.ClientIP,
-		APIKeyID:   apiKeyIDFromContext(c),
+		RequestID:     info.RequestID,
+		ChannelID:     channelID,
+		ChannelType:   channelType,
+		APIType:       apiType,
+		RelayMode:     string(info.RelayMode),
+		RelayFormat:   string(info.RelayFormat),
+		ResolvedModel: info.ResolvedModel,
+		Model:         info.RequestedModel,
+		Method:        c.Request.Method,
+		Path:          c.Request.URL.Path,
+		StatusCode:    statusCode,
+		Latency:       latencyMS,
+		Error:         errMsg,
+		IP:            info.ClientIP,
+		APIKeyID:      apiKeyIDFromContext(c),
 	}
 
 	if err := rc.logRepo.Create(requestLog); err != nil {

@@ -1,32 +1,51 @@
 <template>
-  <div>
-    <div class="page-header">
-      <h1 class="page-title">渠道管理</h1>
-      <div>
-        <el-input
-          v-model="adminKey"
-          placeholder="管理密钥"
-          show-password
-          style="width: 260px; margin-right: 12px"
-          @change="saveAdminKey"
-        />
-        <el-button type="primary" @click="openCreateDialog">添加渠道</el-button>
-      </div>
+  <section class="page-hero">
+    <div>
+      <p class="eyebrow">Channels</p>
+      <h1>渠道管理</h1>
+      <p>配置多供应商 API 渠道，按优先级和权重完成模型路由与故障切换。</p>
     </div>
+    <div class="page-actions">
+      <el-button :icon="Refresh" :loading="loading" @click="loadChannels">刷新</el-button>
+      <el-button type="primary" :icon="Plus" @click="openCreateDialog">添加渠道</el-button>
+    </div>
+  </section>
 
-    <el-alert
-      title="提示：拖动左侧图标可调整优先级顺序。当前页面是轻量原型，后续可扩展更多 NewAPI/CCSwitch 风格能力。"
-      type="info"
-      show-icon
-      :closable="false"
-      style="margin-bottom: 16px"
-    />
+  <div class="metric-grid compact">
+    <div class="metric-card">
+      <span class="metric-label">渠道总数</span>
+      <strong>{{ channels.length }}</strong>
+      <small>{{ enabledCount }} 个已启用</small>
+    </div>
+    <div class="metric-card">
+      <span class="metric-label">健康渠道</span>
+      <strong>{{ healthyCount }}</strong>
+      <small>{{ unhealthyCount }} 个异常</small>
+    </div>
+    <div class="metric-card">
+      <span class="metric-label">模型覆盖</span>
+      <strong>{{ modelCount }}</strong>
+      <small>去重后的模型数</small>
+    </div>
+  </div>
 
+  <el-alert
+    class="guide-card"
+    title="拖动卡片左上角手柄可调整渠道优先级；优先级越高越先尝试，同优先级下可结合权重做调度。"
+    type="info"
+    show-icon
+    :closable="false"
+  />
+
+  <div v-loading="loading" class="channel-grid-wrap">
     <draggable
+      v-if="channels.length"
       v-model="channels"
-      class="channel-list"
+      class="channel-grid"
       item-key="id"
       handle=".drag-handle"
+      ghost-class="drag-ghost"
+      :animation="180"
       @end="onDragEnd"
     >
       <template #item="{ element }">
@@ -41,74 +60,79 @@
       </template>
     </draggable>
 
-    <el-empty v-if="channels.length === 0 && !loading" description="暂无渠道，请添加一个 API 渠道" />
+    <el-empty v-else-if="!loading" class="empty-card" description="暂无渠道，请添加一个 API 渠道">
+      <el-button type="primary" :icon="Plus" @click="openCreateDialog">添加渠道</el-button>
+    </el-empty>
+  </div>
 
-    <el-dialog v-model="dialogVisible" :title="editingChannel ? '编辑渠道' : '添加渠道'" width="620px">
-      <el-form :model="form" label-width="100px">
-        <el-form-item label="渠道名称">
-          <el-input v-model="form.name" placeholder="如 OpenAI Primary" />
-        </el-form-item>
-        <el-form-item label="渠道类型">
-          <el-select
-            v-model="form.type"
-            allow-create
-            filterable
-            default-first-option
-            style="width: 100%"
-          >
-            <el-option label="OpenAI Compatible / NewAPI（推荐）" value="openai_compatible" />
-            <el-option label="NewAPI" value="newapi" />
-            <el-option label="OneAPI" value="oneapi" />
-            <el-option label="OpenAI" value="openai" />
-            <el-option label="DeepSeek" value="deepseek" />
-            <el-option label="OpenRouter" value="openrouter" />
-            <el-option label="Anthropic 官方" value="anthropic" />
-            <el-option label="Gemini 官方" value="gemini" />
-            <el-option label="自定义" value="custom" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="API Key">
-          <el-input v-model="form.api_key" show-password placeholder="sk-..." />
-        </el-form-item>
-        <el-form-item label="Base URL">
-          <el-input v-model="form.base_url" placeholder="https://api.openai.com/v1" />
-        </el-form-item>
+  <el-dialog v-model="dialogVisible" :title="editingChannel ? '编辑渠道' : '添加渠道'" width="760px" class="form-dialog">
+    <el-form :model="form" label-position="top">
+      <div class="form-section">
+        <h3>基础信息</h3>
+        <div class="form-grid">
+          <el-form-item label="渠道名称">
+            <el-input v-model="form.name" placeholder="如 OpenAI Primary" />
+          </el-form-item>
+          <el-form-item label="渠道类型">
+            <el-select v-model="form.type" allow-create filterable default-first-option style="width: 100%">
+              <el-option v-for="item in channelTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="API Key" class="span-2">
+            <el-input v-model="form.api_key" show-password placeholder="sk-..." />
+          </el-form-item>
+          <el-form-item label="Base URL" class="span-2">
+            <el-input v-model="form.base_url" placeholder="https://api.openai.com/v1" />
+          </el-form-item>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>路由与可靠性</h3>
+        <div class="form-grid four-columns">
+          <el-form-item label="优先级">
+            <el-input-number v-model="form.priority" :min="0" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="权重">
+            <el-input-number v-model="form.weight" :min="1" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="超时(ms)">
+            <el-input-number v-model="form.timeout" :min="1000" :step="1000" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="重试次数">
+            <el-input-number v-model="form.max_retries" :min="0" controls-position="right" />
+          </el-form-item>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>模型与状态</h3>
         <el-form-item label="模型列表">
           <el-input
             v-model="modelsText"
             type="textarea"
-            :rows="3"
-            placeholder="每行一个模型，如 gpt-4o"
+            :rows="5"
+            placeholder="每行一个模型，如 gpt-4o；也支持用逗号分隔"
           />
         </el-form-item>
-        <el-form-item label="优先级">
-          <el-input-number v-model="form.priority" :min="0" />
+        <el-form-item label="启用渠道">
+          <el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" />
         </el-form-item>
-        <el-form-item label="权重">
-          <el-input-number v-model="form.weight" :min="1" />
-        </el-form-item>
-        <el-form-item label="超时(ms)">
-          <el-input-number v-model="form.timeout" :min="1000" :step="1000" />
-        </el-form-item>
-        <el-form-item label="重试次数">
-          <el-input-number v-model="form.max_retries" :min="0" />
-        </el-form-item>
-        <el-form-item label="启用">
-          <el-switch v-model="form.enabled" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveChannel">保存</el-button>
-      </template>
-    </el-dialog>
-  </div>
+      </div>
+    </el-form>
+
+    <template #footer>
+      <el-button @click="dialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="saving" @click="saveChannel">保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import draggable from 'vuedraggable'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Refresh } from '@element-plus/icons-vue'
 import ChannelCard from '@/components/ChannelCard.vue'
 import {
   createChannel,
@@ -122,47 +146,35 @@ import {
 } from '@/api/channels'
 
 const loading = ref(false)
+const saving = ref(false)
 const channels = ref<Channel[]>([])
 const dialogVisible = ref(false)
 const editingChannel = ref<Channel | null>(null)
 const modelsText = ref('')
-const adminKey = ref(localStorage.getItem('apirelay_admin_key') || 'change-me-in-production')
 
-const form = reactive<Partial<Channel>>({
-  name: '',
-  type: 'openai_compatible',
-  api_key: '',
-  base_url: '',
-  models: [],
-  priority: 10,
-  weight: 1,
-  enabled: true,
-  timeout: 60000,
-  max_retries: 3
-})
+const channelTypeOptions = [
+  { label: 'OpenAI Compatible / NewAPI（推荐）', value: 'openai_compatible' },
+  { label: 'NewAPI', value: 'newapi' },
+  { label: 'OneAPI', value: 'oneapi' },
+  { label: 'OpenAI', value: 'openai' },
+  { label: 'DeepSeek', value: 'deepseek' },
+  { label: 'OpenRouter', value: 'openrouter' },
+  { label: 'Anthropic 官方', value: 'anthropic' },
+  { label: 'Gemini 官方', value: 'gemini' },
+  { label: '自定义', value: 'custom' }
+]
+
+const form = reactive<Partial<Channel>>(defaultForm())
+
+const enabledCount = computed(() => channels.value.filter((item) => item.enabled).length)
+const healthyCount = computed(() => channels.value.filter((item) => item.health_status === 'healthy').length)
+const unhealthyCount = computed(() => channels.value.filter((item) => item.health_status === 'unhealthy').length)
+const modelCount = computed(() => new Set(channels.value.flatMap((item) => item.models || [])).size)
 
 onMounted(loadChannels)
 
-function saveAdminKey() {
-  localStorage.setItem('apirelay_admin_key', adminKey.value)
-  ElMessage.success('管理密钥已保存')
-  loadChannels()
-}
-
-async function loadChannels() {
-  loading.value = true
-  try {
-    const res = await getChannels()
-    channels.value = res.data.data
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.error || '加载渠道失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-function resetForm() {
-  Object.assign(form, {
+function defaultForm(): Partial<Channel> {
+  return {
     name: '',
     type: 'openai_compatible',
     api_key: '',
@@ -173,7 +185,23 @@ function resetForm() {
     enabled: true,
     timeout: 60000,
     max_retries: 3
-  })
+  }
+}
+
+async function loadChannels() {
+  loading.value = true
+  try {
+    const res = await getChannels()
+    channels.value = res.data.data || []
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.error || '加载渠道失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+function resetForm() {
+  Object.assign(form, defaultForm())
   modelsText.value = ''
 }
 
@@ -191,14 +219,15 @@ function openEditDialog(channel: Channel) {
 }
 
 async function saveChannel() {
-  const payload = {
+  const payload: Partial<Channel> = {
     ...form,
     models: modelsText.value
-      .split('\n')
+      .split(/[\n,]+/)
       .map((item) => item.trim())
       .filter(Boolean)
   }
 
+  saving.value = true
   try {
     if (editingChannel.value) {
       await updateChannel(editingChannel.value.id, payload)
@@ -211,6 +240,8 @@ async function saveChannel() {
     await loadChannels()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.error || '保存失败')
+  } finally {
+    saving.value = false
   }
 }
 
@@ -249,9 +280,11 @@ async function handleFetchModels(channel: Channel) {
 }
 
 async function handleDelete(channel: Channel) {
-  await ElMessageBox.confirm(`确定删除渠道「${channel.name}」吗？`, '删除确认', {
-    type: 'warning'
-  })
+  try {
+    await ElMessageBox.confirm(`确定删除渠道「${channel.name}」吗？`, '删除确认', { type: 'warning' })
+  } catch {
+    return
+  }
 
   try {
     await deleteChannel(channel.id)

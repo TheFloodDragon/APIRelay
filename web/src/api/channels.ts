@@ -12,11 +12,22 @@ export interface Channel {
   enabled: boolean
   timeout: number
   max_retries: number
+  config?: Record<string, unknown>
   health_status: string
+  last_check?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ApiResponse<T> {
+  success: boolean
+  data: T
+  message?: string
+  error?: string
 }
 
 export function getChannels() {
-  return request.get<{ success: boolean; data: Channel[] }>('/channels')
+  return request.get<ApiResponse<Channel[]>>('/channels')
 }
 
 export function createChannel(data: Partial<Channel>) {
@@ -36,9 +47,9 @@ export function reorderChannels(orders: Array<{ id: number; priority: number }>)
 }
 
 export function testChannel(id: number) {
-  return request.post(`/channels/${id}/test`)
+  return request.post<{ success: boolean; message: string }>(`/channels/${id}/test`)
 }
 
 export function fetchChannelModels(id: number) {
-  return request.post(`/channels/${id}/models`)
+  return request.post<{ success: boolean; models: string[] }>(`/channels/${id}/models`)
 }
