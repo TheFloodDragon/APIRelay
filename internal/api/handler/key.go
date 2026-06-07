@@ -43,7 +43,6 @@ func (h *KeyHandler) GetKeys(c *gin.Context) {
 func (h *KeyHandler) CreateKey(c *gin.Context) {
 	var req struct {
 		Name          string               `json:"name"`
-		RateLimit     int                  `json:"rate_limit"`
 		AllowedModels model.JSONStringList `json:"allowed_models"`
 		IPWhitelist   model.JSONStringList `json:"ip_whitelist"`
 	}
@@ -57,12 +56,8 @@ func (h *KeyHandler) CreateKey(c *gin.Context) {
 		Key:           generateAPIKey(),
 		Name:          req.Name,
 		Enabled:       true,
-		RateLimit:     req.RateLimit,
 		AllowedModels: req.AllowedModels,
 		IPWhitelist:   req.IPWhitelist,
-	}
-	if key.RateLimit == 0 {
-		key.RateLimit = 60
 	}
 
 	if err := h.keyRepo.Create(key); err != nil {

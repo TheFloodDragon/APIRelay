@@ -188,7 +188,7 @@ curl -X POST http://localhost:15722/v1/chat/completions \
 - **weighted**：按权重加权随机
   - 实现公式：`rand.Intn(totalWeight)` 映射到渠道
 - **round_robin**：轮询选择
-  - 使用 Redis 或内存计数器记录上次选择的渠道索引
+  - 使用内存计数器记录上次选择的渠道索引
 
 **配置**：
 ```yaml
@@ -300,7 +300,7 @@ GET /api/logs?limit=50&offset=0
 
 - 列表展示所有密钥（隐藏完整 Key）
 - 创建密钥：自动生成 `sk-ar-xxx`
-- 设置限流、允许模型、IP 白名单
+- 设置允许模型、IP 白名单
 - 删除密钥
 
 **后端已有接口**：
@@ -341,7 +341,6 @@ POST /api/models/redirect
 - [ ] 启用 Gin 的 `ReleaseMode`
 - [ ] 添加数据库连接池配置
 - [ ] 对高频查询添加索引（如 `request_logs.created_at`、`channels.priority`）
-- [ ] 渠道选择结果缓存（Redis，1 分钟 TTL）
 
 ### 4.2 安全加固
 
@@ -350,17 +349,6 @@ POST /api/models/redirect
 - [ ] 请求日志脱敏（不记录完整 API Key）
 - [ ] CORS 配置生产环境白名单
 - [ ] 添加请求体大小限制（防止 DoS）
-
-### 4.3 Redis 限流
-
-**实现**：
-
-1. 连接 Redis
-2. 使用 `redis.Incr` + `redis.Expire` 实现滑动窗口
-3. 中间件检查：
-   - 全局限流：`rate_limit.global`
-   - 每个 API Key 限流：`rate_limit.per_key`
-4. 超限返回 `429 Too Many Requests`
 
 ### 4.4 监控与日志
 
@@ -376,16 +364,6 @@ POST /api/models/redirect
 - [ ] 结构化日志（JSON 格式）
 - [ ] 日志轮转（使用 `lumberjack`）
 
-### 4.5 Docker 生产镜像优化
-
-- [ ] 多阶段构建：分离前端构建和后端构建
-- [ ] 使用 `alpine` 基础镜像减小体积
-- [ ] 健康检查：
-  ```dockerfile
-  HEALTHCHECK --interval=30s --timeout=3s \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:15722/api/system/health || exit 1
-  ```
-
 ### 4.6 文档编写
 
 **README.md**：
@@ -397,13 +375,9 @@ API 调度中心，支持多渠道统一管理和 OpenAI 兼容转发。
 
 ## 快速开始
 
-### Docker 部署（推荐）
+### 本地二进制部署（推荐）
 
-1. 克隆仓库：
-   ```bash
-   git clone https://github.com/TheFloodDragon/APIRelay.git
-   cd apirelay
-   ```
+1. 下载对应平台的构建产物并解压。
 
 2. 修改配置：
    ```bash
@@ -413,7 +387,7 @@ API 调度中心，支持多渠道统一管理和 OpenAI 兼容转发。
 
 3. 启动服务：
    ```bash
-   docker-compose up -d
+   ./apirelay --config config.yml
    ```
 
 4. 访问管理后台：
@@ -485,29 +459,19 @@ MIT
 - 后端：`/api/logs/stream`（WebSocket）
 - 前端：日志页面订阅，实时显示新请求
 
-### 5.2 PostgreSQL 支持
-
-- 添加 `gorm.io/driver/postgres`
-- 配置：
-  ```yaml
-  database:
-    type: postgres
-    dsn: "host=localhost user=xxx password=xxx dbname=apirelay"
-  ```
-
-### 5.3 用户体系（多租户）
+### 5.2 用户体系（多租户）
 
 - 添加 `users` 表
 - 每个用户独立管理渠道和 API Key
 - JWT 登录认证
 
-### 5.4 计费与额度
+### 5.3 计费与额度
 
 - 添加 `quotas` 表
 - 记录每个 API Key 的 Token 消耗
 - 超额自动禁用
 
-### 5.5 渠道预设模板
+### 5.4 渠道预设模板
 
 参考 CCSwitch，预设 50+ 常见渠道模板（OpenAI、Claude、Gemini、DeepSeek、讯飞星火等），一键添加。
 
@@ -542,7 +506,7 @@ MIT
 ## 技术债务与已知问题
 
 1. **前后端一体构建需要验证**：
-   - 当前 GitHub Actions 和 Dockerfile 会先构建前端，再将 `web/dist` 嵌入 Go 二进制
+   - 当前 GitHub Actions 会先构建前端，再将 `web/dist` 嵌入 Go 二进制
    - 需要通过 CI 验证单文件二进制能直接服务管理后台
    - 后续可继续优化二进制体积和构建缓存策略
 

@@ -44,7 +44,6 @@ type APIKey struct {
 	Key           string         `json:"key" gorm:"uniqueIndex;not null;size:100"`
 	Name          string         `json:"name" gorm:"size:100"`
 	Enabled       bool           `json:"enabled" gorm:"default:true;index"`
-	RateLimit     int            `json:"rate_limit" gorm:"default:60"`
 	AllowedModels JSONStringList `json:"allowed_models" gorm:"type:text"`
 	IPWhitelist   JSONStringList `json:"ip_whitelist" gorm:"type:text"`
 	LastUsed      *time.Time     `json:"last_used"`

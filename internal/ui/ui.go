@@ -7,7 +7,7 @@ import (
 
 // Assets 保存构建后的前端静态资源。
 //
-// CI 和 Docker 构建会先执行 web 构建，然后把 web/dist 复制到 internal/ui/assets，
+// CI 构建会先执行 web 构建，然后把 web/dist 复制到 internal/ui/assets，
 // 最终由 go:embed 打进后端二进制，实现前后端一体发布。
 // 本地未构建前端时，assets 目录中只有占位文件，后端会自动回退到外部 static_path 或 JSON 状态页。
 //

@@ -10,13 +10,6 @@ database:
   type: sqlite
   path: ./data/apirelay.db
 
-redis:
-  enabled: false
-  host: localhost
-  port: 6379
-  password: ""
-  db: 0
-
 auth:
   # 管理后台访问密钥（请修改为强密码）
   admin_key: change-me-in-production
@@ -33,12 +26,6 @@ scheduler:
   health_check_interval: 60
   unhealthy_threshold: 3
   
-# 限流配置
-rate_limit:
-  enabled: false
-  global: 1000
-  per_key: 60
-
 # 日志配置
 logging:
   level: info

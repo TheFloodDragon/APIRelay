@@ -232,15 +232,8 @@ type RouteConfig struct {
 
 // saveToDatabase 保存到数据库
 func (r *ModelRouter) saveToDatabase() error {
-	// 使用 SystemConfig 表存储路由配置
-	config := RouteConfig{
-		Aliases:   r.aliases,
-		Redirects: r.redirects,
-		Groups:    r.groups,
-	}
-
-	// 这里需要序列化并保存到 system_config 表
-	// 实际实现需要调用 repository
+	// TODO: 使用 SystemConfig 表持久化路由配置。
+	// 当前先保存在内存中，避免未完成的持久化逻辑影响编译和运行。
 	return nil
 }
 

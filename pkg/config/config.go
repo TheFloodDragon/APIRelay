@@ -10,10 +10,8 @@ import (
 type Config struct {
 	Server     ServerConfig     `mapstructure:"server"`
 	Database   DatabaseConfig   `mapstructure:"database"`
-	Redis      RedisConfig      `mapstructure:"redis"`
 	Auth       AuthConfig       `mapstructure:"auth"`
 	Scheduler  SchedulerConfig  `mapstructure:"scheduler"`
-	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`
 	Logging    LoggingConfig    `mapstructure:"logging"`
 	Monitoring MonitoringConfig `mapstructure:"monitoring"`
 	CORS       CORSConfig       `mapstructure:"cors"`
@@ -31,14 +29,6 @@ type DatabaseConfig struct {
 	Path string `mapstructure:"path"`
 }
 
-type RedisConfig struct {
-	Enabled  bool   `mapstructure:"enabled"`
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
-}
-
 type AuthConfig struct {
 	AdminKey     string `mapstructure:"admin_key"`
 	RequireLogin bool   `mapstructure:"require_login"`
@@ -49,12 +39,6 @@ type SchedulerConfig struct {
 	Strategy            string `mapstructure:"strategy"`
 	HealthCheckInterval int    `mapstructure:"health_check_interval"`
 	UnhealthyThreshold  int    `mapstructure:"unhealthy_threshold"`
-}
-
-type RateLimitConfig struct {
-	Enabled bool `mapstructure:"enabled"`
-	Global  int  `mapstructure:"global"`
-	PerKey  int  `mapstructure:"per_key"`
 }
 
 type LoggingConfig struct {
@@ -157,11 +141,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.type", "sqlite")
 	v.SetDefault("database.path", "./data/apirelay.db")
 
-	v.SetDefault("redis.enabled", false)
-	v.SetDefault("redis.host", "localhost")
-	v.SetDefault("redis.port", 6379)
-	v.SetDefault("redis.db", 0)
-
 	v.SetDefault("auth.admin_key", "change-me-in-production")
 	v.SetDefault("auth.require_login", false)
 	v.SetDefault("auth.jwt_secret", "your-secret-key")
@@ -169,10 +148,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("scheduler.strategy", "priority")
 	v.SetDefault("scheduler.health_check_interval", 60)
 	v.SetDefault("scheduler.unhealthy_threshold", 3)
-
-	v.SetDefault("rate_limit.enabled", false)
-	v.SetDefault("rate_limit.global", 1000)
-	v.SetDefault("rate_limit.per_key", 60)
 
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
