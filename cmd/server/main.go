@@ -4,9 +4,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/yourusername/apirelay/internal/api"
 	"github.com/yourusername/apirelay/internal/model"
+	"github.com/yourusername/apirelay/internal/repository"
+	"github.com/yourusername/apirelay/internal/service"
 	"github.com/yourusername/apirelay/pkg/config"
 )
 
@@ -30,6 +35,14 @@ func main() {
 	}
 	defer model.CloseDB()
 
+	// 初始化仓库层
+	channelRepo := repository.NewChannelRepository(model.DB)
+
+	// 启动健康检查服务
+	healthChecker := service.NewHealthChecker(channelRepo, cfg.Scheduler.HealthCheckInterval)
+	healthChecker.Start()
+	defer healthChecker.Stop()
+
 	// 设置路由
 	r := api.SetupRouter(model.DB, cfg)
 
@@ -39,7 +52,17 @@ func main() {
 	log.Printf("管理接口: http://%s/api", addr)
 	log.Printf("OpenAI兼容接口: http://%s/v1", addr)
 
-	if err := r.Run(addr); err != nil {
-		log.Fatalf("启动服务失败: %v", err)
-	}
+	// 优雅关闭
+	go func() {
+		if err := r.Run(addr); err != nil {
+			log.Fatalf("启动服务失败: %v", err)
+		}
+	}()
+
+	// 等待中断信号
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("正在关闭服务...")
 }
