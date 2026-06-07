@@ -20,6 +20,8 @@ logs/
 # Environment files
 .env
 .env.local
+config.yml
+config.yaml
 config.local.yaml
 
 # IDE

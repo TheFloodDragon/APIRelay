@@ -2,10 +2,10 @@ server:
   host: 127.0.0.1
   port: 15722
   mode: release
-  
+
   # 静态文件服务（前端）
   static_path: ./web/dist
-  
+
 database:
   type: sqlite
   path: ./data/apirelay.db
@@ -13,10 +13,10 @@ database:
 auth:
   # 管理后台访问密钥（请修改为强密码）
   admin_key: change-me-in-production
-  
+
   # 是否需要登录
   require_login: false
-  
+
   # JWT密钥（如果启用登录）
   jwt_secret: your-secret-key
 
@@ -25,7 +25,7 @@ scheduler:
   strategy: priority  # priority, weighted, random, round_robin
   health_check_interval: 60
   unhealthy_threshold: 3
-  
+
 # 日志配置
 logging:
   level: info

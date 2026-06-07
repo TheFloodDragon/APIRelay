@@ -1,8 +1,10 @@
 package config
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/viper"
 )
@@ -70,6 +72,9 @@ type CORSConfig struct {
 
 var GlobalConfig *Config
 
+//go:embed default_config.yml
+var defaultConfigTemplate []byte
+
 // Load 加载配置文件
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
@@ -78,13 +83,16 @@ func Load(configPath string) (*Config, error) {
 	setDefaults(v)
 
 	// 读取配置文件。默认优先使用 config.yml，并兼容旧的 config.yaml。
-	if configPath != "" {
-		v.SetConfigFile(configPath)
-	} else {
-		v.SetConfigFile(defaultConfigFile())
+	configFile := configPath
+	if configFile == "" {
+		configFile = defaultConfigFile()
 	}
+	v.SetConfigFile(configFile)
 
-	// 如果配置文件不存在，使用默认值
+	// 如果配置文件不存在，先生成默认 config.yml，方便发布产物开箱即用。
+	if err := ensureConfigFile(configFile); err != nil {
+		return nil, err
+	}
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("读取配置文件失败: %w", err)
@@ -130,6 +138,31 @@ func defaultConfigFile() string {
 	}
 
 	return "config.yml"
+}
+
+func ensureConfigFile(configFile string) error {
+	if configFile == "" {
+		return nil
+	}
+
+	if _, err := os.Stat(configFile); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("检查配置文件 %s 失败: %w", configFile, err)
+	}
+
+	configDir := filepath.Dir(configFile)
+	if configDir != "." && configDir != "" {
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			return fmt.Errorf("创建配置目录 %s 失败: %w", configDir, err)
+		}
+	}
+
+	if err := os.WriteFile(configFile, defaultConfigTemplate, 0644); err != nil {
+		return fmt.Errorf("生成默认配置文件 %s 失败: %w", configFile, err)
+	}
+
+	return nil
 }
 
 func setDefaults(v *viper.Viper) {

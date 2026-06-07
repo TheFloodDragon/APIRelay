@@ -38,7 +38,7 @@
 
 ### 1.2 本地启动测试
 
-- [ ] 启动后端：`./apirelay --config config.yml.example`
+- [ ] 启动后端：`./apirelay`（首次启动会自动生成 `config.yml`）
 - [ ] 确认服务监听 `http://localhost:15722`
 - [ ] 访问健康检查：`GET /api/system/health`（应返回 200 OK）
 - [ ] 前端开发模式：`cd web && npm run dev`
@@ -379,14 +379,14 @@ API 调度中心，支持多渠道统一管理和 OpenAI 兼容转发。
 
 1. 下载对应平台的构建产物并解压。
 
-2. 修改配置：
+2. 首次启动生成默认配置：
    ```bash
-   cp config.yml.example config.yml
-   vim config.yml  # 修改 admin_key
+   ./apirelay
    ```
 
-3. 启动服务：
+3. 修改配置后重启：
    ```bash
+   vim config.yml  # 修改 admin_key
    ./apirelay --config config.yml
    ```
 
@@ -433,7 +433,7 @@ curl -X POST http://localhost:15722/v1/chat/completions \
 
 ## 配置说明
 
-见 `config.yml.example`。
+首次启动会自动生成 `config.yml`；默认模板维护在 `pkg/config/default_config.yml`。
 
 ## API 文档
 

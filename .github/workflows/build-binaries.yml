@@ -128,15 +128,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           go build -trimpath -ldflags "-s -w" -o "dist/${{ matrix.output }}" ./cmd/server
 
-      - name: Copy runtime files
-        shell: pwsh
-        run: Copy-Item config.yml.example dist/config.yml.example
-
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
         with:
           name: apirelay-${{ matrix.name }}
-          path: |
-            dist/${{ matrix.output }}
-            dist/config.yml.example
+          path: dist/${{ matrix.output }}
           if-no-files-found: error

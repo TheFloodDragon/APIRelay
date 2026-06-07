@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -516,17 +517,51 @@ func (h *RelayHandler) forwardStreamRequest(c *gin.Context, channel *model.Chann
 
 // logRequest 记录请求日志
 func (h *RelayHandler) logRequest(channelID *uint, modelName, method, path string, statusCode, latency int, duration time.Duration, errMsg, ip string) {
-	log := &model.RequestLog{
+	latencyMS := int(duration.Milliseconds())
+	requestLog := &model.RequestLog{
 		ChannelID:  channelID,
 		Model:      modelName,
 		Method:     method,
 		Path:       path,
 		StatusCode: statusCode,
-		Latency:    int(duration.Milliseconds()),
+		Latency:    latencyMS,
 		Error:      errMsg,
 		IP:         ip,
 	}
-	_ = h.logRepo.Create(log)
+
+	logErr := h.logRepo.Create(requestLog)
+	if logErr != nil {
+		log.Printf("[MODEL] model=%s channel_id=%v method=%s path=%s status=%d latency=%dms ip=%s error=%q log_error=%q",
+			modelName,
+			logChannelID(channelID),
+			method,
+			path,
+			statusCode,
+			latencyMS,
+			ip,
+			errMsg,
+			logErr.Error(),
+		)
+		return
+	}
+
+	log.Printf("[MODEL] model=%s channel_id=%v method=%s path=%s status=%d latency=%dms ip=%s error=%q",
+		modelName,
+		logChannelID(channelID),
+		method,
+		path,
+		statusCode,
+		latencyMS,
+		ip,
+		errMsg,
+	)
+}
+
+func logChannelID(channelID *uint) interface{} {
+	if channelID == nil {
+		return "-"
+	}
+	return *channelID
 }
 
 func failureDetails(err error) string {
