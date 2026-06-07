@@ -109,6 +109,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1Group.Use(middleware.APIKeyAuthMiddleware(keyRepo))
 	{
 		v1Group.GET("/models", relayHandler.GetModels)
+		v1Group.POST("/responses", relayHandler.Responses)
 		v1Group.POST("/chat/completions", relayHandler.ChatCompletions)
 		v1Group.POST("/completions", relayHandler.Completions)
 		v1Group.POST("/embeddings", relayHandler.Embeddings)
@@ -224,5 +225,11 @@ func serveEmbeddedFile(c *gin.Context, embeddedFS fs.FS, filePath string) bool {
 }
 
 func isAPIRoute(path string) bool {
-	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/v1/")
+	return strings.HasPrefix(path, "/api/") ||
+		strings.HasPrefix(path, "/v1/") ||
+		path == "/models" ||
+		path == "/responses" ||
+		path == "/chat/completions" ||
+		path == "/completions" ||
+		path == "/embeddings"
 }
