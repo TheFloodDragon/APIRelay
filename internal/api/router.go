@@ -12,6 +12,7 @@ import (
 	"github.com/TheFloodDragon/APIRelay/internal/api/handler"
 	"github.com/TheFloodDragon/APIRelay/internal/api/middleware"
 	"github.com/TheFloodDragon/APIRelay/internal/repository"
+	"github.com/TheFloodDragon/APIRelay/internal/router"
 	"github.com/TheFloodDragon/APIRelay/internal/scheduler"
 	"github.com/TheFloodDragon/APIRelay/internal/service"
 	"github.com/TheFloodDragon/APIRelay/internal/ui"
@@ -42,13 +43,17 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	channelService := service.NewChannelService(channelRepo, modelRepo)
 	schedulerService := scheduler.NewScheduler(channelRepo, cfg.Scheduler.Strategy)
 
+	// 模型路由器（聚合中转站核心）
+	modelRouter := router.NewModelRouter(modelRepo)
+
 	// 处理器
 	systemHandler := handler.NewSystemHandler()
 	channelHandler := handler.NewChannelHandler(channelService)
 	modelHandler := handler.NewModelHandler(modelRepo)
 	keyHandler := handler.NewKeyHandler(keyRepo)
 	logHandler := handler.NewLogHandler(logRepo)
-	relayHandler := handler.NewRelayHandler(schedulerService, logRepo, modelRepo)
+	relayHandler := handler.NewRelayHandler(schedulerService, logRepo, modelRepo, modelRouter)
+	routeHandler := handler.NewRouteHandler(modelRouter)
 
 	// 根路径和前端静态资源
 	setupStaticRoutes(r, cfg)
@@ -87,6 +92,16 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 
 		// 日志查询
 		apiGroup.GET("/logs", logHandler.GetLogs)
+
+		// 模型路由管理（聚合中转站功能）
+		apiGroup.GET("/routes", routeHandler.GetAllRoutes)
+		apiGroup.POST("/routes/aliases", routeHandler.SetAlias)
+		apiGroup.DELETE("/routes/aliases/:alias", routeHandler.DeleteAlias)
+		apiGroup.POST("/routes/redirects", routeHandler.SetRedirect)
+		apiGroup.DELETE("/routes/redirects/:source", routeHandler.DeleteRedirect)
+		apiGroup.POST("/routes/groups", routeHandler.SetGroup)
+		apiGroup.DELETE("/routes/groups/:group", routeHandler.DeleteGroup)
+		apiGroup.POST("/routes/reload", routeHandler.ReloadRoutes)
 	}
 
 	// OpenAI兼容API
@@ -112,7 +127,7 @@ func setupStaticRoutes(r *gin.Engine, cfg *config.Config) {
 		return
 	}
 
-	// 发布构建时，GitHub Actions / Docker 会把 web/dist 嵌入二进制，实现前后端一体。
+	// 发布构建时，GitHub Actions 会把 web/dist 嵌入二进制，实现前后端一体。
 	if embeddedFS, ok := ui.EmbeddedFS(); ok {
 		setupEmbeddedStaticRoutes(r, embeddedFS)
 		return

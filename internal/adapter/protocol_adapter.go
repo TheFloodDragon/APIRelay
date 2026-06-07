@@ -96,46 +96,6 @@ type OpenAIUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-// AnthropicAdapter Claude 协议适配器。
-// 当前先保留为轻量骨架，后续会在这里实现 OpenAI <-> Anthropic 的完整格式转换。
-type AnthropicAdapter struct{}
-
-func (a *AnthropicAdapter) ConvertRequest(openaiReq interface{}) (interface{}, error) {
-	return openaiReq, nil
-}
-
-func (a *AnthropicAdapter) ConvertResponse(targetResp io.Reader) ([]byte, error) {
-	return io.ReadAll(targetResp)
-}
-
-func (a *AnthropicAdapter) ConvertStreamChunk(targetChunk []byte) ([]byte, error) {
-	return targetChunk, nil
-}
-
-func (a *AnthropicAdapter) NeedsConversion() bool {
-	return true
-}
-
-// GeminiAdapter Gemini 协议适配器。
-// 当前先保留为轻量骨架，后续会在这里实现 OpenAI <-> Gemini 的完整格式转换。
-type GeminiAdapter struct{}
-
-func (a *GeminiAdapter) ConvertRequest(openaiReq interface{}) (interface{}, error) {
-	return openaiReq, nil
-}
-
-func (a *GeminiAdapter) ConvertResponse(targetResp io.Reader) ([]byte, error) {
-	return io.ReadAll(targetResp)
-}
-
-func (a *GeminiAdapter) ConvertStreamChunk(targetChunk []byte) ([]byte, error) {
-	return targetChunk, nil
-}
-
-func (a *GeminiAdapter) NeedsConversion() bool {
-	return true
-}
-
 // DecodeJSON 解码 JSON 到目标结构
 func DecodeJSON(data []byte, v interface{}) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
