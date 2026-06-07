@@ -12,7 +12,10 @@
     </div>
 
     <div class="badge-row">
-      <el-tag :type="healthMeta.type" effect="light" round>{{ healthMeta.label }}</el-tag>
+      <el-tag :type="healthMeta.type" effect="light" round>
+        <span class="health-indicator" :class="healthMeta.pulseClass"></span>
+        {{ healthMeta.label }}
+      </el-tag>
       <el-tag type="info" effect="plain" round>{{ channel.type || 'openai_compatible' }}</el-tag>
       <el-tag :type="channel.enabled ? 'success' : 'info'" effect="plain" round>
         {{ channel.enabled ? '已启用' : '已停用' }}
@@ -20,42 +23,51 @@
     </div>
 
     <div class="channel-metrics">
-      <div>
+      <div class="metric-item">
         <span>优先级</span>
         <strong>{{ channel.priority }}</strong>
       </div>
-      <div>
+      <div class="metric-item">
         <span>权重</span>
         <strong>{{ channel.weight }}</strong>
       </div>
-      <div>
+      <div class="metric-item">
         <span>超时</span>
         <strong>{{ timeoutSeconds }}s</strong>
       </div>
-      <div>
+      <div class="metric-item">
         <span>重试</span>
         <strong>{{ channel.max_retries }}</strong>
       </div>
     </div>
 
     <div class="model-preview">
-      <div class="section-label">上游模型</div>
+      <div class="section-label">上游模型 ({{ totalModels }})</div>
       <div v-if="visibleModels.length" class="model-tags">
-        <el-tag v-for="model in visibleModels" :key="model" effect="plain">{{ model }}</el-tag>
-        <el-tag v-if="hiddenModelCount > 0" effect="plain">+{{ hiddenModelCount }}</el-tag>
+        <el-tag v-for="model in visibleModels" :key="model" effect="plain" size="small">
+          {{ model }}
+        </el-tag>
+        <el-tag v-if="hiddenModelCount > 0" effect="plain" size="small" type="info">
+          +{{ hiddenModelCount }}
+        </el-tag>
       </div>
       <p v-else class="empty-hint">暂无模型,点击"获取模型"同步。</p>
     </div>
-      <p v-else class="empty-hint">暂无模型，点击“获取模型”同步。</p>
-    </div>
 
     <div class="channel-foot">
-      <span>最后检查：{{ lastCheckText }}</span>
+      <span class="last-check">
+        <el-icon style="margin-right: 4px"><Clock /></el-icon>
+        {{ lastCheckText }}
+      </span>
       <div class="channel-actions">
         <el-button size="small" :icon="Connection" @click="$emit('test', channel)">测试</el-button>
-        <el-button size="small" :icon="Refresh" @click="$emit('fetch-models', channel)">获取模型</el-button>
+        <el-button size="small" :icon="Refresh" @click="$emit('fetch-models', channel)">
+          获取模型
+        </el-button>
         <el-button size="small" :icon="EditPen" @click="$emit('edit', channel)">编辑</el-button>
-        <el-button size="small" type="danger" :icon="Delete" @click="$emit('delete', channel)">删除</el-button>
+        <el-button size="small" type="danger" :icon="Delete" @click="$emit('delete', channel)">
+          删除
+        </el-button>
       </div>
     </div>
   </article>
@@ -63,13 +75,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Connection, Delete, EditPen, Rank, Refresh } from '@element-plus/icons-vue'
+import { Connection, Delete, EditPen, Rank, Refresh, Clock } from '@element-plus/icons-vue'
 import type { Channel } from '@/api/channels'
 
-const props = defineProps<{
-  channel: Channel
-}>()
-
+const props = defineProps<{ channel: Channel }>()
 const emit = defineEmits<{
   toggle: [channel: Channel, enabled: boolean]
   test: [channel: Channel]
@@ -78,36 +87,108 @@ const emit = defineEmits<{
   'fetch-models': [channel: Channel]
 }>()
 
-type TagType = 'success' | 'danger' | 'info'
-
-const visibleModels = computed(() => (props.channel.models || []).slice(0, 5))
-const hiddenModelCount = computed(() => Math.max((props.channel.models?.length || 0) - visibleModels.value.length, 0))
-const timeoutSeconds = computed(() => Math.round((props.channel.timeout || 0) / 1000))
-const healthMeta = computed<{ label: string; type: TagType }>(() => {
-  switch ((props.channel.health_status || 'unknown').toLowerCase()) {
-    case 'healthy':
-      return { label: '健康', type: 'success' }
-    case 'unhealthy':
-      return { label: '异常', type: 'danger' }
-    default:
-      return { label: '未知', type: 'info' }
-  }
+const healthMeta = computed(() => {
+  const status = props.channel.health_status
+  if (status === 'healthy')
+    return { label: '健康', type: 'success' as const, pulseClass: 'pulse-success' }
+  if (status === 'unhealthy')
+    return { label: '异常', type: 'danger' as const, pulseClass: 'pulse-danger' }
+  return { label: '未知', type: 'warning' as const, pulseClass: 'pulse-warning' }
 })
-const lastCheckText = computed(() => formatDate(props.channel.last_check))
+
+const timeoutSeconds = computed(() => Math.round((props.channel.timeout || 60000) / 1000))
+const totalModels = computed(() => props.channel.models?.length || 0)
+const visibleModels = computed(() => (props.channel.models || []).slice(0, 6))
+const hiddenModelCount = computed(() => Math.max(0, totalModels.value - 6))
+
+const lastCheckText = computed(() => {
+  if (!props.channel.last_check) return '从未检查'
+  const date = new Date(props.channel.last_check)
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+  const minutes = Math.floor(diff / 60000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  return `${days} 天前`
+})
 
 function onToggle(value: boolean | string | number) {
   emit('toggle', props.channel, Boolean(value))
 }
-
-function formatDate(value?: string | null) {
-  if (!value) return '从未检查'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  }).format(date)
-}
 </script>
+
+<style scoped>
+.health-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.pulse-success {
+  animation: pulse-success 2s ease-in-out infinite;
+}
+
+.pulse-danger {
+  animation: pulse-danger 2s ease-in-out infinite;
+}
+
+.pulse-warning {
+  animation: pulse-warning 2s ease-in-out infinite;
+}
+
+@keyframes pulse-success {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(18, 183, 106, 0.7);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 0 4px rgba(18, 183, 106, 0);
+  }
+}
+
+@keyframes pulse-danger {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(240, 68, 56, 0.7);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 0 4px rgba(240, 68, 56, 0);
+  }
+}
+
+@keyframes pulse-warning {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(247, 144, 9, 0.7);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 0 4px rgba(247, 144, 9, 0);
+  }
+}
+
+.metric-item {
+  transition: var(--transition-fast);
+}
+
+.metric-item:hover {
+  transform: translateY(-2px);
+  background: #ffffff;
+}
+
+.last-check {
+  display: flex;
+  align-items: center;
+}
+</style>

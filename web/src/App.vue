@@ -18,7 +18,8 @@
         </nav>
 
         <div class="sidebar-footer">
-          <p>统一管理渠道、模型与请求观测数据。</p>
+          <strong>聚合中转站</strong>
+          <p>统一管理渠道、模型路由与请求观测数据。</p>
         </div>
       </aside>
 
@@ -36,12 +37,19 @@
               show-password
               @change="saveAdminKey"
             />
-            <el-tag type="success" effect="light">在线</el-tag>
+            <el-tag type="success" effect="light" class="status-tag">
+              <span class="online-dot"></span>
+              在线
+            </el-tag>
           </div>
         </header>
 
         <main class="main">
-          <RouterView />
+          <RouterView v-slot="{ Component }">
+            <Transition name="page" mode="out-in">
+              <component :is="Component" />
+            </Transition>
+          </RouterView>
         </main>
       </div>
     </div>
