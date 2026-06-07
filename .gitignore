@@ -1,2 +1,42 @@
 .narrafork/
 .worktrees/
+
+# Build artifacts
+apirelay
+apirelay.exe
+*.exe
+*.dll
+*.so
+*.dylib
+dist/
+build/
+
+# Data and logs
+data/
+logs/
+*.db
+*.log
+
+# Environment files
+.env
+.env.local
+config.local.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Node
+node_modules/
+web/dist/
+web/.vite/

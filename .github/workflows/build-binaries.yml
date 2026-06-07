@@ -1,0 +1,100 @@
+name: Build Release Binaries
+
+on:
+  push:
+    paths-ignore:
+      - '.narrafork/**'
+      - '.worktrees/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-amd64
+            runner: windows-latest
+            goos: windows
+            goarch: amd64
+            output: apirelay-windows-amd64.exe
+            needs_msys2: true
+
+          - name: linux-amd64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            output: apirelay-linux-amd64
+            needs_linux_deps: true
+
+          - name: darwin-amd64
+            runner: macos-13
+            goos: darwin
+            goarch: amd64
+            output: apirelay-darwin-amd64
+
+          - name: darwin-arm64
+            runner: macos-14
+            goos: darwin
+            goarch: arm64
+            output: apirelay-darwin-arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21.x'
+          cache: true
+
+      - name: Install Linux build dependencies
+        if: matrix.needs_linux_deps == true
+        run: sudo apt-get update && sudo apt-get install -y gcc pkg-config
+
+      - name: Set up MSYS2 for SQLite CGO
+        if: matrix.needs_msys2 == true
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+
+      - name: Add MinGW to PATH
+        if: matrix.needs_msys2 == true
+        shell: pwsh
+        run: echo "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Build binary
+        shell: pwsh
+        env:
+          CGO_ENABLED: '1'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -ldflags "-s -w" -o "dist/${{ matrix.output }}" ./cmd/server
+
+      - name: Copy example config
+        shell: pwsh
+        run: Copy-Item config.yaml.example dist/config.yaml.example
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apirelay-${{ matrix.name }}
+          path: |
+            dist/${{ matrix.output }}
+            dist/config.yaml.example
+          if-no-files-found: error

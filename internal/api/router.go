@@ -1,0 +1,102 @@
+package api
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourusername/apirelay/internal/api/handler"
+	"github.com/yourusername/apirelay/internal/api/middleware"
+	"github.com/yourusername/apirelay/internal/repository"
+	"github.com/yourusername/apirelay/internal/scheduler"
+	"github.com/yourusername/apirelay/internal/service"
+	"github.com/yourusername/apirelay/pkg/config"
+	"gorm.io/gorm"
+)
+
+// SetupRouter 设置路由
+func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
+	gin.SetMode(cfg.Server.Mode)
+
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.LoggerMiddleware())
+
+	if cfg.CORS.Enabled {
+		r.Use(middleware.CORSMiddleware())
+	}
+
+	// 仓库层
+	channelRepo := repository.NewChannelRepository(db)
+	modelRepo := repository.NewModelRepository(db)
+	keyRepo := repository.NewAPIKeyRepository(db)
+	logRepo := repository.NewLogRepository(db)
+
+	// 服务层
+	channelService := service.NewChannelService(channelRepo, modelRepo)
+	schedulerService := scheduler.NewScheduler(channelRepo, cfg.Scheduler.Strategy)
+
+	// 处理器
+	systemHandler := handler.NewSystemHandler()
+	channelHandler := handler.NewChannelHandler(channelService)
+	modelHandler := handler.NewModelHandler(modelRepo)
+	keyHandler := handler.NewKeyHandler(keyRepo)
+	logHandler := handler.NewLogHandler(logRepo)
+	relayHandler := handler.NewRelayHandler(schedulerService, logRepo, modelRepo)
+
+	// 根路径
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"name":    "APIRelay",
+			"version": "1.0.0",
+			"status":  "running",
+		})
+	})
+
+	// 管理API
+	apiGroup := r.Group("/api")
+	{
+		// 健康检查无需认证
+		apiGroup.GET("/system/health", systemHandler.Health)
+		
+		// 其他管理接口需要认证
+		apiGroup.Use(middleware.AuthMiddleware())
+		
+		// 系统管理
+		apiGroup.GET("/system/info", systemHandler.Info)
+
+		// 渠道管理
+		apiGroup.GET("/channels", channelHandler.GetChannels)
+		apiGroup.POST("/channels", channelHandler.CreateChannel)
+		apiGroup.PUT("/channels/reorder", channelHandler.ReorderChannels)
+		apiGroup.GET("/channels/:id", channelHandler.GetChannel)
+		apiGroup.PUT("/channels/:id", channelHandler.UpdateChannel)
+		apiGroup.DELETE("/channels/:id", channelHandler.DeleteChannel)
+		apiGroup.POST("/channels/:id/models", channelHandler.FetchModels)
+		apiGroup.POST("/channels/:id/test", channelHandler.TestChannel)
+
+		// 模型管理
+		apiGroup.GET("/models", modelHandler.GetModels)
+		apiGroup.GET("/models/available", modelHandler.GetAvailableModels)
+		apiGroup.DELETE("/models/:id", modelHandler.DeleteModel)
+
+		// API密钥管理
+		apiGroup.GET("/keys", keyHandler.GetKeys)
+		apiGroup.POST("/keys", keyHandler.CreateKey)
+		apiGroup.DELETE("/keys/:id", keyHandler.DeleteKey)
+
+		// 日志查询
+		apiGroup.GET("/logs", logHandler.GetLogs)
+	}
+
+	// OpenAI兼容API
+	v1Group := r.Group("/v1")
+	v1Group.Use(middleware.APIKeyAuthMiddleware(keyRepo))
+	{
+		v1Group.GET("/models", relayHandler.GetModels)
+		v1Group.POST("/chat/completions", relayHandler.ChatCompletions)
+		v1Group.POST("/completions", relayHandler.Completions)
+		v1Group.POST("/embeddings", relayHandler.Embeddings)
+	}
+
+	return r
+}
