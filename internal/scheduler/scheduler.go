@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"fmt"
+	"math/rand"
+	"sync"
 
 	"github.com/yourusername/apirelay/internal/model"
 	"github.com/yourusername/apirelay/internal/repository"
@@ -11,6 +13,8 @@ import (
 type Scheduler struct {
 	channelRepo *repository.ChannelRepository
 	strategy    string
+	mu          sync.Mutex
+	rrCounters  map[string]int
 }
 
 func NewScheduler(channelRepo *repository.ChannelRepository, strategy string) *Scheduler {
@@ -20,6 +24,7 @@ func NewScheduler(channelRepo *repository.ChannelRepository, strategy string) *S
 	return &Scheduler{
 		channelRepo: channelRepo,
 		strategy:    strategy,
+		rrCounters:  make(map[string]int),
 	}
 }
 
@@ -46,16 +51,14 @@ func (s *Scheduler) SelectChannel(modelName string) (*model.Channel, error) {
 		return nil, fmt.Errorf("所有支持模型 %s 的渠道都不可用", modelName)
 	}
 
-	// 按优先级策略选择
+	// 按策略选择
 	switch s.strategy {
-	case "priority":
-		return &healthyChannels[0], nil
 	case "weighted":
-		// TODO: 实现加权随机选择
-		return &healthyChannels[0], nil
+		return selectWeighted(healthyChannels), nil
 	case "round_robin":
-		// TODO: 实现轮询选择
-		return &healthyChannels[0], nil
+		return s.selectRoundRobin(modelName, healthyChannels), nil
+	case "priority":
+		fallthrough
 	default:
 		return &healthyChannels[0], nil
 	}
@@ -76,5 +79,80 @@ func (s *Scheduler) GetAllChannelsForModel(modelName string) ([]model.Channel, e
 		}
 	}
 
-	return healthyChannels, nil
+	return s.orderChannels(modelName, healthyChannels), nil
+}
+
+func selectWeighted(channels []model.Channel) *model.Channel {
+	if len(channels) == 0 {
+		return nil
+	}
+
+	totalWeight := 0
+	for _, ch := range channels {
+		if ch.Weight > 0 {
+			totalWeight += ch.Weight
+		}
+	}
+
+	if totalWeight <= 0 {
+		return &channels[0]
+	}
+
+	pick := rand.Intn(totalWeight)
+	current := 0
+	for i := range channels {
+		weight := channels[i].Weight
+		if weight <= 0 {
+			continue
+		}
+		current += weight
+		if pick < current {
+			return &channels[i]
+		}
+	}
+
+	return &channels[0]
+}
+
+func (s *Scheduler) selectRoundRobin(modelName string, channels []model.Channel) *model.Channel {
+	if len(channels) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	index := s.rrCounters[modelName] % len(channels)
+	s.rrCounters[modelName] = index + 1
+	return &channels[index]
+}
+
+func (s *Scheduler) orderChannels(modelName string, channels []model.Channel) []model.Channel {
+	if len(channels) <= 1 {
+		return channels
+	}
+
+	var selected *model.Channel
+	switch s.strategy {
+	case "weighted":
+		selected = selectWeighted(channels)
+	case "round_robin":
+		selected = s.selectRoundRobin(modelName, channels)
+	default:
+		selected = &channels[0]
+	}
+
+	if selected == nil {
+		return channels
+	}
+
+	ordered := make([]model.Channel, 0, len(channels))
+	ordered = append(ordered, *selected)
+	for _, ch := range channels {
+		if ch.ID != selected.ID {
+			ordered = append(ordered, ch)
+		}
+	}
+
+	return ordered
 }

@@ -2,6 +2,9 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourusername/apirelay/internal/api/handler"
@@ -43,14 +46,8 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	logHandler := handler.NewLogHandler(logRepo)
 	relayHandler := handler.NewRelayHandler(schedulerService, logRepo, modelRepo)
 
-	// 根路径
-	r.GET("/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"name":    "APIRelay",
-			"version": "1.0.0",
-			"status":  "running",
-		})
-	})
+	// 根路径和前端静态资源
+	setupStaticRoutes(r, cfg)
 
 	// 管理API
 	apiGroup := r.Group("/api")
@@ -99,4 +96,45 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	}
 
 	return r
+}
+
+func setupStaticRoutes(r *gin.Engine, cfg *config.Config) {
+	staticPath := cfg.Server.StaticPath
+	indexPath := filepath.Join(staticPath, "index.html")
+
+	if _, err := os.Stat(indexPath); err != nil {
+		r.GET("/", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{
+				"name":    "APIRelay",
+				"version": "1.0.0",
+				"status":  "running",
+			})
+		})
+		return
+	}
+
+	assetsPath := filepath.Join(staticPath, "assets")
+	if _, err := os.Stat(assetsPath); err == nil {
+		r.Static("/assets", assetsPath)
+	}
+
+	r.GET("/", func(c *gin.Context) {
+		c.File(indexPath)
+	})
+
+	r.NoRoute(func(c *gin.Context) {
+		requestPath := c.Request.URL.Path
+		if strings.HasPrefix(requestPath, "/api/") || strings.HasPrefix(requestPath, "/v1/") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+
+		filePath := filepath.Join(staticPath, strings.TrimPrefix(requestPath, "/"))
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+			c.File(filePath)
+			return
+		}
+
+		c.File(indexPath)
+	})
 }
