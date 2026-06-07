@@ -32,6 +32,9 @@ func (s *ChannelService) GetChannel(id uint) (*model.Channel, error) {
 
 // CreateChannel 创建渠道
 func (s *ChannelService) CreateChannel(channel *model.Channel) error {
+	if channel.Type == "" {
+		channel.Type = "openai_compatible"
+	}
 	if channel.Timeout == 0 {
 		channel.Timeout = 60000
 	}

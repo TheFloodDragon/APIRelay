@@ -16,11 +16,11 @@ type ModelFetcher interface {
 // GetModelFetcher 获取模型获取器工厂方法
 func GetModelFetcher(channelType, apiKey, baseURL string) ModelFetcher {
 	switch channelType {
-	case "openai", "openai_compatible", "deepseek", "codex":
+	case "openai", "openai_compatible", "newapi", "oneapi", "deepseek", "openrouter", "ollama", "custom", "codex":
 		return NewOpenAIFetcher(apiKey, baseURL)
-	case "anthropic":
+	case "anthropic", "claude":
 		return NewClaudeFetcher(apiKey, baseURL)
-	case "gemini":
+	case "gemini", "google":
 		return NewGeminiFetcher(apiKey, baseURL)
 	default:
 		return NewOpenAIFetcher(apiKey, baseURL)

@@ -49,13 +49,22 @@
           <el-input v-model="form.name" placeholder="如 OpenAI Primary" />
         </el-form-item>
         <el-form-item label="渠道类型">
-          <el-select v-model="form.type" style="width: 100%">
+          <el-select
+            v-model="form.type"
+            allow-create
+            filterable
+            default-first-option
+            style="width: 100%"
+          >
+            <el-option label="OpenAI Compatible / NewAPI（推荐）" value="openai_compatible" />
+            <el-option label="NewAPI" value="newapi" />
+            <el-option label="OneAPI" value="oneapi" />
             <el-option label="OpenAI" value="openai" />
-            <el-option label="OpenAI兼容" value="openai_compatible" />
-            <el-option label="Anthropic Claude" value="anthropic" />
-            <el-option label="Google Gemini" value="gemini" />
             <el-option label="DeepSeek" value="deepseek" />
-            <el-option label="Codex" value="codex" />
+            <el-option label="OpenRouter" value="openrouter" />
+            <el-option label="Anthropic 官方" value="anthropic" />
+            <el-option label="Gemini 官方" value="gemini" />
+            <el-option label="自定义" value="custom" />
           </el-select>
         </el-form-item>
         <el-form-item label="API Key">
@@ -121,7 +130,7 @@ const adminKey = ref(localStorage.getItem('apirelay_admin_key') || 'change-me-in
 
 const form = reactive<Partial<Channel>>({
   name: '',
-  type: 'openai',
+  type: 'openai_compatible',
   api_key: '',
   base_url: '',
   models: [],
@@ -155,7 +164,7 @@ async function loadChannels() {
 function resetForm() {
   Object.assign(form, {
     name: '',
-    type: 'openai',
+    type: 'openai_compatible',
     api_key: '',
     base_url: '',
     models: [],

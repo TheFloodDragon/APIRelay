@@ -12,6 +12,8 @@ import (
 	"github.com/TheFloodDragon/APIRelay/internal/api/handler"
 	"github.com/TheFloodDragon/APIRelay/internal/api/middleware"
 	"github.com/TheFloodDragon/APIRelay/internal/repository"
+	relayclient "github.com/TheFloodDragon/APIRelay/internal/relay/client"
+	relaycontroller "github.com/TheFloodDragon/APIRelay/internal/relay/controller"
 	"github.com/TheFloodDragon/APIRelay/internal/router"
 	"github.com/TheFloodDragon/APIRelay/internal/scheduler"
 	"github.com/TheFloodDragon/APIRelay/internal/service"
@@ -52,7 +54,14 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	modelHandler := handler.NewModelHandler(modelRepo)
 	keyHandler := handler.NewKeyHandler(keyRepo)
 	logHandler := handler.NewLogHandler(logRepo)
-	relayHandler := handler.NewRelayHandler(schedulerService, logRepo, modelRepo, modelRouter)
+	relayHTTPClient := relayclient.NewHTTPClient()
+	relayController := relaycontroller.NewRelayController(
+		schedulerService,
+		modelRouter,
+		relayHTTPClient,
+		logRepo,
+		modelRepo,
+	)
 	routeHandler := handler.NewRouteHandler(modelRouter)
 
 	// 根路径和前端静态资源
@@ -108,11 +117,11 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	v1Group := r.Group("/v1")
 	v1Group.Use(middleware.APIKeyAuthMiddleware(keyRepo))
 	{
-		v1Group.GET("/models", relayHandler.GetModels)
-		v1Group.POST("/responses", relayHandler.Responses)
-		v1Group.POST("/chat/completions", relayHandler.ChatCompletions)
-		v1Group.POST("/completions", relayHandler.Completions)
-		v1Group.POST("/embeddings", relayHandler.Embeddings)
+		v1Group.GET("/models", relayController.GetModels)
+		v1Group.POST("/responses", relayController.Responses)
+		v1Group.POST("/chat/completions", relayController.ChatCompletions)
+		v1Group.POST("/completions", relayController.Completions)
+		v1Group.POST("/embeddings", relayController.Embeddings)
 	}
 
 	return r
