@@ -37,7 +37,7 @@ func NewModelRouter(modelRepo *repository.ModelRepository) *ModelRouter {
 	return router
 }
 
-// ResolveModel 解析模型名称，应用别名、重定向和路由规则
+// ResolveModel 解析模型名称，应用别名、重定向、模型组和显示名映射
 func (r *ModelRouter) ResolveModel(requestedModel string) ([]string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -60,7 +60,17 @@ func (r *ModelRouter) ResolveModel(requestedModel string) ([]string, error) {
 		return groupModels, nil
 	}
 
-	// 4. 返回单一模型
+	// 4. 查找显示名对应的上游真实模型（仅启用的模型）
+	models, err := r.modelRepo.GetByDisplayName(requestedModel)
+	if err == nil && len(models) > 0 {
+		var upstreamNames []string
+		for _, m := range models {
+			upstreamNames = append(upstreamNames, m.Name)
+		}
+		return upstreamNames, nil
+	}
+
+	// 5. 返回单一模型（原样）
 	return []string{requestedModel}, nil
 }
 

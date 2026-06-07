@@ -135,7 +135,11 @@ const averageLatency = computed(() => {
   if (logs.value.length === 0) return 0
   return Math.round(logs.value.reduce((sum, item) => sum + (item.latency || 0), 0) / logs.value.length)
 })
-const uniqueModelNames = computed(() => new Set(models.value.map((item) => item.name)).size)
+const uniqueModelNames = computed(() => {
+  // 优先使用 display_name，为空时回退到 name
+  const names = models.value.map((item) => item.display_name || item.name)
+  return new Set(names).size
+})
 const maxChannelModels = computed(() => Math.max(...channels.value.map((item) => item.models?.length || 0), 1))
 const topChannels = computed(() =>
   [...channels.value]

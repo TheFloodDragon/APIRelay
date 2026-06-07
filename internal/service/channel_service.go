@@ -48,12 +48,28 @@ func (s *ChannelService) CreateChannel(channel *model.Channel) error {
 		channel.HealthStatus = "unknown"
 	}
 
-	return s.channelRepo.Create(channel)
+	if err := s.channelRepo.Create(channel); err != nil {
+		return err
+	}
+
+	// 同步手动填写的模型列表到模型表
+	if len(channel.Models) > 0 {
+		return s.modelRepo.SyncChannelModels(channel.ID, channel.Models)
+	}
+	return nil
 }
 
 // UpdateChannel 更新渠道
 func (s *ChannelService) UpdateChannel(channel *model.Channel) error {
-	return s.channelRepo.Update(channel)
+	if err := s.channelRepo.Update(channel); err != nil {
+		return err
+	}
+
+	// 同步手动填写的模型列表到模型表
+	if len(channel.Models) > 0 {
+		return s.modelRepo.SyncChannelModels(channel.ID, channel.Models)
+	}
+	return nil
 }
 
 // DeleteChannel 删除渠道
@@ -99,21 +115,8 @@ func (s *ChannelService) FetchModels(channelID uint) ([]string, error) {
 		return nil, err
 	}
 
-	// 同步到模型表
-	if err := s.modelRepo.DeleteByChannelID(channelID); err != nil {
-		return nil, err
-	}
-
-	modelRecords := make([]model.Model, 0, len(models))
-	for _, name := range models {
-		modelRecords = append(modelRecords, model.Model{
-			Name:      name,
-			ChannelID: channelID,
-			Enabled:   true,
-		})
-	}
-
-	if err := s.modelRepo.CreateBatch(modelRecords); err != nil {
+	// 使用新的同步方法，保留现有模型的元数据
+	if err := s.modelRepo.SyncChannelModels(channelID, models); err != nil {
 		return nil, err
 	}
 

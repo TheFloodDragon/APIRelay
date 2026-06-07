@@ -39,11 +39,13 @@
     </div>
 
     <div class="model-preview">
-      <div class="section-label">模型</div>
+      <div class="section-label">上游模型</div>
       <div v-if="visibleModels.length" class="model-tags">
         <el-tag v-for="model in visibleModels" :key="model" effect="plain">{{ model }}</el-tag>
         <el-tag v-if="hiddenModelCount > 0" effect="plain">+{{ hiddenModelCount }}</el-tag>
       </div>
+      <p v-else class="empty-hint">暂无模型,点击"获取模型"同步。</p>
+    </div>
       <p v-else class="empty-hint">暂无模型，点击“获取模型”同步。</p>
     </div>
 

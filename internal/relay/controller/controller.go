@@ -35,7 +35,7 @@ func NewRelayController(
 	}
 }
 
-// GetModels 获取 OpenAI 兼容的可用模型列表。
+// GetModels 获取 OpenAI 兼容的可用模型列表（仅返回启用的模型，使用显示名称去重）
 func (rc *RelayController) GetModels(c *gin.Context) {
 	models, err := rc.modelRepo.GetEnabled()
 	if err != nil {
@@ -43,10 +43,21 @@ func (rc *RelayController) GetModels(c *gin.Context) {
 		return
 	}
 
+	// 使用显示名称去重
+	seen := make(map[string]bool)
 	data := make([]gin.H, 0, len(models))
 	for _, m := range models {
+		displayName := m.DisplayName
+		if displayName == "" {
+			displayName = m.Name // 回退到上游模型名
+		}
+		if seen[displayName] {
+			continue
+		}
+		seen[displayName] = true
+
 		data = append(data, gin.H{
-			"id":       m.Name,
+			"id":       displayName,
 			"object":   "model",
 			"created":  m.CreatedAt.Unix(),
 			"owned_by": "apirelay",

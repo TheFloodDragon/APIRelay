@@ -92,6 +92,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 		// 模型管理
 		apiGroup.GET("/models", modelHandler.GetModels)
 		apiGroup.GET("/models/available", modelHandler.GetAvailableModels)
+		apiGroup.PUT("/models/:id", modelHandler.UpdateModel)
 		apiGroup.DELETE("/models/:id", modelHandler.DeleteModel)
 
 		// API密钥管理

@@ -28,14 +28,15 @@ type Channel struct {
 
 // Model 模型
 type Model struct {
-	ID         uint      `json:"id" gorm:"primaryKey"`
-	Name       string    `json:"name" gorm:"uniqueIndex;not null;size:100"`
-	ChannelID  uint      `json:"channel_id" gorm:"index"`
-	Channel    *Channel  `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
-	Alias      string    `json:"alias" gorm:"size:100"`
-	RedirectTo string    `json:"redirect_to" gorm:"size:100"`
-	Enabled    bool      `json:"enabled" gorm:"default:true"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	Name        string    `json:"name" gorm:"not null;size:100;index:idx_channel_model,unique"` // 上游真实模型名
+	DisplayName string    `json:"display_name" gorm:"size:100"`                                  // 对外调用名/显示名
+	ChannelID   uint      `json:"channel_id" gorm:"index;index:idx_channel_model,unique"`
+	Channel     *Channel  `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
+	Alias       string    `json:"alias" gorm:"size:100"`
+	RedirectTo  string    `json:"redirect_to" gorm:"size:100"`
+	Enabled     bool      `json:"enabled" gorm:"default:true;index"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // APIKey API密钥
