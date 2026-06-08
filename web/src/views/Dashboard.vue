@@ -157,8 +157,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { getChannels, type Channel } from '@/api/channels'
@@ -168,6 +168,7 @@ import { getModels, type ModelRecord } from '@/api/models'
 type TagType = 'success' | 'warning' | 'danger' | 'info'
 
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
 const channels = ref<Channel[]>([])
 const models = ref<ModelRecord[]>([])
@@ -231,7 +232,11 @@ const healthStats = computed(() => {
   ]
 })
 
-onMounted(loadDashboard)
+watch(
+  () => route.fullPath,
+  () => loadDashboard(),
+  { immediate: true }
+)
 
 async function loadDashboard() {
   loading.value = true

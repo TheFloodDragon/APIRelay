@@ -187,10 +187,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import draggable from 'vuedraggable'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
+import { useRoute } from 'vue-router'
 import ChannelCard from '@/components/ChannelCard.vue'
 import {
   createChannel,
@@ -211,6 +212,7 @@ interface ProtocolOption {
   hint: string
 }
 
+const route = useRoute()
 const loading = ref(false)
 const saving = ref(false)
 const channels = ref<Channel[]>([])
@@ -272,7 +274,11 @@ const baseURLPlaceholder = computed(() => selectedProtocol.value.defaultURL || '
 
 const baseURLHint = computed(() => selectedProtocol.value.hint || '根据协议选择填写对应的 Base URL')
 
-onMounted(loadChannels)
+watch(
+  () => route.fullPath,
+  () => loadChannels(),
+  { immediate: true }
+)
 
 function defaultForm(): Partial<Channel> {
   return {
@@ -310,6 +316,9 @@ async function loadChannels() {
 }
 
 function resetForm() {
+  for (const key of Object.keys(form) as Array<keyof Channel>) {
+    delete form[key]
+  }
   Object.assign(form, defaultForm())
   modelsText.value = ''
 }
@@ -346,7 +355,7 @@ async function saveChannel() {
       await updateChannel(editingChannel.value.id, payload)
       ElMessage.success('渠道已更新')
     } else {
-      await createChannel(payload)
+      await createChannel(createChannelPayload(payload))
       ElMessage.success('渠道已创建')
     }
     dialogVisible.value = false
@@ -356,6 +365,16 @@ async function saveChannel() {
   } finally {
     saving.value = false
   }
+}
+
+function createChannelPayload(payload: Partial<Channel>): Partial<Channel> {
+  const next = { ...payload }
+  delete next.id
+  delete next.created_at
+  delete next.updated_at
+  delete next.last_check
+  delete next.health_status
+  return next
 }
 
 async function toggleChannel(channel: Channel, enabled: boolean) {

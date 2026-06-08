@@ -161,11 +161,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Search, View } from '@element-plus/icons-vue'
+import { useRoute } from 'vue-router'
 import { getLogs, type RequestLog } from '@/api/logs'
 
+const route = useRoute()
 const loading = ref(false)
 const logs = ref<RequestLog[]>([])
 const total = ref(0)
@@ -217,7 +219,11 @@ const filteredLogs = computed(() => {
   return result
 })
 
-onMounted(loadLogs)
+watch(
+  () => route.fullPath,
+  () => loadLogs(),
+  { immediate: true }
+)
 
 async function loadLogs() {
   loading.value = true

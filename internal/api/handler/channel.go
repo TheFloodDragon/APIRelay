@@ -67,6 +67,10 @@ func (h *ChannelHandler) CreateChannel(c *gin.Context) {
 		return
 	}
 
+	// 创建接口必须始终由数据库分配新 ID，避免前端表单残留或外部客户端
+	// 传入已有 id 时触发 UNIQUE constraint failed: channels.id。
+	channel.ID = 0
+
 	if err := h.channelService.CreateChannel(&channel); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "创建渠道失败: " + err.Error(),

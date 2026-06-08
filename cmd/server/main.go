@@ -39,7 +39,7 @@ func main() {
 	channelRepo := repository.NewChannelRepository(model.DB)
 
 	// 启动健康检查服务
-	healthChecker := service.NewHealthChecker(channelRepo, cfg.Scheduler.HealthCheckInterval)
+	healthChecker := service.NewHealthChecker(channelRepo, cfg.Scheduler.HealthCheckInterval, cfg.Scheduler.UnhealthyThreshold)
 	healthChecker.Start()
 	defer healthChecker.Stop()
 

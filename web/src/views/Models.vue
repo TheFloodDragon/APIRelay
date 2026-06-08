@@ -156,11 +156,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Edit, Refresh, Search } from '@element-plus/icons-vue'
+import { useRoute } from 'vue-router'
 import { deleteModel, getModels, updateModel, type ModelRecord } from '@/api/models'
 
+const route = useRoute()
 const loading = ref(false)
 const saving = ref(false)
 const showDisabled = ref(false)
@@ -225,7 +227,11 @@ const paginatedModels = computed(() => {
   return filteredModels.value.slice(start, end)
 })
 
-onMounted(loadModels)
+watch(
+  () => route.fullPath,
+  () => loadModels(),
+  { immediate: true }
+)
 
 async function loadModels() {
   loading.value = true
