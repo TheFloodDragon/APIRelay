@@ -1,0 +1,100 @@
+package controller
+
+import (
+	"strings"
+
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+	"github.com/TheFloodDragon/APIRelay/internal/relay/constant"
+)
+
+type responsesUpstreamMode string
+
+const (
+	responsesModeAuto       responsesUpstreamMode = "auto"
+	responsesModeNative     responsesUpstreamMode = "native"
+	responsesModeChatBridge responsesUpstreamMode = "chat_bridge"
+)
+
+type responsesAttemptKind string
+
+const (
+	responsesAttemptNative     responsesAttemptKind = "native"
+	responsesAttemptChatBridge responsesAttemptKind = "chat_bridge"
+)
+
+func responsesAttemptOrder(app constant.RelayApp, candidate relayCandidate) []responsesAttemptKind {
+	switch configuredResponsesMode(candidate.Channel) {
+	case responsesModeNative:
+		return []responsesAttemptKind{responsesAttemptNative}
+	case responsesModeChatBridge:
+		return []responsesAttemptKind{responsesAttemptChatBridge}
+	default:
+		if shouldAutoTryNativeResponses(app, candidate.Channel) {
+			return []responsesAttemptKind{responsesAttemptNative, responsesAttemptChatBridge}
+		}
+		return []responsesAttemptKind{responsesAttemptChatBridge}
+	}
+}
+
+func configuredResponsesMode(channel model.Channel) responsesUpstreamMode {
+	mode := strings.ToLower(strings.TrimSpace(channelConfigString(channel.Config, "responses_mode")))
+	switch mode {
+	case "native", "responses", "openai_responses":
+		return responsesModeNative
+	case "chat", "chat_bridge", "chat-bridge", "bridge":
+		return responsesModeChatBridge
+	default:
+		return responsesModeAuto
+	}
+}
+
+func shouldAutoTryNativeResponses(app constant.RelayApp, channel model.Channel) bool {
+	if constant.APITypeFromChannelType(channel.Type) != constant.APITypeOpenAI {
+		return false
+	}
+	if channelConfigBool(channel.Config, "supports_responses") {
+		return true
+	}
+	return app == constant.RelayAppCodex
+}
+
+func channelConfigString(config model.JSONMap, key string) string {
+	if config == nil {
+		return ""
+	}
+	value, ok := config[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func channelConfigBool(config model.JSONMap, key string) bool {
+	if config == nil {
+		return false
+	}
+	value, ok := config[key]
+	if !ok || value == nil {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "y", "on":
+			return true
+		default:
+			return false
+		}
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	default:
+		return false
+	}
+}

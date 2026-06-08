@@ -18,18 +18,24 @@ import (
 )
 
 func (rc *RelayController) handleResponsesBridgeWithApp(c *gin.Context, app constant.RelayApp) {
-	reqCtx, ok := rc.newResponsesBridgeRequestContext(c, app)
+	respCtx, ok := rc.newResponsesBridgeRequestContext(c, app)
 	if !ok {
 		return
 	}
-	if reqCtx.Meta.Stream {
-		rc.relayResponsesStream(reqCtx)
+	if respCtx.Meta.Stream {
+		rc.relayResponsesStream(respCtx)
 		return
 	}
-	rc.relayResponsesJSON(reqCtx)
+	rc.relayResponsesJSON(respCtx)
 }
 
-func (rc *RelayController) newResponsesBridgeRequestContext(c *gin.Context, app constant.RelayApp) (*RequestContext, bool) {
+type responsesRequestContext struct {
+	*RequestContext
+	ResponsesBody []byte
+	ChatBody      []byte
+}
+
+func (rc *RelayController) newResponsesBridgeRequestContext(c *gin.Context, app constant.RelayApp) (*responsesRequestContext, bool) {
 	startTime := time.Now()
 	requestID := requestID(c)
 	mode := constant.RelayModeResponses
@@ -62,7 +68,7 @@ func (rc *RelayController) newResponsesBridgeRequestContext(c *gin.Context, app 
 		return nil, false
 	}
 
-	return &RequestContext{
+	reqCtx := &RequestContext{
 		Gin:          c,
 		RequestID:    requestID,
 		StartTime:    startTime,
@@ -75,147 +81,179 @@ func (rc *RelayController) newResponsesBridgeRequestContext(c *gin.Context, app 
 		Body:         chatBody,
 		Meta:         meta,
 		Candidates:   candidates,
+	}
+	return &responsesRequestContext{
+		RequestContext: reqCtx,
+		ResponsesBody:  body,
+		ChatBody:       chatBody,
 	}, true
 }
 
-func (rc *RelayController) relayResponsesJSON(reqCtx *RequestContext) {
+func (rc *RelayController) relayResponsesJSON(respCtx *responsesRequestContext) {
 	var lastErr error
 	var lastErrMsg string
+	lastStatusCode := 0
 	attemptedUpstream := false
 
-	for _, candidate := range reqCtx.Candidates {
-		attempt, err := rc.buildResponsesRelayAttempt(reqCtx, candidate, false)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
-			if attempt != nil {
-				rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
-			}
-			continue
-		}
-
-		attemptedUpstream = true
-		statusCode, respBody, err := rc.httpClient.DoJSON(
-			reqCtx.Gin.Request.Context(),
-			reqCtx.Method,
-			attempt.URL,
-			attempt.Headers,
-			attempt.ConvertedBody,
-			timeoutForChannel(attempt.Info.Channel),
-		)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
-			continue
-		}
-
-		if statusCode >= 200 && statusCode < 300 {
-			chatResp, err := attempt.ProtocolAdaptor.ConvertResponse(respBody, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
+	for _, candidate := range respCtx.Candidates {
+		for _, kind := range responsesAttemptOrder(respCtx.App, candidate) {
+			attempt, err := rc.buildResponsesAttempt(respCtx, candidate, false, kind)
 			if err != nil {
 				lastErr = err
 				lastErrMsg = err.Error()
-				rc.logRequest(reqCtx.Gin, attempt.Info, http.StatusBadGateway, lastErrMsg)
-				continue
-			}
-			responsesBody, err := chatCompletionsResponseToResponses(chatResp, reqCtx.Meta.Model)
-			if err != nil {
-				lastErr = err
-				lastErrMsg = err.Error()
-				rc.logRequest(reqCtx.Gin, attempt.Info, http.StatusBadGateway, lastErrMsg)
-				continue
-			}
-
-			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, "")
-			reqCtx.Gin.Data(statusCode, "application/json", responsesBody)
-			return
-		}
-
-		lastErr = nil
-		lastErrMsg = attempt.ProtocolAdaptor.ErrorMessage(respBody)
-		if lastErrMsg == "" {
-			lastErrMsg = string(respBody)
-		}
-		rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
-	}
-
-	writeFinalRelayError(reqCtx.Gin, lastErr, lastErrMsg, attemptedUpstream)
-}
-
-func (rc *RelayController) relayResponsesStream(reqCtx *RequestContext) {
-	var lastErr error
-	var lastErrMsg string
-	attemptedUpstream := false
-
-	for _, candidate := range reqCtx.Candidates {
-		attempt, err := rc.buildResponsesRelayAttempt(reqCtx, candidate, true)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
-			if attempt != nil {
-				rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
-			}
-			continue
-		}
-
-		attemptedUpstream = true
-		resp, err := rc.httpClient.DoStream(
-			reqCtx.Gin.Request.Context(),
-			reqCtx.Method,
-			attempt.URL,
-			attempt.Headers,
-			attempt.ConvertedBody,
-			timeoutForChannel(attempt.Info.Channel),
-		)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			rc.logRequest(reqCtx.Gin, attempt.Info, 0, lastErrMsg)
-			continue
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			errorBody, readErr := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if readErr != nil {
-				lastErr = readErr
-				lastErrMsg = readErr.Error()
-			} else {
-				lastErr = nil
-				lastErrMsg = attempt.ProtocolAdaptor.ErrorMessage(errorBody)
-				if lastErrMsg == "" {
-					lastErrMsg = string(errorBody)
+				statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
+				lastStatusCode = statusCode
+				if attempt != nil {
+					rc.logRequest(respCtx.Gin, attempt.Info, statusCode, lastErrMsg)
 				}
+				continue
 			}
-			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
-			continue
-		}
 
-		writeStreamHeaders(reqCtx.Gin, resp.StatusCode)
-		copyErr := copyResponsesStream(reqCtx.Gin, resp.Body, attempt.ProtocolAdaptor, attempt.Info.ResolvedModel)
-		_ = resp.Body.Close()
-		if copyErr != nil {
-			lastErr = copyErr
-			lastErrMsg = copyErr.Error()
-			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
-			return
-		}
+			attemptedUpstream = true
+			statusCode, respHeaders, respBody, err := rc.httpClient.DoJSONWithHeaders(
+				respCtx.Gin.Request.Context(),
+				respCtx.Method,
+				attempt.URL,
+				attempt.Headers,
+				attempt.ConvertedBody,
+				timeoutForChannel(attempt.Info.Channel),
+			)
+			lastStatusCode = statusCode
+			if err != nil {
+				lastErr = err
+				lastErrMsg = err.Error()
+				rc.logRequest(respCtx.Gin, attempt.Info, statusCode, lastErrMsg)
+				continue
+			}
 
-		rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, "")
-		return
+			if statusCode >= 200 && statusCode < 300 {
+				responsesBody, err := responsesAttemptJSONBody(respCtx, attempt, kind, respHeaders, respBody)
+				if err != nil {
+					lastErr = err
+					lastErrMsg = err.Error()
+					rc.logRequest(respCtx.Gin, attempt.Info, http.StatusBadGateway, lastErrMsg)
+					continue
+				}
+
+				rc.logRequest(respCtx.Gin, attempt.Info, statusCode, "")
+				respCtx.Gin.Data(statusCode, "application/json", responsesBody)
+				return
+			}
+
+			lastErr = nil
+			lastErrMsg = responsesUpstreamErrorMessage(attempt.ProtocolAdaptor, respBody, statusCode)
+			rc.logRequest(respCtx.Gin, attempt.Info, statusCode, lastErrMsg)
+		}
 	}
 
-	writeFinalRelayError(reqCtx.Gin, lastErr, lastErrMsg, attemptedUpstream)
+	writeFinalResponsesError(respCtx.Gin, lastErr, lastErrMsg, attemptedUpstream, lastStatusCode)
 }
 
-func (rc *RelayController) buildResponsesRelayAttempt(reqCtx *RequestContext, candidate relayCandidate, isStream bool) (*RelayAttempt, error) {
+func responsesAttemptJSONBody(respCtx *responsesRequestContext, attempt *RelayAttempt, kind responsesAttemptKind, headers http.Header, respBody []byte) ([]byte, error) {
+	if kind == responsesAttemptNative {
+		if isResponsesSSE(headers, respBody) {
+			return responsesSSEToJSON(respBody, attempt.Info.ResolvedModel)
+		}
+		return respBody, nil
+	}
+
+	chatResp, err := attempt.ProtocolAdaptor.ConvertResponse(respBody, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
+	if err != nil {
+		return nil, err
+	}
+	return chatCompletionsResponseToResponses(chatResp, respCtx.Meta.Model)
+}
+
+func (rc *RelayController) relayResponsesStream(respCtx *responsesRequestContext) {
+	var lastErr error
+	var lastErrMsg string
+	lastStatusCode := 0
+	attemptedUpstream := false
+
+	for _, candidate := range respCtx.Candidates {
+		for _, kind := range responsesAttemptOrder(respCtx.App, candidate) {
+			attempt, err := rc.buildResponsesAttempt(respCtx, candidate, true, kind)
+			if err != nil {
+				lastErr = err
+				lastErrMsg = err.Error()
+				statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
+				lastStatusCode = statusCode
+				if attempt != nil {
+					rc.logRequest(respCtx.Gin, attempt.Info, statusCode, lastErrMsg)
+				}
+				continue
+			}
+
+			attemptedUpstream = true
+			resp, err := rc.httpClient.DoStream(
+				respCtx.Gin.Request.Context(),
+				respCtx.Method,
+				attempt.URL,
+				attempt.Headers,
+				attempt.ConvertedBody,
+				timeoutForChannel(attempt.Info.Channel),
+			)
+			if err != nil {
+				lastErr = err
+				lastErrMsg = err.Error()
+				rc.logRequest(respCtx.Gin, attempt.Info, 0, lastErrMsg)
+				continue
+			}
+			lastStatusCode = resp.StatusCode
+
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				errorBody, readErr := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if readErr != nil {
+					lastErr = readErr
+					lastErrMsg = readErr.Error()
+				} else {
+					lastErr = nil
+					lastErrMsg = responsesUpstreamErrorMessage(attempt.ProtocolAdaptor, errorBody, resp.StatusCode)
+				}
+				rc.logRequest(respCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
+				continue
+			}
+
+			writeStreamHeaders(respCtx.Gin, resp.StatusCode)
+			copyErr := copyResponsesAttemptStream(respCtx, attempt, kind, resp)
+			_ = resp.Body.Close()
+			if copyErr != nil {
+				lastErr = copyErr
+				lastErrMsg = copyErr.Error()
+				rc.logRequest(respCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
+				return
+			}
+
+			rc.logRequest(respCtx.Gin, attempt.Info, resp.StatusCode, "")
+			return
+		}
+	}
+
+	writeFinalResponsesError(respCtx.Gin, lastErr, lastErrMsg, attemptedUpstream, lastStatusCode)
+}
+
+func copyResponsesAttemptStream(respCtx *responsesRequestContext, attempt *RelayAttempt, kind responsesAttemptKind, resp *http.Response) error {
+	if kind == responsesAttemptNative {
+		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+			return copyNativeResponsesStream(respCtx.Gin, resp.Body)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		return writeResponsesJSONAsStream(respCtx.Gin, body, attempt.Info.ResolvedModel)
+	}
+	return copyResponsesStream(respCtx.Gin, resp.Body, attempt.ProtocolAdaptor, attempt.Info.ResolvedModel)
+}
+
+func (rc *RelayController) buildResponsesChatBridgeAttempt(respCtx *responsesRequestContext, candidate relayCandidate, isStream bool) (*RelayAttempt, error) {
+	reqCtx := respCtx.RequestContext
 	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.App, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
 	protocolAdaptor := adaptor.GetAdaptor(info.APIType)
 	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor}
 
-	requestBody, err := bodyWithResolvedModel(reqCtx.Body, info.ResolvedModel, constant.RelayFormatOpenAI)
+	requestBody, err := bodyWithResolvedModel(respCtx.ChatBody, info.ResolvedModel, constant.RelayFormatOpenAI)
 	if err != nil {
 		return attempt, newRelayAttemptBuildError(http.StatusBadRequest, err)
 	}

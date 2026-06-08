@@ -22,7 +22,7 @@ func NewHTTPClient() *HTTPClient {
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   32,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:    10 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
@@ -32,6 +32,11 @@ func NewHTTPClient() *HTTPClient {
 }
 
 func (c *HTTPClient) DoJSON(ctx context.Context, method, url string, headers http.Header, body []byte, timeout time.Duration) (int, []byte, error) {
+	statusCode, _, respBody, err := c.DoJSONWithHeaders(ctx, method, url, headers, body, timeout)
+	return statusCode, respBody, err
+}
+
+func (c *HTTPClient) DoJSONWithHeaders(ctx context.Context, method, url string, headers http.Header, body []byte, timeout time.Duration) (int, http.Header, []byte, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -40,21 +45,21 @@ func (c *HTTPClient) DoJSON(ctx context.Context, method, url string, headers htt
 
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	copyHeaders(req.Header, headers)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return resp.StatusCode, nil, err
+		return resp.StatusCode, resp.Header.Clone(), nil, err
 	}
-	return resp.StatusCode, respBody, nil
+	return resp.StatusCode, resp.Header.Clone(), respBody, nil
 }
 
 func (c *HTTPClient) DoStream(ctx context.Context, method, url string, headers http.Header, body []byte, timeout time.Duration) (*http.Response, error) {

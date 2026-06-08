@@ -16,5 +16,5 @@ func (rc *RelayController) CodexResponses(c *gin.Context) {
 }
 
 func (rc *RelayController) ResponsesCompact(c *gin.Context) {
-	writeRelayError(c, http.StatusNotImplemented, "responses compact is not supported yet", "unsupported_relay_mode", "")
+	writeRelayError(c, http.StatusBadRequest, "responses compact is not supported yet; use /responses for compatible Codex requests", "unsupported_relay_mode", "compact mode is not implemented by APIRelay yet")
 }
