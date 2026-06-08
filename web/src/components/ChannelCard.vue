@@ -82,24 +82,24 @@
         </el-button>
       </div>
     </div>
-  </article>
 
-  <el-dialog
-    v-model="modelDialogVisible"
-    :title="`${channel.name} 的上游模型`"
-    width="620px"
-    class="model-list-dialog"
-  >
-    <div class="model-dialog-summary">
-      <span>共 {{ totalModels }} 个模型</span>
-      <small>这些名称是该渠道上游实际支持的模型，可在模型列表页调整对外调用名称。</small>
-    </div>
-    <div class="full-model-list">
-      <el-tag v-for="model in allModels" :key="model" effect="plain" size="large">
-        {{ model }}
-      </el-tag>
-    </div>
-  </el-dialog>
+    <el-dialog
+      v-model="modelDialogVisible"
+      :title="`${channel.name} 的上游模型`"
+      width="620px"
+      class="model-list-dialog"
+    >
+      <div class="model-dialog-summary">
+        <span>共 {{ totalModels }} 个模型</span>
+        <small>这些名称是该渠道上游实际支持的模型，可在模型列表页调整对外调用名称。</small>
+      </div>
+      <div class="full-model-list">
+        <el-tag v-for="model in allModels" :key="model" effect="plain" size="large">
+          {{ model }}
+        </el-tag>
+      </div>
+    </el-dialog>
+  </article>
 </template>
 
 <script setup lang="ts">

@@ -145,7 +145,7 @@
       <el-table-column label="延迟" width="100" sortable>
         <template #default="{ row }">
           <span :class="{ 'text-danger': row.latency > 5000, 'text-warning': row.latency > 2000 }">
-            {{ row.latency }}ms
+            {{ formatLatency(row.latency) }}
           </span>
         </template>
       </el-table-column>
@@ -174,6 +174,7 @@ const channels = ref<Channel[]>([])
 const models = ref<ModelRecord[]>([])
 const logs = ref<RequestLog[]>([])
 const logTotal = ref(0)
+let loadToken = 0
 
 const enabledChannels = computed(() => channels.value.filter((item) => item.enabled).length)
 const enabledModels = computed(() => models.value.filter((item) => item.enabled).length)
@@ -239,6 +240,7 @@ watch(
 )
 
 async function loadDashboard() {
+  const currentToken = ++loadToken
   loading.value = true
   try {
     const [channelRes, modelRes, logRes] = await Promise.all([
@@ -246,15 +248,46 @@ async function loadDashboard() {
       getModels(),
       getLogs({ limit: 50, offset: 0 })
     ])
-    channels.value = channelRes.data.data || []
-    models.value = modelRes.data.data || []
-    logs.value = logRes.data.data || []
-    logTotal.value = logRes.data.total || 0
+    if (currentToken === loadToken) {
+      channels.value = normalizeChannels(channelRes.data.data)
+      models.value = normalizeModels(modelRes.data.data)
+      logs.value = normalizeLogs(logRes.data.data)
+      logTotal.value = Number(logRes.data.total || 0)
+    }
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.error || '加载仪表盘失败')
+    if (currentToken === loadToken) {
+      ElMessage.error(error?.response?.data?.error || '加载仪表盘失败')
+    }
   } finally {
-    loading.value = false
+    if (currentToken === loadToken) {
+      loading.value = false
+    }
   }
+}
+
+function normalizeChannels(value?: Channel[] | null): Channel[] {
+  return (value || []).map((channel) => ({
+    ...channel,
+    models: Array.isArray(channel.models) ? channel.models : [],
+    health_status: channel.health_status || 'unknown'
+  }))
+}
+
+function normalizeModels(value?: ModelRecord[] | null): ModelRecord[] {
+  return (value || []).map((model) => ({
+    ...model,
+    name: model.name || '',
+    display_name: model.display_name || model.name || '',
+    enabled: model.enabled ?? true
+  }))
+}
+
+function normalizeLogs(value?: RequestLog[] | null): RequestLog[] {
+  return (value || []).map((log) => ({
+    ...log,
+    status_code: Number(log.status_code || 0),
+    latency: Number(log.latency || 0)
+  }))
 }
 
 function channelCoverage(count: number) {
@@ -266,6 +299,10 @@ function statusType(status: number): TagType {
   if (status >= 400 && status < 500) return 'warning'
   if (status >= 500) return 'danger'
   return 'info'
+}
+
+function formatLatency(latency?: number) {
+  return `${Number(latency || 0)}ms`
 }
 
 function formatDate(value?: string) {

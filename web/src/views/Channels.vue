@@ -40,12 +40,19 @@
   <div v-loading="loading" class="channel-grid-wrap">
     <draggable
       v-if="channels.length"
-      v-model="channels"
+      :list="channels"
       class="channel-grid"
+      tag="div"
       item-key="id"
       handle=".drag-handle"
       ghost-class="drag-ghost"
+      chosen-class="drag-chosen"
+      drag-class="drag-active"
       :animation="180"
+      :disabled="loading || saving"
+      :force-fallback="true"
+      :fallback-on-body="true"
+      :fallback-tolerance="6"
       @end="onDragEnd"
     >
       <template #item="{ element }">
@@ -256,7 +263,13 @@ const protocolOptions: ProtocolOption[] = [
   }
 ]
 
+interface DragEndEvent {
+  oldIndex?: number
+  newIndex?: number
+}
+
 const form = reactive<Partial<Channel>>(defaultForm())
+let loadToken = 0
 
 const enabledCount = computed(() => channels.value.filter((item) => item.enabled).length)
 const healthyCount = computed(() => channels.value.filter((item) => item.health_status === 'healthy').length)
@@ -304,14 +317,21 @@ function selectProtocol(protocol: ProtocolOption) {
 }
 
 async function loadChannels() {
+  const currentToken = ++loadToken
   loading.value = true
   try {
     const res = await getChannels()
-    channels.value = res.data.data || []
+    if (currentToken === loadToken) {
+      channels.value = normalizeChannels(res.data.data)
+    }
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.error || '加载渠道失败')
+    if (currentToken === loadToken) {
+      ElMessage.error(error?.response?.data?.error || '加载渠道失败')
+    }
   } finally {
-    loading.value = false
+    if (currentToken === loadToken) {
+      loading.value = false
+    }
   }
 }
 
@@ -337,16 +357,62 @@ function openEditDialog(channel: Channel) {
 }
 
 function parseModelsText(value: string) {
-  return value
-    .split(/[\n,]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  )
+}
+
+function normalizeChannels(value?: Channel[] | null): Channel[] {
+  return (value || []).map((channel) => ({
+    ...channel,
+    models: Array.isArray(channel.models) ? channel.models : [],
+    priority: Number(channel.priority || 0),
+    weight: Number(channel.weight || 1),
+    timeout: Number(channel.timeout || 60000),
+    max_retries: Number(channel.max_retries || 0),
+    health_status: channel.health_status || 'unknown'
+  }))
+}
+
+function toChannelPayload(source: Partial<Channel>, models = source.models || []): Partial<Channel> {
+  const payload: Partial<Channel> = {
+    name: String(source.name || '').trim(),
+    type: source.type || 'openai_compatible',
+    api_key: source.api_key || '',
+    base_url: String(source.base_url || '').trim(),
+    models: Array.isArray(models) ? models : [],
+    priority: Number(source.priority || 0),
+    weight: Number(source.weight || 1),
+    enabled: source.enabled ?? true,
+    timeout: Number(source.timeout || 60000),
+    max_retries: Number(source.max_retries || 0),
+    config: source.config || {}
+  }
+
+  if (source.id !== undefined) payload.id = source.id
+  if (source.health_status !== undefined) payload.health_status = source.health_status
+  if (source.last_check !== undefined) payload.last_check = source.last_check
+  if (source.created_at !== undefined) payload.created_at = source.created_at
+  if (source.updated_at !== undefined) payload.updated_at = source.updated_at
+
+  return payload
 }
 
 async function saveChannel() {
-  const payload: Partial<Channel> = {
-    ...form,
-    models: parseModelsText(modelsText.value)
+  const payload = toChannelPayload(form, parsedModelNames.value)
+
+  if (!payload.name) {
+    ElMessage.warning('请填写渠道名称')
+    return
+  }
+  if (!payload.api_key) {
+    ElMessage.warning('请填写 API Key')
+    return
   }
 
   saving.value = true
@@ -355,7 +421,7 @@ async function saveChannel() {
       await updateChannel(editingChannel.value.id, payload)
       ElMessage.success('渠道已更新')
     } else {
-      await createChannel(createChannelPayload(payload))
+      await createChannel(payload)
       ElMessage.success('渠道已创建')
     }
     dialogVisible.value = false
@@ -367,22 +433,14 @@ async function saveChannel() {
   }
 }
 
-function createChannelPayload(payload: Partial<Channel>): Partial<Channel> {
-  const next = { ...payload }
-  delete next.id
-  delete next.created_at
-  delete next.updated_at
-  delete next.last_check
-  delete next.health_status
-  return next
-}
-
 async function toggleChannel(channel: Channel, enabled: boolean) {
+  const previousEnabled = channel.enabled
+  channel.enabled = enabled
   try {
-    await updateChannel(channel.id, { ...channel, enabled })
-    channel.enabled = enabled
+    await updateChannel(channel.id, toChannelPayload(channel))
     ElMessage.success(enabled ? '渠道已启用' : '渠道已禁用')
   } catch (error: any) {
+    channel.enabled = previousEnabled
     ElMessage.error(error?.response?.data?.error || '更新状态失败')
   }
 }
@@ -404,7 +462,7 @@ async function handleTest(channel: Channel) {
 async function handleFetchModels(channel: Channel) {
   try {
     const res = await fetchChannelModels(channel.id)
-    ElMessage.success(`已获取 ${res.data.models.length} 个模型`)
+    ElMessage.success(`已获取 ${res.data.models?.length || 0} 个模型`)
     await loadChannels()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.error || '获取模型失败')
@@ -427,7 +485,9 @@ async function handleDelete(channel: Channel) {
   }
 }
 
-async function onDragEnd() {
+async function onDragEnd(event: DragEndEvent) {
+  if (event.oldIndex === event.newIndex || event.newIndex === undefined) return
+
   const orders = channels.value.map((channel, index) => ({
     id: channel.id,
     priority: channels.value.length - index
@@ -435,10 +495,14 @@ async function onDragEnd() {
 
   try {
     await reorderChannels(orders)
+    channels.value = channels.value.map((channel, index) => ({
+      ...channel,
+      priority: channels.value.length - index
+    }))
     ElMessage.success('优先级已更新')
-    await loadChannels()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.error || '更新优先级失败')
+    await loadChannels()
   }
 }
 </script>

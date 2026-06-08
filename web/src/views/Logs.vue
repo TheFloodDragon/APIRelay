@@ -12,8 +12,10 @@
         :prefix-icon="Search"
         clearable
         style="width: 280px"
+        @input="handleFilterChange"
+        @clear="handleFilterChange"
       />
-      <el-select v-model="statusFilter" placeholder="状态筛选" style="width: 140px">
+      <el-select v-model="statusFilter" placeholder="状态筛选" style="width: 140px" @change="handleFilterChange">
         <el-option label="全部" value="all" />
         <el-option label="成功" value="success" />
         <el-option label="失败" value="failed" />
@@ -87,7 +89,7 @@
       </el-table-column>
       <el-table-column label="延迟" width="110" sortable>
         <template #default="{ row }">
-          <span :class="latencyClass(row.latency)">{{ row.latency }}ms</span>
+          <span :class="latencyClass(row.latency)">{{ formatLatency(row.latency) }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="error" label="错误" min-width="240" show-overflow-tooltip>
@@ -100,7 +102,7 @@
       </el-table-column>
       <el-table-column label="操作" width="100" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button type="primary" text :icon="View" size="small" @click="openDetail(row)">详情</el-button>
+          <el-button type="primary" text :icon="View" size="small" @click.stop="openDetail(row)">详情</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -177,6 +179,7 @@ const searchKeyword = ref('')
 const statusFilter = ref<'all' | 'success' | 'failed'>('all')
 const detailVisible = ref(false)
 const selectedLog = ref<RequestLog | null>(null)
+let loadToken = 0
 
 type TagType = 'success' | 'warning' | 'danger' | 'info'
 
@@ -196,8 +199,8 @@ const filteredLogs = computed(() => {
     result = result.filter((item) => item.status_code >= 400 || !!item.error)
   }
 
-  if (searchKeyword.value) {
-    const keyword = searchKeyword.value.toLowerCase()
+  if (searchKeyword.value.trim()) {
+    const keyword = searchKeyword.value.trim().toLowerCase()
     result = result.filter((item) => {
       const fields = [
         item.request_id,
@@ -226,19 +229,58 @@ watch(
 )
 
 async function loadLogs() {
+  const currentToken = ++loadToken
   loading.value = true
   try {
     const res = await getLogs({
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value
     })
-    logs.value = res.data.data || []
-    total.value = res.data.total || 0
+    if (currentToken === loadToken) {
+      logs.value = normalizeLogs(res.data.data)
+      total.value = Number(res.data.total || 0)
+      clampPage()
+    }
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.error || '加载请求日志失败')
+    if (currentToken === loadToken) {
+      ElMessage.error(error?.response?.data?.error || '加载请求日志失败')
+    }
   } finally {
-    loading.value = false
+    if (currentToken === loadToken) {
+      loading.value = false
+    }
   }
+}
+
+function normalizeLogs(value?: RequestLog[] | null): RequestLog[] {
+  return (value || []).map((log) => ({
+    ...log,
+    model: log.model || '',
+    method: log.method || '',
+    path: log.path || '',
+    status_code: Number(log.status_code || 0),
+    request_tokens: Number(log.request_tokens || 0),
+    response_tokens: Number(log.response_tokens || 0),
+    latency: Number(log.latency || 0),
+    ip: log.ip || ''
+  }))
+}
+
+function resetPage() {
+  page.value = 1
+}
+
+function clampPage() {
+  const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value))
+  if (page.value > maxPage) {
+    page.value = maxPage
+    loadLogs()
+  }
+}
+
+function handleFilterChange() {
+  resetPage()
+  loadLogs()
 }
 
 function handleSizeChange() {
@@ -253,10 +295,30 @@ function openDetail(row: RequestLog) {
 
 async function copyText(value: string) {
   try {
-    await navigator.clipboard.writeText(value)
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(value)
+    } else {
+      copyTextFallback(value)
+    }
     ElMessage.success('已复制')
   } catch {
     ElMessage.warning('复制失败,请手动复制')
+  }
+}
+
+function copyTextFallback(value: string) {
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  const copied = document.execCommand('copy')
+  document.body.removeChild(textarea)
+  if (!copied) {
+    throw new Error('copy command failed')
   }
 }
 
@@ -268,9 +330,14 @@ function statusType(status: number): TagType {
 }
 
 function latencyClass(latency: number) {
-  if (latency > 5000) return 'text-danger'
-  if (latency > 2000) return 'text-warning'
+  const value = Number(latency || 0)
+  if (value > 5000) return 'text-danger'
+  if (value > 2000) return 'text-warning'
   return ''
+}
+
+function formatLatency(latency?: number) {
+  return `${Number(latency || 0)}ms`
 }
 
 function formatDate(value?: string) {

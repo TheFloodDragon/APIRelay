@@ -491,6 +491,27 @@ html {
   transform: rotate(3deg);
 }
 
+.drag-chosen,
+.drag-active,
+.sortable-drag {
+  cursor: grabbing;
+}
+
+.drag-chosen.channel-card,
+.drag-active.channel-card,
+.sortable-drag.channel-card {
+  transform: none !important;
+}
+
+.sortable-fallback {
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.channel-grid .sortable-ghost {
+  opacity: 0.35;
+}
+
 
 .channel-title {
   min-width: 0;
@@ -866,8 +887,22 @@ html {
     padding-left: 18px;
   }
 
+  .topbar-actions,
+  .page-actions {
+    width: 100%;
+  }
+
+  .page-actions > *,
+  .topbar-actions > * {
+    max-width: 100%;
+  }
+
   .admin-key-input {
     width: min(100%, 320px);
+  }
+
+  .table-card {
+    overflow-x: auto;
   }
 
   .metric-grid,

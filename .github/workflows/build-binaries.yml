@@ -62,12 +62,6 @@ jobs:
             output: apirelay-linux-amd64
             needs_linux_deps: true
 
-          - name: darwin-amd64
-            runner: macos-13
-            goos: darwin
-            goarch: amd64
-            output: apirelay-darwin-amd64
-
           - name: darwin-arm64
             runner: macos-14
             goos: darwin

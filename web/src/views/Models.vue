@@ -12,8 +12,10 @@
         :prefix-icon="Search"
         clearable
         style="width: 280px"
+        @input="resetPage"
+        @clear="resetPage"
       />
-      <el-select v-model="filterChannel" placeholder="筛选渠道" clearable style="width: 180px">
+      <el-select v-model="filterChannel" placeholder="筛选渠道" clearable style="width: 180px" @change="resetPage">
         <el-option label="全部渠道" value="" />
         <el-option
           v-for="channel in uniqueChannels"
@@ -26,7 +28,7 @@
         v-model="showDisabled"
         active-text="显示全部"
         inactive-text="仅启用"
-        @change="loadModels"
+        @change="handleFilterChange"
       />
       <el-button :icon="Refresh" :loading="loading" @click="loadModels">刷新</el-button>
     </div>
@@ -79,7 +81,7 @@
                 隐藏
               </el-tag>
             </div>
-            <el-button type="primary" text size="small" :icon="Edit" @click="openEditDialog(row)">
+            <el-button type="primary" text size="small" :icon="Edit" @click.stop="openEditDialog(row)">
               编辑
             </el-button>
           </div>
@@ -104,6 +106,7 @@
             inline-prompt
             active-text="启"
             inactive-text="隐"
+            @click.stop
             @change="toggleModel(row)"
           />
         </template>
@@ -113,7 +116,7 @@
       </el-table-column>
       <el-table-column label="操作" width="110" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button type="danger" text :icon="Delete" size="small" @click="handleDelete(row)">
+          <el-button type="danger" text :icon="Delete" size="small" @click.stop="handleDelete(row)">
             删除
           </el-button>
         </template>
@@ -173,6 +176,7 @@ const pageSize = ref(20)
 const models = ref<ModelRecord[]>([])
 const editDialogVisible = ref(false)
 const editingModel = ref<ModelRecord | null>(null)
+let loadToken = 0
 
 const editForm = reactive({
   name: '',
@@ -185,7 +189,7 @@ const enabledCount = computed(() => models.value.filter((item) => item.enabled).
 const disabledCount = computed(() => models.value.filter((item) => !item.enabled).length)
 
 const uniqueChannels = computed(() => {
-  const channelMap = new Map()
+  const channelMap = new Map<number, NonNullable<ModelRecord['channel']>>()
   models.value.forEach((model) => {
     if (model.channel && !channelMap.has(model.channel.id)) {
       channelMap.set(model.channel.id, model.channel)
@@ -208,13 +212,11 @@ const filteredModels = computed(() => {
   }
 
   // 搜索关键词
-  if (searchKeyword.value) {
-    const keyword = searchKeyword.value.toLowerCase()
-    result = result.filter(
-      (item) =>
-        item.name.toLowerCase().includes(keyword) ||
-        item.display_name?.toLowerCase().includes(keyword) ||
-        item.channel?.name?.toLowerCase().includes(keyword)
+  if (searchKeyword.value.trim()) {
+    const keyword = searchKeyword.value.trim().toLowerCase()
+    result = result.filter((item) =>
+      [item.name, item.display_name, item.channel?.name, item.channel?.type]
+        .some((field) => String(field || '').toLowerCase().includes(keyword))
     )
   }
 
@@ -233,16 +235,48 @@ watch(
   { immediate: true }
 )
 
+watch([filteredModels, pageSize], () => {
+  const maxPage = Math.max(1, Math.ceil(filteredModels.value.length / pageSize.value))
+  if (currentPage.value > maxPage) {
+    currentPage.value = maxPage
+  }
+})
+
 async function loadModels() {
+  const currentToken = ++loadToken
   loading.value = true
   try {
     const res = await getModels()
-    models.value = res.data.data || []
+    if (currentToken === loadToken) {
+      models.value = normalizeModels(res.data.data)
+    }
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.error || '加载模型列表失败')
+    if (currentToken === loadToken) {
+      ElMessage.error(error?.response?.data?.error || '加载模型列表失败')
+    }
   } finally {
-    loading.value = false
+    if (currentToken === loadToken) {
+      loading.value = false
+    }
   }
+}
+
+function normalizeModels(value?: ModelRecord[] | null): ModelRecord[] {
+  return (value || []).map((model) => ({
+    ...model,
+    name: model.name || '',
+    display_name: model.display_name || model.name || '',
+    enabled: model.enabled ?? true
+  }))
+}
+
+function resetPage() {
+  currentPage.value = 1
+}
+
+function handleFilterChange() {
+  resetPage()
+  loadModels()
 }
 
 function openEditDialog(model: ModelRecord) {
@@ -260,10 +294,11 @@ function openEditDialogFromRow(row: ModelRecord) {
 async function saveModel() {
   if (!editingModel.value) return
 
+  const displayName = editForm.display_name.trim() || editForm.name
   saving.value = true
   try {
     await updateModel(editingModel.value.id, {
-      display_name: editForm.display_name,
+      display_name: displayName,
       enabled: editForm.enabled
     })
     ElMessage.success('模型已更新')
@@ -277,13 +312,16 @@ async function saveModel() {
 }
 
 async function toggleModel(model: ModelRecord) {
+  const nextEnabled = model.enabled
   try {
-    await updateModel(model.id, { enabled: model.enabled })
-    ElMessage.success(model.enabled ? '模型已启用' : '模型已隐藏')
+    await updateModel(model.id, { enabled: nextEnabled })
+    ElMessage.success(nextEnabled ? '模型已启用' : '模型已隐藏')
+    if (!showDisabled.value && !nextEnabled) {
+      await loadModels()
+    }
   } catch (error: any) {
+    model.enabled = !nextEnabled
     ElMessage.error(error?.response?.data?.error || '更新状态失败')
-    // 失败时恢复状态
-    model.enabled = !model.enabled
   }
 }
 
