@@ -10,13 +10,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (rc *RelayController) relayJSON(c *gin.Context, requestID string, startTime time.Time, mode constant.RelayMode, format constant.RelayFormat, meta relayRequestMeta, body []byte, candidates []relayCandidate) {
+func (rc *RelayController) relayJSON(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat, meta relayRequestMeta, body []byte, candidates []relayCandidate) {
 	var lastErr error
 	var lastErrMsg string
 	attemptedUpstream := false
 
 	for _, candidate := range candidates {
-		info := buildRelayInfo(c, requestID, startTime, mode, format, meta, candidate, false)
+		info := buildRelayInfo(c, requestID, startTime, app, mode, format, meta, candidate, false)
 		protocolAdaptor := adaptor.GetAdaptor(info.APIType)
 
 		requestBody, err := bodyWithResolvedModel(body, info.ResolvedModel, format)

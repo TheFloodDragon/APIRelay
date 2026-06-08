@@ -66,7 +66,7 @@ func (a *Adaptor) ConvertRequest(req []byte, mode constant.RelayMode, format con
 }
 
 func (a *Adaptor) ConvertRequestWithMeta(req []byte, mode constant.RelayMode, format constant.RelayFormat, meta protocol.RequestMeta) ([]byte, error) {
-	if mode != constant.RelayModeChatCompletions {
+	if !mode.IsChatLike() {
 		return nil, fmt.Errorf("%s is not supported for gemini channels yet", mode)
 	}
 
@@ -99,7 +99,7 @@ func (a *Adaptor) ConvertRequestWithMeta(req []byte, mode constant.RelayMode, fo
 }
 
 func (a *Adaptor) ConvertResponse(resp []byte, mode constant.RelayMode, format constant.RelayFormat) ([]byte, error) {
-	if mode != constant.RelayModeChatCompletions {
+	if !mode.IsChatLike() {
 		return resp, nil
 	}
 
@@ -124,7 +124,7 @@ func (a *Adaptor) ConvertResponse(resp []byte, mode constant.RelayMode, format c
 }
 
 func (a *Adaptor) ConvertStreamChunk(chunk []byte, mode constant.RelayMode, format constant.RelayFormat) ([]byte, error) {
-	if mode != constant.RelayModeChatCompletions || format == constant.RelayFormatGemini {
+	if !mode.IsChatLike() || format == constant.RelayFormatGemini {
 		return chunk, nil
 	}
 

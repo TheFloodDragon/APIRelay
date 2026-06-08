@@ -46,7 +46,7 @@ func (a *Adaptor) ConvertRequestWithMeta(req []byte, mode constant.RelayMode, fo
 	case constant.RelayFormatOpenAI, constant.RelayFormatOpenAIResponses:
 		return req, nil
 	case constant.RelayFormatAnthropic:
-		if mode != constant.RelayModeChatCompletions {
+		if !mode.IsChatLike() {
 			return nil, fmt.Errorf("%s is not supported for anthropic caller format on openai channels yet", mode)
 		}
 		chatReq, err := protocol.AnthropicMessagesRequestToProtocol(req)
@@ -58,7 +58,7 @@ func (a *Adaptor) ConvertRequestWithMeta(req []byte, mode constant.RelayMode, fo
 		}
 		return protocol.ProtocolToOpenAIChatRequest(chatReq)
 	case constant.RelayFormatGemini:
-		if mode != constant.RelayModeChatCompletions {
+		if !mode.IsChatLike() {
 			return nil, fmt.Errorf("%s is not supported for gemini caller format on openai channels yet", mode)
 		}
 		chatReq, err := protocol.GeminiGenerateContentRequestToProtocol(req, meta.Model, meta.Stream)
@@ -75,7 +75,7 @@ func (a *Adaptor) ConvertRequestWithMeta(req []byte, mode constant.RelayMode, fo
 }
 
 func (a *Adaptor) ConvertResponse(resp []byte, mode constant.RelayMode, format constant.RelayFormat) ([]byte, error) {
-	if mode != constant.RelayModeChatCompletions {
+	if !mode.IsChatLike() {
 		return resp, nil
 	}
 
@@ -100,7 +100,7 @@ func (a *Adaptor) ConvertResponse(resp []byte, mode constant.RelayMode, format c
 }
 
 func (a *Adaptor) ConvertStreamChunk(chunk []byte, mode constant.RelayMode, format constant.RelayFormat) ([]byte, error) {
-	if mode != constant.RelayModeChatCompletions || format == constant.RelayFormatOpenAI || format == constant.RelayFormatOpenAIResponses {
+	if !mode.IsChatLike() || format == constant.RelayFormatOpenAI || format == constant.RelayFormatOpenAIResponses {
 		return chunk, nil
 	}
 
@@ -171,7 +171,7 @@ func modePath(mode constant.RelayMode) string {
 		return "/completions"
 	case constant.RelayModeEmbeddings:
 		return "/embeddings"
-	case constant.RelayModeChatCompletions:
+	case constant.RelayModeMessages, constant.RelayModeGeminiNative, constant.RelayModeChatCompletions:
 		fallthrough
 	default:
 		return "/chat/completions"

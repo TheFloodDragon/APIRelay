@@ -73,14 +73,16 @@ type APIKey struct {
 
 // RequestLog 请求日志
 type RequestLog struct {
-	ID             uint      `json:"id" gorm:"primaryKey"`
-	RequestID      string    `json:"request_id" gorm:"size:64;index"`
-	ChannelID      *uint     `json:"channel_id" gorm:"index"`
-	Channel        *Channel  `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
-	ChannelType    string    `json:"channel_type" gorm:"size:50;index"`
-	APIType        string    `json:"api_type" gorm:"size:50;index"`
-	RelayMode      string    `json:"relay_mode" gorm:"size:50;index"`
-	RelayFormat    string    `json:"relay_format" gorm:"size:50"`
+	ID          uint     `json:"id" gorm:"primaryKey"`
+	RequestID   string   `json:"request_id" gorm:"size:64;index"`
+	ChannelID   *uint    `json:"channel_id" gorm:"index"`
+	Channel     *Channel `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
+	ChannelType string   `json:"channel_type" gorm:"size:50;index"`
+	APIType     string   `json:"api_type" gorm:"size:50;index"`
+	RelayApp    string   `json:"relay_app" gorm:"size:50;index"`
+	RelayMode   string   `json:"relay_mode" gorm:"size:50;index"`
+	RelayFormat string   `json:"relay_format" gorm:"size:50"`
+
 	ResolvedModel  string    `json:"resolved_model" gorm:"size:100;index"`
 	Model          string    `json:"model" gorm:"size:100;index"`
 	Method         string    `json:"method" gorm:"size:20"`

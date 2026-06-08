@@ -17,20 +17,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (rc *RelayController) handleResponsesBridge(c *gin.Context) {
+func (rc *RelayController) handleResponsesBridgeWithApp(c *gin.Context, app constant.RelayApp) {
 	startTime := time.Now()
 	requestID := requestID(c)
 
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		rc.logNoChannel(c, requestID, startTime, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, "", http.StatusBadRequest, err.Error())
+		rc.logNoChannel(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, "", http.StatusBadRequest, err.Error())
 		writeRelayError(c, http.StatusBadRequest, "读取请求失败", "invalid_request_error", err.Error())
 		return
 	}
 
 	chatBody, modelName, stream, err := responsesRequestToChatCompletions(body, clientRequestedEventStream(c))
 	if err != nil {
-		rc.logNoChannel(c, requestID, startTime, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, "", http.StatusBadRequest, err.Error())
+		rc.logNoChannel(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, "", http.StatusBadRequest, err.Error())
 		writeRelayError(c, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
 		return
 	}
@@ -38,30 +38,30 @@ func (rc *RelayController) handleResponsesBridge(c *gin.Context) {
 	meta := relayRequestMeta{Model: modelName, Stream: stream}
 	candidates, err := rc.resolveCandidates(modelName)
 	if err != nil {
-		rc.logNoChannel(c, requestID, startTime, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, modelName, http.StatusBadRequest, err.Error())
+		rc.logNoChannel(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, modelName, http.StatusBadRequest, err.Error())
 		writeRelayError(c, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
 		return
 	}
 	if len(candidates) == 0 {
-		rc.logNoChannel(c, requestID, startTime, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, modelName, http.StatusNotFound, "没有可用的渠道")
+		rc.logNoChannel(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, modelName, http.StatusNotFound, "没有可用的渠道")
 		writeRelayError(c, http.StatusNotFound, "没有找到支持该模型的渠道", "invalid_request_error", "")
 		return
 	}
 
 	if stream {
-		rc.relayResponsesStream(c, requestID, startTime, meta, chatBody, candidates)
+		rc.relayResponsesStream(c, requestID, startTime, app, meta, chatBody, candidates)
 		return
 	}
-	rc.relayResponsesJSON(c, requestID, startTime, meta, chatBody, candidates)
+	rc.relayResponsesJSON(c, requestID, startTime, app, meta, chatBody, candidates)
 }
 
-func (rc *RelayController) relayResponsesJSON(c *gin.Context, requestID string, startTime time.Time, meta relayRequestMeta, chatBody []byte, candidates []relayCandidate) {
+func (rc *RelayController) relayResponsesJSON(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, meta relayRequestMeta, chatBody []byte, candidates []relayCandidate) {
 	var lastErr error
 	var lastErrMsg string
 	attemptedUpstream := false
 
 	for _, candidate := range candidates {
-		info := buildRelayInfo(c, requestID, startTime, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, meta, candidate, false)
+		info := buildRelayInfo(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, meta, candidate, false)
 		protocolAdaptor := adaptor.GetAdaptor(info.APIType)
 
 		requestBody, err := bodyWithResolvedModel(chatBody, info.ResolvedModel, constant.RelayFormatOpenAI)
@@ -129,13 +129,13 @@ func (rc *RelayController) relayResponsesJSON(c *gin.Context, requestID string, 
 	writeFinalRelayError(c, lastErr, lastErrMsg, attemptedUpstream)
 }
 
-func (rc *RelayController) relayResponsesStream(c *gin.Context, requestID string, startTime time.Time, meta relayRequestMeta, chatBody []byte, candidates []relayCandidate) {
+func (rc *RelayController) relayResponsesStream(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, meta relayRequestMeta, chatBody []byte, candidates []relayCandidate) {
 	var lastErr error
 	var lastErrMsg string
 	attemptedUpstream := false
 
 	for _, candidate := range candidates {
-		info := buildRelayInfo(c, requestID, startTime, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, meta, candidate, true)
+		info := buildRelayInfo(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, meta, candidate, true)
 		protocolAdaptor := adaptor.GetAdaptor(info.APIType)
 
 		requestBody, err := bodyWithResolvedModel(chatBody, info.ResolvedModel, constant.RelayFormatOpenAI)

@@ -4,12 +4,26 @@ package constant
 type RelayMode string
 
 const (
-	RelayModeChatCompletions RelayMode = "chat_completions"
-	RelayModeResponses       RelayMode = "responses"
-	RelayModeCompletions     RelayMode = "completions"
-	RelayModeEmbeddings      RelayMode = "embeddings"
+	RelayModeMessages         RelayMode = "messages"
+	RelayModeChatCompletions  RelayMode = "chat_completions"
+	RelayModeResponses        RelayMode = "responses"
+	RelayModeResponsesCompact RelayMode = "responses_compact"
+	RelayModeCompletions      RelayMode = "completions"
+	RelayModeEmbeddings       RelayMode = "embeddings"
+	RelayModeGeminiNative     RelayMode = "gemini_native"
+	RelayModeModels           RelayMode = "models"
+	RelayModeCountTokens      RelayMode = "count_tokens"
 )
 
 func (m RelayMode) String() string {
 	return string(m)
+}
+
+func (m RelayMode) IsChatLike() bool {
+	switch m {
+	case RelayModeMessages, RelayModeChatCompletions, RelayModeGeminiNative:
+		return true
+	default:
+		return false
+	}
 }

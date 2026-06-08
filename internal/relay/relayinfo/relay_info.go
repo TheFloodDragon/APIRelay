@@ -11,12 +11,16 @@ import (
 type RelayInfo struct {
 	RequestID      string
 	StartTime      time.Time
+	RelayApp       constant.RelayApp
 	RelayMode      constant.RelayMode
 	RelayFormat    constant.RelayFormat
 	APIType        constant.APIType
 	Channel        *model.Channel
 	RequestedModel string
 	ResolvedModel  string
+	OriginalPath   string
+	Endpoint       string
+	Query          string
 	IsStream       bool
 	ClientIP       string
 }

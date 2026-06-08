@@ -153,9 +153,34 @@ func setupAdminRoutes(
 }
 
 func setupRelayRoutes(r *gin.Engine, keyRepo *repository.APIKeyRepository, relayController *relaycontroller.RelayController) {
-	// OpenAI / Anthropic 兼容 API
+	relayAuth := middleware.APIKeyAuthMiddleware(keyRepo)
+
+	// OpenAI / Codex models 兼容入口。
+	r.GET("/models", relayAuth, relayController.GetModels)
+
+	// Claude namespace 兼容入口。
+	r.POST("/claude/v1/messages", relayAuth, relayController.ClaudeMessages)
+
+	// Codex Chat Completions 兼容入口。
+	r.POST("/chat/completions", relayAuth, relayController.CodexChatCompletions)
+	r.POST("/v1/v1/chat/completions", relayAuth, relayController.CodexChatCompletions)
+	r.POST("/codex/v1/chat/completions", relayAuth, relayController.CodexChatCompletions)
+
+	// Codex Responses 兼容入口。
+	r.POST("/responses/compact", relayAuth, relayController.ResponsesCompact)
+	r.POST("/v1/responses/compact", relayAuth, relayController.ResponsesCompact)
+	r.POST("/v1/v1/responses/compact", relayAuth, relayController.ResponsesCompact)
+	r.POST("/responses", relayAuth, relayController.CodexResponses)
+	r.POST("/v1/v1/responses", relayAuth, relayController.CodexResponses)
+	r.POST("/codex/v1/responses", relayAuth, relayController.CodexResponses)
+
+	// Gemini namespace 兼容入口。
+	r.Any("/gemini/v1beta/*path", relayAuth, relayController.GeminiNative)
+	r.Any("/gemini/v1/*path", relayAuth, relayController.GeminiNative)
+
+	// OpenAI / Anthropic 兼容 API。
 	v1Group := r.Group("/v1")
-	v1Group.Use(middleware.APIKeyAuthMiddleware(keyRepo))
+	v1Group.Use(relayAuth)
 	{
 		v1Group.GET("/models", relayController.GetModels)
 		v1Group.GET("/models/:model", relayController.GetModel)
@@ -166,9 +191,9 @@ func setupRelayRoutes(r *gin.Engine, keyRepo *repository.APIKeyRepository, relay
 		v1Group.POST("/embeddings", relayController.Embeddings)
 	}
 
-	// Gemini 兼容 API
+	// Gemini 兼容 API。
 	v1BetaGroup := r.Group("/v1beta")
-	v1BetaGroup.Use(middleware.APIKeyAuthMiddleware(keyRepo))
+	v1BetaGroup.Use(relayAuth)
 	{
 		v1BetaGroup.GET("/models", relayController.GetGeminiModels)
 		v1BetaGroup.GET("/models/*modelPath", relayController.GetGeminiModel)
@@ -292,8 +317,16 @@ func writeRouteNotFound(c *gin.Context) {
 
 func isAPIRoute(path string) bool {
 	// 管理台使用 HTML5 history 路由（例如 /models）。这些前端路径刷新时
-	// 必须回退到 index.html；真正的 API 都在 /api、/v1 或 /v1beta 前缀下。
+	// 必须回退到 index.html；真正的 API 入口需要稳定返回 JSON 404，避免被 SPA fallback 误回 index.html。
 	return path == "/api" || strings.HasPrefix(path, "/api/") ||
 		path == "/v1" || strings.HasPrefix(path, "/v1/") ||
-		path == "/v1beta" || strings.HasPrefix(path, "/v1beta/")
+		path == "/v1beta" || strings.HasPrefix(path, "/v1beta/") ||
+		path == "/models" || strings.HasPrefix(path, "/models/") ||
+		path == "/chat" || strings.HasPrefix(path, "/chat/") ||
+		path == "/responses" || strings.HasPrefix(path, "/responses/") ||
+		path == "/codex" || strings.HasPrefix(path, "/codex/") ||
+		path == "/claude" || strings.HasPrefix(path, "/claude/") ||
+		path == "/gemini" || strings.HasPrefix(path, "/gemini/") ||
+		path == "/claude-desktop" || strings.HasPrefix(path, "/claude-desktop/") ||
+		path == "/health" || path == "/status"
 }
