@@ -6,6 +6,7 @@
       <p>配置多供应商 API 渠道,按优先级和权重完成模型路由与故障切换。</p>
     </div>
     <div class="page-actions">
+      <el-button :icon="Setting" @click="openModelTestSettings">模型测试设置</el-button>
       <el-button :icon="Refresh" :loading="loading" @click="loadChannels">刷新</el-button>
       <el-button type="primary" :icon="Plus" @click="openCreateDialog">添加渠道</el-button>
     </div>
@@ -20,7 +21,7 @@
     <div class="metric-card">
       <span class="metric-label">健康渠道</span>
       <strong>{{ healthyCount }}</strong>
-      <small>{{ unhealthyCount }} 个异常</small>
+      <small>{{ degradedCount }} 个降级 / {{ unhealthyCount }} 个异常</small>
     </div>
     <div class="metric-card">
       <span class="metric-label">模型覆盖</span>
@@ -58,6 +59,7 @@
       <template #item="{ element }">
         <ChannelCard
           :channel="element"
+          :testing="testingChannelIds.has(element.id)"
           @toggle="toggleChannel"
           @test="handleTest"
           @edit="openEditDialog"
@@ -191,13 +193,70 @@
       <el-button type="primary" :loading="saving" @click="saveChannel">保存</el-button>
     </template>
   </el-dialog>
+
+  <el-dialog v-model="modelTestDialogVisible" title="模型测试设置" width="680px" class="form-dialog">
+    <el-alert
+      title="模型测试会向上游发送一次真实短请求，用于验证指定模型是否可用，可能产生极少量额度消耗。"
+      type="warning"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 16px"
+    />
+    <el-form :model="modelTestForm" label-position="top">
+      <div class="form-section">
+        <h3>执行参数</h3>
+        <div class="form-grid four-columns">
+          <el-form-item label="超时(秒)">
+            <el-input-number v-model="modelTestForm.timeout_secs" :min="1" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="最大重试">
+            <el-input-number v-model="modelTestForm.max_retries" :min="0" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="降级阈值(ms)">
+            <el-input-number v-model="modelTestForm.degraded_threshold_ms" :min="100" :step="500" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="最大 Token">
+            <el-input-number v-model="modelTestForm.max_tokens" :min="1" :max="200" controls-position="right" />
+          </el-form-item>
+        </div>
+        <el-form-item label="测试 Prompt">
+          <el-input v-model="modelTestForm.test_prompt" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" />
+        </el-form-item>
+        <el-form-item label="流式测试">
+          <el-switch v-model="modelTestForm.stream" disabled active-text="启用" inactive-text="第一批暂不启用" />
+          <small class="form-tip">当前第一批实现使用非流式短请求；后续批次会补充 TTFB / Stream Check。</small>
+        </el-form-item>
+      </div>
+
+      <div class="form-section model-form-section">
+        <div class="section-heading inline">
+          <div>
+            <h3>默认测试模型</h3>
+            <p>按渠道类型选择默认测试模型。渠道可在 config.test_config.test_model 中覆盖。</p>
+          </div>
+          <el-tag effect="plain" type="info">JSON</el-tag>
+        </div>
+        <el-input
+          v-model="defaultModelsText"
+          type="textarea"
+          :autosize="{ minRows: 8, maxRows: 12 }"
+          placeholder='{"openai_compatible":"gpt-4o-mini","deepseek":"deepseek-chat"}'
+        />
+      </div>
+    </el-form>
+
+    <template #footer>
+      <el-button @click="modelTestDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="modelTestSaving" @click="saveModelTestSettings">保存设置</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import draggable from 'vuedraggable'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { Plus, Refresh, Setting } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import ChannelCard from '@/components/ChannelCard.vue'
 import {
@@ -205,11 +264,13 @@ import {
   deleteChannel,
   fetchChannelModels,
   getChannels,
+  modelTestChannel,
   reorderChannels,
-  testChannel,
   updateChannel,
-  type Channel
+  type Channel,
+  type ModelTestResult
 } from '@/api/channels'
+import { getModelTestConfig, saveModelTestConfig, type ModelTestConfig } from '@/api/model-test'
 
 interface ProtocolOption {
   type: string
@@ -226,6 +287,10 @@ const channels = ref<Channel[]>([])
 const dialogVisible = ref(false)
 const editingChannel = ref<Channel | null>(null)
 const modelsText = ref('')
+const testingChannelIds = ref(new Set<number>())
+const modelTestDialogVisible = ref(false)
+const modelTestSaving = ref(false)
+const defaultModelsText = ref('')
 
 const protocolOptions: ProtocolOption[] = [
   {
@@ -269,10 +334,12 @@ interface DragEndEvent {
 }
 
 const form = reactive<Partial<Channel>>(defaultForm())
+const modelTestForm = reactive<ModelTestConfig>(defaultModelTestConfig())
 let loadToken = 0
 
 const enabledCount = computed(() => channels.value.filter((item) => item.enabled).length)
 const healthyCount = computed(() => channels.value.filter((item) => item.health_status === 'healthy').length)
+const degradedCount = computed(() => channels.value.filter((item) => item.health_status === 'degraded').length)
 const unhealthyCount = computed(() => channels.value.filter((item) => item.health_status === 'unhealthy').length)
 const modelCount = computed(() => new Set(channels.value.flatMap((item) => item.models || [])).size)
 
@@ -305,6 +372,24 @@ function defaultForm(): Partial<Channel> {
     enabled: true,
     timeout: 60000,
     max_retries: 3
+  }
+}
+
+function defaultModelTestConfig(): ModelTestConfig {
+  return {
+    timeout_secs: 45,
+    max_retries: 2,
+    degraded_threshold_ms: 6000,
+    test_prompt: 'Who are you?',
+    max_tokens: 20,
+    stream: false,
+    default_models: {
+      openai: 'gpt-4o-mini',
+      openai_compatible: 'gpt-4o-mini',
+      deepseek: 'deepseek-chat',
+      anthropic: 'claude-3-5-haiku-latest',
+      gemini: 'gemini-1.5-flash'
+    }
   }
 }
 
@@ -446,16 +531,85 @@ async function toggleChannel(channel: Channel, enabled: boolean) {
 }
 
 async function handleTest(channel: Channel) {
+  if (testingChannelIds.value.has(channel.id)) return
+  testingChannelIds.value = new Set(testingChannelIds.value).add(channel.id)
   try {
-    const res = await testChannel(channel.id)
-    if (res.data.success) {
-      ElMessage.success(res.data.message)
+    const res = await modelTestChannel(channel.id)
+    const result = res.data.data
+    const message = formatModelTestMessage(result)
+    if (result.success && result.status === 'healthy') {
+      ElMessage.success(message)
+    } else if (result.success && result.status === 'degraded') {
+      ElMessage.warning(message)
     } else {
-      ElMessage.warning(res.data.message)
+      ElMessage.error(message)
     }
     await loadChannels()
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.error || '测试失败')
+    ElMessage.error(error?.response?.data?.error || '模型测试失败')
+  } finally {
+    const next = new Set(testingChannelIds.value)
+    next.delete(channel.id)
+    testingChannelIds.value = next
+  }
+}
+
+function formatModelTestMessage(result: ModelTestResult) {
+  const statusLabel = result.status === 'healthy' ? '健康' : result.status === 'degraded' ? '降级' : '异常'
+  const parts = [statusLabel, result.message]
+  if (result.model_used) parts.push(`模型: ${result.model_used}`)
+  if (result.response_time_ms) parts.push(`耗时: ${result.response_time_ms}ms`)
+  if (result.error_category) parts.push(`错误分类: ${result.error_category}`)
+  return parts.join(' · ')
+}
+
+async function openModelTestSettings() {
+  modelTestDialogVisible.value = true
+  try {
+    const res = await getModelTestConfig()
+    Object.assign(modelTestForm, normalizeModelTestConfig(res.data.data))
+    defaultModelsText.value = JSON.stringify(modelTestForm.default_models || {}, null, 2)
+  } catch (error: any) {
+    Object.assign(modelTestForm, defaultModelTestConfig())
+    defaultModelsText.value = JSON.stringify(modelTestForm.default_models, null, 2)
+    ElMessage.error(error?.response?.data?.error || '加载模型测试设置失败')
+  }
+}
+
+async function saveModelTestSettings() {
+  let defaultModels: Record<string, string>
+  try {
+    defaultModels = JSON.parse(defaultModelsText.value || '{}')
+  } catch {
+    ElMessage.warning('默认测试模型 JSON 格式不正确')
+    return
+  }
+
+  modelTestSaving.value = true
+  try {
+    const payload = normalizeModelTestConfig({ ...modelTestForm, default_models: defaultModels })
+    const res = await saveModelTestConfig(payload)
+    Object.assign(modelTestForm, normalizeModelTestConfig(res.data.data))
+    defaultModelsText.value = JSON.stringify(modelTestForm.default_models || {}, null, 2)
+    modelTestDialogVisible.value = false
+    ElMessage.success('模型测试设置已保存')
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.error || '保存模型测试设置失败')
+  } finally {
+    modelTestSaving.value = false
+  }
+}
+
+function normalizeModelTestConfig(value?: ModelTestConfig | null): ModelTestConfig {
+  const fallback = defaultModelTestConfig()
+  return {
+    timeout_secs: Number(value?.timeout_secs || fallback.timeout_secs),
+    max_retries: Number(value?.max_retries ?? fallback.max_retries),
+    degraded_threshold_ms: Number(value?.degraded_threshold_ms || fallback.degraded_threshold_ms),
+    test_prompt: value?.test_prompt || fallback.test_prompt,
+    max_tokens: Number(value?.max_tokens || fallback.max_tokens),
+    stream: Boolean(value?.stream),
+    default_models: { ...fallback.default_models, ...(value?.default_models || {}) }
   }
 }
 

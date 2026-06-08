@@ -66,10 +66,18 @@ func (r *ChannelRepository) UpdatePriority(id uint, priority int) error {
 	return r.db.Model(&model.Channel{}).Where("id = ?", id).Update("priority", priority).Error
 }
 
-// UpdateHealthStatus 更新健康状态
+// UpdateHealthStatus 更新健康状态并记录检查时间
 func (r *ChannelRepository) UpdateHealthStatus(id uint, status string) error {
+	return r.UpdateHealthCheck(id, status, nil)
+}
+
+// UpdateHealthCheck 更新健康状态和检查时间。lastCheck 为空时使用数据库当前时间。
+func (r *ChannelRepository) UpdateHealthCheck(id uint, status string, lastCheck interface{}) error {
+	if lastCheck == nil {
+		lastCheck = gorm.Expr("CURRENT_TIMESTAMP")
+	}
 	return r.db.Model(&model.Channel{}).Where("id = ?", id).Updates(map[string]interface{}{
 		"health_status": status,
-		"last_check":    gorm.Expr("CURRENT_TIMESTAMP"),
+		"last_check":    lastCheck,
 	}).Error
 }

@@ -224,10 +224,12 @@ const topChannels = computed(() =>
 
 const healthStats = computed(() => {
   const healthy = channels.value.filter((item) => item.health_status === 'healthy').length
+  const degraded = channels.value.filter((item) => item.health_status === 'degraded').length
   const unhealthy = channels.value.filter((item) => item.health_status === 'unhealthy').length
-  const unknown = channels.value.length - healthy - unhealthy
+  const unknown = channels.value.length - healthy - degraded - unhealthy
   return [
     { label: '健康', count: healthy, className: 'is-healthy' },
+    { label: '降级', count: degraded, className: 'is-degraded' },
     { label: '异常', count: unhealthy, className: 'is-unhealthy' },
     { label: '未知', count: unknown, className: 'is-unknown' }
   ]

@@ -72,7 +72,9 @@
         {{ lastCheckText }}
       </span>
       <div class="channel-actions">
-        <el-button size="small" :icon="Connection" @click="$emit('test', channel)">测试</el-button>
+        <el-button size="small" :icon="Connection" :loading="testing" @click="$emit('test', channel)">
+          模型测试
+        </el-button>
         <el-button size="small" :icon="Refresh" @click="$emit('fetch-models', channel)">
           获取模型
         </el-button>
@@ -107,7 +109,9 @@ import { computed, ref } from 'vue'
 import { Connection, Delete, EditPen, Rank, Refresh, Clock } from '@element-plus/icons-vue'
 import type { Channel } from '@/api/channels'
 
-const props = defineProps<{ channel: Channel }>()
+const props = withDefaults(defineProps<{ channel: Channel; testing?: boolean }>(), {
+  testing: false
+})
 const modelDialogVisible = ref(false)
 const emit = defineEmits<{
   toggle: [channel: Channel, enabled: boolean]
@@ -121,9 +125,11 @@ const healthMeta = computed(() => {
   const status = props.channel.health_status
   if (status === 'healthy')
     return { label: '健康', type: 'success' as const, pulseClass: 'pulse-success' }
+  if (status === 'degraded')
+    return { label: '降级', type: 'warning' as const, pulseClass: 'pulse-warning' }
   if (status === 'unhealthy')
     return { label: '异常', type: 'danger' as const, pulseClass: 'pulse-danger' }
-  return { label: '未知', type: 'warning' as const, pulseClass: 'pulse-warning' }
+  return { label: '未知', type: 'info' as const, pulseClass: 'pulse-unknown' }
 })
 
 const timeoutSeconds = computed(() => Math.round((props.channel.timeout || 60000) / 1000))
@@ -244,6 +250,10 @@ function onToggle(value: boolean | string | number) {
   animation: pulse-warning 2s ease-in-out infinite;
 }
 
+.pulse-unknown {
+  animation: pulse-unknown 2s ease-in-out infinite;
+}
+
 @keyframes pulse-success {
   0%,
   100% {
@@ -277,6 +287,18 @@ function onToggle(value: boolean | string | number) {
   50% {
     opacity: 0.8;
     box-shadow: 0 0 0 4px rgba(247, 144, 9, 0);
+  }
+}
+
+@keyframes pulse-unknown {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(102, 112, 133, 0.55);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 0 4px rgba(102, 112, 133, 0);
   }
 }
 

@@ -40,9 +40,12 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	modelRepo := repository.NewModelRepository(db)
 	keyRepo := repository.NewAPIKeyRepository(db)
 	logRepo := repository.NewLogRepository(db)
+	systemConfigRepo := repository.NewSystemConfigRepository(db)
+	modelTestLogRepo := repository.NewModelTestLogRepository(db)
 
 	// 服务层
 	channelService := service.NewChannelService(channelRepo, modelRepo)
+	modelTestService := service.NewModelTestService(channelRepo, systemConfigRepo, modelTestLogRepo)
 	schedulerService := scheduler.NewScheduler(channelRepo, cfg.Scheduler.Strategy)
 
 	// 模型路由器（聚合中转站核心）
@@ -50,8 +53,9 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 
 	// 处理器
 	systemHandler := handler.NewSystemHandler()
-	channelHandler := handler.NewChannelHandler(channelService)
+	channelHandler := handler.NewChannelHandler(channelService, modelTestService)
 	modelHandler := handler.NewModelHandler(modelRepo)
+	modelTestHandler := handler.NewModelTestHandler(modelTestService)
 	keyHandler := handler.NewKeyHandler(keyRepo)
 	logHandler := handler.NewLogHandler(logRepo)
 	relayHTTPClient := relayclient.NewHTTPClient()
@@ -72,6 +76,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 		systemHandler,
 		channelHandler,
 		modelHandler,
+		modelTestHandler,
 		keyHandler,
 		logHandler,
 		routeHandler,
@@ -89,6 +94,7 @@ func setupAdminRoutes(
 	systemHandler *handler.SystemHandler,
 	channelHandler *handler.ChannelHandler,
 	modelHandler *handler.ModelHandler,
+	modelTestHandler *handler.ModelTestHandler,
 	keyHandler *handler.KeyHandler,
 	logHandler *handler.LogHandler,
 	routeHandler *handler.RouteHandler,
@@ -113,6 +119,12 @@ func setupAdminRoutes(
 		apiGroup.DELETE("/channels/:id", channelHandler.DeleteChannel)
 		apiGroup.POST("/channels/:id/models", channelHandler.FetchModels)
 		apiGroup.POST("/channels/:id/test", channelHandler.TestChannel)
+		apiGroup.POST("/channels/:id/model-test", channelHandler.ModelTestChannel)
+		apiGroup.GET("/channels/:id/model-test/logs", channelHandler.GetModelTestLogs)
+
+		// 模型测试配置
+		apiGroup.GET("/model-test/config", modelTestHandler.GetConfig)
+		apiGroup.PUT("/model-test/config", modelTestHandler.SaveConfig)
 
 		// 模型管理
 		apiGroup.GET("/models", modelHandler.GetModels)

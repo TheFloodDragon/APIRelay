@@ -748,6 +748,10 @@ html {
   background: var(--success);
 }
 
+.health-dot.is-degraded {
+  background: var(--warning);
+}
+
 .health-dot.is-unhealthy {
   background: var(--danger);
 }

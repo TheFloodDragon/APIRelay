@@ -10,11 +10,16 @@ import (
 )
 
 type ChannelHandler struct {
-	channelService *service.ChannelService
+	channelService   *service.ChannelService
+	modelTestService *service.ModelTestService
 }
 
-func NewChannelHandler(channelService *service.ChannelService) *ChannelHandler {
-	return &ChannelHandler{channelService: channelService}
+func NewChannelHandler(channelService *service.ChannelService, modelTestService ...*service.ModelTestService) *ChannelHandler {
+	handler := &ChannelHandler{channelService: channelService}
+	if len(modelTestService) > 0 {
+		handler.modelTestService = modelTestService[0]
+	}
+	return handler
 }
 
 // GetChannels 获取所有渠道
@@ -189,12 +194,29 @@ func (h *ChannelHandler) FetchModels(c *gin.Context) {
 	})
 }
 
-// TestChannel 测试渠道连接
+// TestChannel 测试渠道连接。旧接口保持 success/message 兼容，但优先执行真实模型短请求测试。
 func (h *ChannelHandler) TestChannel(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "无效的渠道ID",
+		})
+		return
+	}
+
+	if h.modelTestService != nil {
+		result, err := h.modelTestService.TestChannel(uint(id))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "连接测试失败: " + err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": result.Success,
+			"message": result.Message,
+			"data":    result,
 		})
 		return
 	}
@@ -210,5 +232,58 @@ func (h *ChannelHandler) TestChannel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "连接测试成功",
+	})
+}
+
+// ModelTestChannel 对指定渠道执行真实模型短请求测试。
+func (h *ChannelHandler) ModelTestChannel(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的渠道ID"})
+		return
+	}
+	if h.modelTestService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "模型测试服务未初始化"})
+		return
+	}
+
+	result, err := h.modelTestService.TestChannel(uint(id))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "模型测试失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": result.Success,
+		"data":    result,
+		"message": result.Message,
+	})
+}
+
+// GetModelTestLogs 获取指定渠道的模型测试日志。
+func (h *ChannelHandler) GetModelTestLogs(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的渠道ID"})
+		return
+	}
+	if h.modelTestService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "模型测试服务未初始化"})
+		return
+	}
+
+	limit := 20
+	if value := c.Query("limit"); value != "" {
+		if parsed, parseErr := strconv.Atoi(value); parseErr == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	logs, err := h.modelTestService.GetLogs(uint(id), limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取模型测试日志失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    logs,
 	})
 }

@@ -30,6 +30,7 @@ func InitDB(dbPath string) error {
 		&APIKey{},
 		&RequestLog{},
 		&SystemConfig{},
+		&ModelTestLog{},
 	)
 	if err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)

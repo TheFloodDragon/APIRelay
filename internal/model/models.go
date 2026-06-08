@@ -20,17 +20,37 @@ type Channel struct {
 	Timeout      int            `json:"timeout" gorm:"default:60000"` // 毫秒
 	MaxRetries   int            `json:"max_retries" gorm:"default:3"`
 	Config       JSONMap        `json:"config" gorm:"type:text"`
-	HealthStatus string         `json:"health_status" gorm:"size:20;default:unknown"` // unknown, healthy, unhealthy
+	HealthStatus string         `json:"health_status" gorm:"size:20;default:unknown"` // unknown, healthy, degraded, unhealthy
 	LastCheck    *time.Time     `json:"last_check"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
+}
+
+// ModelTestLog 模型测试日志
+// 记录管理端对渠道执行的真实短请求测试结果，用于后续审计与趋势分析。
+type ModelTestLog struct {
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	ChannelID      uint      `json:"channel_id" gorm:"index"`
+	Channel        *Channel  `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
+	ChannelName    string    `json:"channel_name" gorm:"size:100"`
+	Status         string    `json:"status" gorm:"size:20;index"` // healthy, degraded, unhealthy
+	Success        bool      `json:"success" gorm:"index"`
+	Message        string    `json:"message" gorm:"type:text"`
+	ResponseTimeMS *int      `json:"response_time_ms"`
+	TTFBMS         *int      `json:"ttfb_ms"`
+	HTTPStatus     *int      `json:"http_status"`
+	ModelUsed      string    `json:"model_used" gorm:"size:100;index"`
+	RetryCount     int       `json:"retry_count"`
+	ErrorCategory  string    `json:"error_category" gorm:"size:50;index"`
+	TestedAt       time.Time `json:"tested_at" gorm:"index"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // Model 模型
 type Model struct {
 	ID          uint      `json:"id" gorm:"primaryKey"`
 	Name        string    `json:"name" gorm:"not null;size:100;index:idx_channel_model,unique"` // 上游真实模型名
-	DisplayName string    `json:"display_name" gorm:"size:100"`                                  // 对外调用名/显示名
+	DisplayName string    `json:"display_name" gorm:"size:100"`                                 // 对外调用名/显示名
 	ChannelID   uint      `json:"channel_id" gorm:"index;index:idx_channel_model,unique"`
 	Channel     *Channel  `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
 	Alias       string    `json:"alias" gorm:"size:100"`

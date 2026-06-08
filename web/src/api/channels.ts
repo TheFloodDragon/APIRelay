@@ -1,5 +1,7 @@
 import request from '@/utils/request'
 
+export type ChannelHealthStatus = 'unknown' | 'healthy' | 'degraded' | 'unhealthy' | string
+
 export interface Channel {
   id: number
   name: string
@@ -13,10 +15,23 @@ export interface Channel {
   timeout: number
   max_retries: number
   config?: Record<string, unknown>
-  health_status: string
+  health_status: ChannelHealthStatus
   last_check?: string | null
   created_at?: string
   updated_at?: string
+}
+
+export interface ModelTestResult {
+  success: boolean
+  status: ChannelHealthStatus
+  message: string
+  response_time_ms: number
+  ttfb_ms?: number | null
+  http_status?: number | null
+  model_used: string
+  tested_at: string
+  retry_count: number
+  error_category: string
 }
 
 export interface ApiResponse<T> {
@@ -47,7 +62,11 @@ export function reorderChannels(orders: Array<{ id: number; priority: number }>)
 }
 
 export function testChannel(id: number) {
-  return request.post<{ success: boolean; message: string }>(`/channels/${id}/test`)
+  return request.post<{ success: boolean; message: string; data?: ModelTestResult }>(`/channels/${id}/test`)
+}
+
+export function modelTestChannel(id: number) {
+  return request.post<{ success: boolean; message: string; data: ModelTestResult }>(`/channels/${id}/model-test`)
 }
 
 export function fetchChannelModels(id: number) {
