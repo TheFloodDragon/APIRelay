@@ -18,157 +18,161 @@ import (
 )
 
 func (rc *RelayController) handleResponsesBridgeWithApp(c *gin.Context, app constant.RelayApp) {
+	reqCtx, ok := rc.newResponsesBridgeRequestContext(c, app)
+	if !ok {
+		return
+	}
+	if reqCtx.Meta.Stream {
+		rc.relayResponsesStream(reqCtx)
+		return
+	}
+	rc.relayResponsesJSON(reqCtx)
+}
+
+func (rc *RelayController) newResponsesBridgeRequestContext(c *gin.Context, app constant.RelayApp) (*RequestContext, bool) {
 	startTime := time.Now()
 	requestID := requestID(c)
+	mode := constant.RelayModeResponses
+	format := constant.RelayFormatOpenAIResponses
 
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		rc.logNoChannel(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, "", http.StatusBadRequest, err.Error())
+		rc.logNoChannel(c, requestID, startTime, app, mode, format, "", http.StatusBadRequest, err.Error())
 		writeRelayError(c, http.StatusBadRequest, "读取请求失败", "invalid_request_error", err.Error())
-		return
+		return nil, false
 	}
 
 	chatBody, modelName, stream, err := responsesRequestToChatCompletions(body, clientRequestedEventStream(c))
 	if err != nil {
-		rc.logNoChannel(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, "", http.StatusBadRequest, err.Error())
+		rc.logNoChannel(c, requestID, startTime, app, mode, format, "", http.StatusBadRequest, err.Error())
 		writeRelayError(c, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
-		return
+		return nil, false
 	}
 
 	meta := relayRequestMeta{Model: modelName, Stream: stream}
 	candidates, err := rc.resolveCandidates(modelName)
 	if err != nil {
-		rc.logNoChannel(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, modelName, http.StatusBadRequest, err.Error())
+		rc.logNoChannel(c, requestID, startTime, app, mode, format, modelName, http.StatusBadRequest, err.Error())
 		writeRelayError(c, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
-		return
+		return nil, false
 	}
 	if len(candidates) == 0 {
-		rc.logNoChannel(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, modelName, http.StatusNotFound, "没有可用的渠道")
+		rc.logNoChannel(c, requestID, startTime, app, mode, format, modelName, http.StatusNotFound, "没有可用的渠道")
 		writeRelayError(c, http.StatusNotFound, "没有找到支持该模型的渠道", "invalid_request_error", "")
-		return
+		return nil, false
 	}
 
-	if stream {
-		rc.relayResponsesStream(c, requestID, startTime, app, meta, chatBody, candidates)
-		return
-	}
-	rc.relayResponsesJSON(c, requestID, startTime, app, meta, chatBody, candidates)
+	return &RequestContext{
+		Gin:          c,
+		RequestID:    requestID,
+		StartTime:    startTime,
+		App:          app,
+		Mode:         mode,
+		Format:       format,
+		Method:       c.Request.Method,
+		OriginalPath: c.Request.URL.Path,
+		Query:        c.Request.URL.RawQuery,
+		Body:         chatBody,
+		Meta:         meta,
+		Candidates:   candidates,
+	}, true
 }
 
-func (rc *RelayController) relayResponsesJSON(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, meta relayRequestMeta, chatBody []byte, candidates []relayCandidate) {
+func (rc *RelayController) relayResponsesJSON(reqCtx *RequestContext) {
 	var lastErr error
 	var lastErrMsg string
 	attemptedUpstream := false
 
-	for _, candidate := range candidates {
-		info := buildRelayInfo(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, meta, candidate, false)
-		protocolAdaptor := adaptor.GetAdaptor(info.APIType)
-
-		requestBody, err := bodyWithResolvedModel(chatBody, info.ResolvedModel, constant.RelayFormatOpenAI)
+	for _, candidate := range reqCtx.Candidates {
+		attempt, err := rc.buildResponsesRelayAttempt(reqCtx, candidate, false)
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
-			rc.logRequest(c, info, http.StatusBadRequest, lastErrMsg)
-			continue
-		}
-
-		convertedBody, err := convertResponsesUpstreamRequest(protocolAdaptor, requestBody, info)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			statusCode := http.StatusBadGateway
-			if isUnsupportedRelayModeError(err) {
-				statusCode = http.StatusBadRequest
+			statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
+			if attempt != nil {
+				rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
 			}
-			rc.logRequest(c, info, statusCode, lastErrMsg)
 			continue
 		}
 
 		attemptedUpstream = true
-		headers := http.Header{}
-		protocolAdaptor.SetupHeaders(headers, info.Channel.APIKey, constant.RelayModeChatCompletions)
-		url := responsesUpstreamURL(protocolAdaptor, info, false)
-
-		statusCode, respBody, err := rc.httpClient.DoJSON(c.Request.Context(), c.Request.Method, url, headers, convertedBody, timeoutForChannel(info.Channel))
+		statusCode, respBody, err := rc.httpClient.DoJSON(
+			reqCtx.Gin.Request.Context(),
+			reqCtx.Method,
+			attempt.URL,
+			attempt.Headers,
+			attempt.ConvertedBody,
+			timeoutForChannel(attempt.Info.Channel),
+		)
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
-			rc.logRequest(c, info, statusCode, lastErrMsg)
+			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
 			continue
 		}
 
 		if statusCode >= 200 && statusCode < 300 {
-			chatResp, err := protocolAdaptor.ConvertResponse(respBody, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
+			chatResp, err := attempt.ProtocolAdaptor.ConvertResponse(respBody, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
 			if err != nil {
 				lastErr = err
 				lastErrMsg = err.Error()
-				rc.logRequest(c, info, http.StatusBadGateway, lastErrMsg)
+				rc.logRequest(reqCtx.Gin, attempt.Info, http.StatusBadGateway, lastErrMsg)
 				continue
 			}
-			responsesBody, err := chatCompletionsResponseToResponses(chatResp, meta.Model)
+			responsesBody, err := chatCompletionsResponseToResponses(chatResp, reqCtx.Meta.Model)
 			if err != nil {
 				lastErr = err
 				lastErrMsg = err.Error()
-				rc.logRequest(c, info, http.StatusBadGateway, lastErrMsg)
+				rc.logRequest(reqCtx.Gin, attempt.Info, http.StatusBadGateway, lastErrMsg)
 				continue
 			}
 
-			rc.logRequest(c, info, statusCode, "")
-			c.Data(statusCode, "application/json", responsesBody)
+			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, "")
+			reqCtx.Gin.Data(statusCode, "application/json", responsesBody)
 			return
 		}
 
 		lastErr = nil
-		lastErrMsg = protocolAdaptor.ErrorMessage(respBody)
+		lastErrMsg = attempt.ProtocolAdaptor.ErrorMessage(respBody)
 		if lastErrMsg == "" {
 			lastErrMsg = string(respBody)
 		}
-		rc.logRequest(c, info, statusCode, lastErrMsg)
+		rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
 	}
 
-	writeFinalRelayError(c, lastErr, lastErrMsg, attemptedUpstream)
+	writeFinalRelayError(reqCtx.Gin, lastErr, lastErrMsg, attemptedUpstream)
 }
 
-func (rc *RelayController) relayResponsesStream(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, meta relayRequestMeta, chatBody []byte, candidates []relayCandidate) {
+func (rc *RelayController) relayResponsesStream(reqCtx *RequestContext) {
 	var lastErr error
 	var lastErrMsg string
 	attemptedUpstream := false
 
-	for _, candidate := range candidates {
-		info := buildRelayInfo(c, requestID, startTime, app, constant.RelayModeResponses, constant.RelayFormatOpenAIResponses, meta, candidate, true)
-		protocolAdaptor := adaptor.GetAdaptor(info.APIType)
-
-		requestBody, err := bodyWithResolvedModel(chatBody, info.ResolvedModel, constant.RelayFormatOpenAI)
+	for _, candidate := range reqCtx.Candidates {
+		attempt, err := rc.buildResponsesRelayAttempt(reqCtx, candidate, true)
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
-			rc.logRequest(c, info, http.StatusBadRequest, lastErrMsg)
-			continue
-		}
-
-		convertedBody, err := convertResponsesUpstreamRequest(protocolAdaptor, requestBody, info)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			statusCode := http.StatusBadGateway
-			if isUnsupportedRelayModeError(err) {
-				statusCode = http.StatusBadRequest
+			statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
+			if attempt != nil {
+				rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
 			}
-			rc.logRequest(c, info, statusCode, lastErrMsg)
 			continue
 		}
 
 		attemptedUpstream = true
-		headers := http.Header{}
-		protocolAdaptor.SetupHeaders(headers, info.Channel.APIKey, constant.RelayModeChatCompletions)
-		headers.Set("Accept", "text/event-stream")
-		url := responsesUpstreamURL(protocolAdaptor, info, true)
-
-		resp, err := rc.httpClient.DoStream(c.Request.Context(), c.Request.Method, url, headers, convertedBody, timeoutForChannel(info.Channel))
+		resp, err := rc.httpClient.DoStream(
+			reqCtx.Gin.Request.Context(),
+			reqCtx.Method,
+			attempt.URL,
+			attempt.Headers,
+			attempt.ConvertedBody,
+			timeoutForChannel(attempt.Info.Channel),
+		)
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
-			rc.logRequest(c, info, 0, lastErrMsg)
+			rc.logRequest(reqCtx.Gin, attempt.Info, 0, lastErrMsg)
 			continue
 		}
 
@@ -180,30 +184,56 @@ func (rc *RelayController) relayResponsesStream(c *gin.Context, requestID string
 				lastErrMsg = readErr.Error()
 			} else {
 				lastErr = nil
-				lastErrMsg = protocolAdaptor.ErrorMessage(errorBody)
+				lastErrMsg = attempt.ProtocolAdaptor.ErrorMessage(errorBody)
 				if lastErrMsg == "" {
 					lastErrMsg = string(errorBody)
 				}
 			}
-			rc.logRequest(c, info, resp.StatusCode, lastErrMsg)
+			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 			continue
 		}
 
-		writeStreamHeaders(c, resp.StatusCode)
-		copyErr := copyResponsesStream(c, resp.Body, protocolAdaptor, info.ResolvedModel)
+		writeStreamHeaders(reqCtx.Gin, resp.StatusCode)
+		copyErr := copyResponsesStream(reqCtx.Gin, resp.Body, attempt.ProtocolAdaptor, attempt.Info.ResolvedModel)
 		_ = resp.Body.Close()
 		if copyErr != nil {
 			lastErr = copyErr
 			lastErrMsg = copyErr.Error()
-			rc.logRequest(c, info, resp.StatusCode, lastErrMsg)
+			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 			return
 		}
 
-		rc.logRequest(c, info, resp.StatusCode, "")
+		rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, "")
 		return
 	}
 
-	writeFinalRelayError(c, lastErr, lastErrMsg, attemptedUpstream)
+	writeFinalRelayError(reqCtx.Gin, lastErr, lastErrMsg, attemptedUpstream)
+}
+
+func (rc *RelayController) buildResponsesRelayAttempt(reqCtx *RequestContext, candidate relayCandidate, isStream bool) (*RelayAttempt, error) {
+	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.App, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
+	protocolAdaptor := adaptor.GetAdaptor(info.APIType)
+	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor}
+
+	requestBody, err := bodyWithResolvedModel(reqCtx.Body, info.ResolvedModel, constant.RelayFormatOpenAI)
+	if err != nil {
+		return attempt, newRelayAttemptBuildError(http.StatusBadRequest, err)
+	}
+	attempt.RequestBody = requestBody
+
+	convertedBody, err := convertResponsesUpstreamRequest(protocolAdaptor, requestBody, info)
+	if err != nil {
+		statusCode := http.StatusBadGateway
+		if isUnsupportedRelayModeError(err) {
+			statusCode = http.StatusBadRequest
+		}
+		return attempt, newRelayAttemptBuildError(statusCode, err)
+	}
+	attempt.ConvertedBody = convertedBody
+	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, constant.RelayModeChatCompletions, isStream)
+	attempt.URL = responsesUpstreamURL(protocolAdaptor, info, isStream)
+
+	return attempt, nil
 }
 
 func convertResponsesUpstreamRequest(protocolAdaptor adaptor.Adaptor, requestBody []byte, info *relayinfo.RelayInfo) ([]byte, error) {

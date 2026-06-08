@@ -4,53 +4,42 @@ import (
 	"bufio"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/TheFloodDragon/APIRelay/internal/relay/adaptor"
 	"github.com/TheFloodDragon/APIRelay/internal/relay/constant"
 	"github.com/gin-gonic/gin"
 )
 
-func (rc *RelayController) relayStream(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat, meta relayRequestMeta, body []byte, candidates []relayCandidate) {
+func (rc *RelayController) relayStream(reqCtx *RequestContext) {
 	var lastErr error
 	var lastErrMsg string
 	attemptedUpstream := false
 
-	for _, candidate := range candidates {
-		info := buildRelayInfo(c, requestID, startTime, app, mode, format, meta, candidate, true)
-		protocolAdaptor := adaptor.GetAdaptor(info.APIType)
-
-		requestBody, err := bodyWithResolvedModel(body, info.ResolvedModel, format)
+	for _, candidate := range reqCtx.Candidates {
+		attempt, err := rc.buildRelayAttempt(reqCtx, candidate, true)
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
-			rc.logRequest(c, info, http.StatusBadRequest, lastErrMsg)
-			continue
-		}
-
-		convertedBody, err := convertRelayRequest(protocolAdaptor, requestBody, info)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			statusCode := http.StatusBadGateway
-			if isUnsupportedRelayModeError(err) {
-				statusCode = http.StatusBadRequest
+			statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
+			if attempt != nil {
+				rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
 			}
-			rc.logRequest(c, info, statusCode, lastErrMsg)
 			continue
 		}
 
 		attemptedUpstream = true
-		headers := http.Header{}
-		protocolAdaptor.SetupHeaders(headers, info.Channel.APIKey, mode)
-		headers.Set("Accept", "text/event-stream")
-		url := requestURL(protocolAdaptor, info, true)
-
-		resp, err := rc.httpClient.DoStream(c.Request.Context(), c.Request.Method, url, headers, convertedBody, timeoutForChannel(info.Channel))
+		resp, err := rc.httpClient.DoStream(
+			reqCtx.Gin.Request.Context(),
+			reqCtx.Method,
+			attempt.URL,
+			attempt.Headers,
+			attempt.ConvertedBody,
+			timeoutForChannel(attempt.Info.Channel),
+		)
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
-			rc.logRequest(c, info, 0, lastErrMsg)
+			rc.logRequest(reqCtx.Gin, attempt.Info, 0, lastErrMsg)
 			continue
 		}
 
@@ -62,30 +51,30 @@ func (rc *RelayController) relayStream(c *gin.Context, requestID string, startTi
 				lastErrMsg = readErr.Error()
 			} else {
 				lastErr = nil
-				lastErrMsg = protocolAdaptor.ErrorMessage(errorBody)
+				lastErrMsg = attempt.ProtocolAdaptor.ErrorMessage(errorBody)
 				if lastErrMsg == "" {
 					lastErrMsg = string(errorBody)
 				}
 			}
-			rc.logRequest(c, info, resp.StatusCode, lastErrMsg)
+			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 			continue
 		}
 
-		writeStreamHeaders(c, resp.StatusCode)
-		copyErr := copyStream(c, resp.Body, protocolAdaptor, mode, format)
+		writeStreamHeaders(reqCtx.Gin, resp.StatusCode)
+		copyErr := copyStream(reqCtx.Gin, resp.Body, attempt.ProtocolAdaptor, reqCtx.Mode, reqCtx.Format)
 		_ = resp.Body.Close()
 		if copyErr != nil {
 			lastErr = copyErr
 			lastErrMsg = copyErr.Error()
-			rc.logRequest(c, info, resp.StatusCode, lastErrMsg)
+			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 			return
 		}
 
-		rc.logRequest(c, info, resp.StatusCode, "")
+		rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, "")
 		return
 	}
 
-	writeFinalRelayError(c, lastErr, lastErrMsg, attemptedUpstream)
+	writeFinalRelayError(reqCtx.Gin, lastErr, lastErrMsg, attemptedUpstream)
 }
 
 func writeStreamHeaders(c *gin.Context, statusCode int) {
