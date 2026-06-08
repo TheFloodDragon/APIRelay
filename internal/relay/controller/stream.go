@@ -60,9 +60,17 @@ func (rc *RelayController) relayStream(reqCtx *RequestContext) {
 			continue
 		}
 
+		preparedBody, err := prepareStreamBody(reqCtx.Gin.Request.Context(), resp.Body, timeoutForChannel(attempt.Info.Channel))
+		if err != nil {
+			lastErr = err
+			lastErrMsg = err.Error()
+			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
+			continue
+		}
+
 		writeStreamHeaders(reqCtx.Gin, resp.StatusCode)
-		copyErr := copyStream(reqCtx.Gin, resp.Body, attempt.ProtocolAdaptor, reqCtx.Mode, reqCtx.Format)
-		_ = resp.Body.Close()
+		copyErr := copyStream(reqCtx.Gin, preparedBody, attempt.ProtocolAdaptor, reqCtx.Mode, reqCtx.Format)
+		_ = preparedBody.Close()
 		if copyErr != nil {
 			lastErr = copyErr
 			lastErrMsg = copyErr.Error()

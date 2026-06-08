@@ -11,7 +11,7 @@ import (
 )
 
 func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo, statusCode int, errMsg string) {
-	if info == nil {
+	if info == nil || rc == nil || rc.logRepo == nil {
 		return
 	}
 

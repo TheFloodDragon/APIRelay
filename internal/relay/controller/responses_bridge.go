@@ -215,9 +215,18 @@ func (rc *RelayController) relayResponsesStream(respCtx *responsesRequestContext
 				continue
 			}
 
+			preparedBody, err := prepareStreamBody(respCtx.Gin.Request.Context(), resp.Body, timeoutForChannel(attempt.Info.Channel))
+			if err != nil {
+				lastErr = err
+				lastErrMsg = err.Error()
+				rc.logRequest(respCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
+				continue
+			}
+			resp.Body = preparedBody
+
 			writeStreamHeaders(respCtx.Gin, resp.StatusCode)
 			copyErr := copyResponsesAttemptStream(respCtx, attempt, kind, resp)
-			_ = resp.Body.Close()
+			_ = preparedBody.Close()
 			if copyErr != nil {
 				lastErr = copyErr
 				lastErrMsg = copyErr.Error()
