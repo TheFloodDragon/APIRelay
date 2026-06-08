@@ -196,8 +196,26 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("cors.enabled", true)
 	v.SetDefault("cors.allow_origins", []string{"*"})
-	v.SetDefault("cors.allow_methods", []string{"GET", "POST", "PUT", "DELETE"})
-	v.SetDefault("cors.allow_headers", []string{"*"})
+	v.SetDefault("cors.allow_methods", []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
+	v.SetDefault("cors.allow_headers", []string{
+		"Accept",
+		"Authorization",
+		"Content-Type",
+		"Origin",
+		"X-Requested-With",
+		"X-Request-ID",
+		"X-Request-Id",
+		"Request-ID",
+		"X-API-Key",
+		"X-Api-Key",
+		"X-Goog-Api-Key",
+		"X-Goog-Api-Client",
+		"Anthropic-Version",
+		"Anthropic-Beta",
+		"OpenAI-Organization",
+		"OpenAI-Project",
+		"OpenAI-Beta",
+	})
 }
 
 func ensureDirectories(cfg *Config) error {

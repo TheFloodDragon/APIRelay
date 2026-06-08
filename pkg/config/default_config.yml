@@ -53,5 +53,22 @@ cors:
     - POST
     - PUT
     - DELETE
+    - OPTIONS
   allow_headers:
-    - "*"
+    - Accept
+    - Authorization
+    - Content-Type
+    - Origin
+    - X-Requested-With
+    - X-Request-ID
+    - X-Request-Id
+    - Request-ID
+    - X-API-Key
+    - X-Api-Key
+    - X-Goog-Api-Key
+    - X-Goog-Api-Client
+    - Anthropic-Version
+    - Anthropic-Beta
+    - OpenAI-Organization
+    - OpenAI-Project
+    - OpenAI-Beta

@@ -11,9 +11,9 @@ import (
 
 	"github.com/TheFloodDragon/APIRelay/internal/api/handler"
 	"github.com/TheFloodDragon/APIRelay/internal/api/middleware"
-	"github.com/TheFloodDragon/APIRelay/internal/repository"
 	relayclient "github.com/TheFloodDragon/APIRelay/internal/relay/client"
 	relaycontroller "github.com/TheFloodDragon/APIRelay/internal/relay/controller"
+	"github.com/TheFloodDragon/APIRelay/internal/repository"
 	"github.com/TheFloodDragon/APIRelay/internal/router"
 	"github.com/TheFloodDragon/APIRelay/internal/scheduler"
 	"github.com/TheFloodDragon/APIRelay/internal/service"
@@ -64,10 +64,35 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	)
 	routeHandler := handler.NewRouteHandler(modelRouter)
 
+	// 管理 API 与兼容 API 先注册，最后再注册前端静态资源兜底。
+	// 这样 /api、/v1、/v1beta 的未知路径会稳定返回 JSON 404，
+	// 不会被 SPA history fallback 误回 index.html。
+	setupAdminRoutes(
+		r,
+		systemHandler,
+		channelHandler,
+		modelHandler,
+		keyHandler,
+		logHandler,
+		routeHandler,
+	)
+	setupRelayRoutes(r, keyRepo, relayController)
+
 	// 根路径和前端静态资源
 	setupStaticRoutes(r, cfg)
 
-	// 管理API
+	return r
+}
+
+func setupAdminRoutes(
+	r *gin.Engine,
+	systemHandler *handler.SystemHandler,
+	channelHandler *handler.ChannelHandler,
+	modelHandler *handler.ModelHandler,
+	keyHandler *handler.KeyHandler,
+	logHandler *handler.LogHandler,
+	routeHandler *handler.RouteHandler,
+) {
 	apiGroup := r.Group("/api")
 	{
 		// 健康检查无需认证
@@ -95,7 +120,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 		apiGroup.PUT("/models/:id", modelHandler.UpdateModel)
 		apiGroup.DELETE("/models/:id", modelHandler.DeleteModel)
 
-		// API密钥管理
+		// API 密钥管理
 		apiGroup.GET("/keys", keyHandler.GetKeys)
 		apiGroup.POST("/keys", keyHandler.CreateKey)
 		apiGroup.DELETE("/keys/:id", keyHandler.DeleteKey)
@@ -113,12 +138,15 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 		apiGroup.DELETE("/routes/groups/:group", routeHandler.DeleteGroup)
 		apiGroup.POST("/routes/reload", routeHandler.ReloadRoutes)
 	}
+}
 
-	// OpenAI / Anthropic / Gemini 兼容 API
+func setupRelayRoutes(r *gin.Engine, keyRepo *repository.APIKeyRepository, relayController *relaycontroller.RelayController) {
+	// OpenAI / Anthropic 兼容 API
 	v1Group := r.Group("/v1")
 	v1Group.Use(middleware.APIKeyAuthMiddleware(keyRepo))
 	{
 		v1Group.GET("/models", relayController.GetModels)
+		v1Group.GET("/models/:model", relayController.GetModel)
 		v1Group.POST("/messages", relayController.AnthropicMessages)
 		v1Group.POST("/responses", relayController.Responses)
 		v1Group.POST("/chat/completions", relayController.ChatCompletions)
@@ -126,13 +154,14 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 		v1Group.POST("/embeddings", relayController.Embeddings)
 	}
 
+	// Gemini 兼容 API
 	v1BetaGroup := r.Group("/v1beta")
 	v1BetaGroup.Use(middleware.APIKeyAuthMiddleware(keyRepo))
 	{
+		v1BetaGroup.GET("/models", relayController.GetGeminiModels)
+		v1BetaGroup.GET("/models/*modelPath", relayController.GetGeminiModel)
 		v1BetaGroup.POST("/models/*modelAction", relayController.GeminiGenerateContent)
 	}
-
-	return r
 }
 
 func setupStaticRoutes(r *gin.Engine, cfg *config.Config) {
@@ -162,6 +191,10 @@ func setupStatusRoute(r *gin.Engine) {
 			"status":  "running",
 		})
 	})
+
+	r.NoRoute(func(c *gin.Context) {
+		writeRouteNotFound(c)
+	})
 }
 
 func setupExternalStaticRoutes(r *gin.Engine, staticPath, indexPath string) {
@@ -177,7 +210,7 @@ func setupExternalStaticRoutes(r *gin.Engine, staticPath, indexPath string) {
 	r.NoRoute(func(c *gin.Context) {
 		requestPath := c.Request.URL.Path
 		if isAPIRoute(requestPath) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			writeRouteNotFound(c)
 			return
 		}
 
@@ -203,7 +236,7 @@ func setupEmbeddedStaticRoutes(r *gin.Engine, embeddedFS fs.FS) {
 	r.NoRoute(func(c *gin.Context) {
 		requestPath := c.Request.URL.Path
 		if isAPIRoute(requestPath) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			writeRouteNotFound(c)
 			return
 		}
 
@@ -239,6 +272,10 @@ func serveEmbeddedFile(c *gin.Context, embeddedFS fs.FS, filePath string) bool {
 	}
 	c.Data(http.StatusOK, contentType, data)
 	return true
+}
+
+func writeRouteNotFound(c *gin.Context) {
+	c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 }
 
 func isAPIRoute(path string) bool {

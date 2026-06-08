@@ -47,7 +47,7 @@
         <main class="main">
           <RouterView v-slot="{ Component }">
             <Transition name="page" mode="out-in">
-              <component :is="Component" />
+              <component :is="Component" :key="route.fullPath" />
             </Transition>
           </RouterView>
         </main>
