@@ -36,22 +36,26 @@ APIRelay 当前已经具备：
 
 ## 批次总览
 
-| 批次 | 名称 | 目标 | 优先级 |
-|---|---|---|---|
-| 第一批 | 路由矩阵与协议模式命名对齐 | 先让 CC-Switch 兼容路径进入正确 handler，并在日志/上下文中区分 app 类型 | P0 |
-| 第二批 | RequestContext 与 Forwarder 抽象 | 统一 JSON / Stream / Responses / Gemini 的转发入口，减少重复逻辑 | P0 |
-| 第三批 | Codex Responses 一等协议支持 | Responses native/chat bridge 策略、非流式 SSE 聚合、Codex 错误格式 | P0 |
-| 第四批 | Gemini Native 完整路径支持 | 对齐 Gemini CLI 路由、URL 构建、GET/models/countTokens/alt=sse | P1 |
-| 第五批 | 流式首包预检与故障转移 | 流式首包失败可切换渠道，开始输出后不再错误切换 | P1 |
-| 第六批 | app 维度熔断器 | 按 `relay_app:channel_id` 维护 Closed/Open/HalfOpen 状态 | P1 |
-| 第七批 | 富协议转换 | 支持 tool calls、media、thinking、复杂 content blocks、usage 保真 | P2 |
-| 第八批 | 统一响应处理与 UsageLog | 解压、SSE parser、usage 解析、成本统计基础 | P2 |
-| 第九批 | Claude Desktop Gateway | 增加 `/claude-desktop/v1/*` 独立命名空间和 token 认证 | P3 |
-| 第十批 | 高级整流与优化 | media fallback、thinking rectifier、413 特化、Copilot/Bedrock 优化 | P3 |
+| 批次 | 名称 | 目标 | 优先级 | 状态 |
+|---|---|---|---|---|
+| 第一批 | 路由矩阵与协议模式命名对齐 | 先让 CC-Switch 兼容路径进入正确 handler，并在日志/上下文中区分 app 类型 | P0 | 已完成 |
+| 第二批 | RequestContext 与 Forwarder 抽象 | 统一 JSON / Stream / Responses / Gemini 的转发入口，减少重复逻辑 | P0 | 进行中 |
+| 第三批 | Codex Responses 一等协议支持 | Responses native/chat bridge 策略、非流式 SSE 聚合、Codex 错误格式 | P0 | 未开始 |
+| 第四批 | Gemini Native 完整路径支持 | 对齐 Gemini CLI 路由、URL 构建、GET/models/countTokens/alt=sse | P1 | 未开始 |
+| 第五批 | 流式首包预检与故障转移 | 流式首包失败可切换渠道，开始输出后不再错误切换 | P1 | 未开始 |
+| 第六批 | app 维度熔断器 | 按 `relay_app:channel_id` 维护 Closed/Open/HalfOpen 状态 | P1 | 未开始 |
+| 第七批 | 富协议转换 | 支持 tool calls、media、thinking、复杂 content blocks、usage 保真 | P2 | 未开始 |
+| 第八批 | 统一响应处理与 UsageLog | 解压、SSE parser、usage 解析、成本统计基础 | P2 | 未开始 |
+| 第九批 | Claude Desktop Gateway | 增加 `/claude-desktop/v1/*` 独立命名空间和 token 认证 | P3 | 未开始 |
+| 第十批 | 高级整流与优化 | media fallback、thinking rectifier、413 特化、Copilot/Bedrock 优化 | P3 | 未开始 |
 
 ---
 
 # 第一批：路由矩阵与协议模式命名对齐
+
+**状态**：已完成  
+**完成提交**：`d379e52 Align relay protocol namespaces with CC-Switch`  
+**验证结果**：`go test ./...` 通过
 
 ## 批次目标
 
@@ -723,6 +727,8 @@ POST /v1beta/models/{model}:generateContent
 
 ## 第一批交付物
 
+完成情况：已交付。
+
 完成第一批后，应产生以下变更：
 
 1. 新增：
@@ -750,25 +756,512 @@ POST /v1beta/models/{model}:generateContent
 
 # 第二批：RequestContext 与 Forwarder 抽象
 
+**状态**：进行中  
+**启动时间**：第一批提交 `d379e52` 之后  
+**批次原则**：只做结构抽象，不改变当前协议转换结果、不引入首包预检、不改变 Responses bridge 行为。
+
 ## 目标
 
 统一当前散落在 `relayJSON`、`relayStream`、`responses_bridge`、`GeminiGenerateContent` 中的逻辑，为后续首包预检、熔断器和统一响应处理打基础。
 
-## 主要任务
+第二批完成后，APIRelay 应形成接近 CC-Switch `RequestContext -> Forwarder -> Response Processor` 的内部结构，但响应处理仍先保持现状，避免一次性跨越到第五批/第八批。
 
-- 新增 `RequestContext`。
-- 新增 `RelayRequest` / `RelayResponse`。
-- 抽出候选渠道解析逻辑。
-- 抽出上游请求构建逻辑。
-- 抽出错误分类逻辑。
-- `relayJSON`、`relayStream` 改为调用统一 Forwarder。
-- 保持现有行为不变。
+## 当前待解决问题
 
-## 验收
+当前转发流程存在这些重复与耦合：
 
-- 第一批所有路由仍可用。
-- JSON 非流式、SSE 流式、Responses bridge 行为与当前一致。
-- 代码中不再重复多份候选渠道循环逻辑。
+1. `relayJSON` 和 `relayStream` 各自循环 candidate、构建 adaptor、转换请求、构建 headers、请求上游、记录日志。
+2. `responses_bridge` 又维护了一套 Responses -> Chat -> Responses 的 candidate 循环。
+3. `RelayInfo` 已包含 app/mode/format/api type，但还没有统一的请求上下文对象承载 body、headers、method、query、candidate 等信息。
+4. 上游请求 URL、headers、converted body 的构建分散在多个文件中。
+5. 错误分类目前主要靠局部判断，后续实现熔断器和首包预检时缺少统一入口。
+6. 流式与非流式的分支过早进入 controller，导致后续新增 response preflight 会继续放大重复。
+
+## 第二批范围
+
+### 纳入范围
+
+- 新增 `RequestContext`，负责承载一次客户端请求的不可变基础信息。
+- 新增 `RelayAttempt` / `UpstreamRequest` / `ForwardResult` 等轻量类型。
+- 抽出候选渠道解析函数，保留现有调度语义。
+- 抽出请求体模型替换逻辑，复用现有 `bodyWithResolvedModel`。
+- 抽出上游 URL 构建逻辑，复用现有 `requestURL` / `responsesUpstreamURL`。
+- 抽出上游 headers 构建逻辑，复用 adaptor `SetupHeaders`。
+- 抽出 JSON 上游请求执行逻辑。
+- 抽出 Stream 上游请求执行逻辑，但暂不做首包预检。
+- 将 `relayJSON` / `relayStream` 改为使用 Forwarder 的公共 attempt 构建逻辑。
+- 将 Responses bridge 的候选循环尽量迁移到公共 attempt 构建逻辑，但保留 Responses bridge 特有的 Chat 转换和 Responses 输出转换。
+- 保持现有外部 API 响应兼容。
+
+### 暂不纳入
+
+- 不实现流式首包预检。
+- 不新增熔断器。
+- 不实现 Responses native upstream。
+- 不改协议转换模型。
+- 不实现统一 response processor。
+- 不改 scheduler 策略。
+- 不新增数据库表。
+
+---
+
+## 第二批详细任务
+
+## 1. 新增 relay request context 类型
+
+### 1.1 新增文件
+
+```text
+internal/relay/controller/request_context.go
+```
+
+第一阶段可先放在 `controller` 包内，减少跨包重构成本；第三/第五批稳定后再考虑迁移到 `internal/relay/forwarder`。
+
+### 1.2 新增类型
+
+建议定义：
+
+```go
+type RequestContext struct {
+    Gin          *gin.Context
+    RequestID    string
+    StartTime    time.Time
+    App          constant.RelayApp
+    Mode         constant.RelayMode
+    Format       constant.RelayFormat
+    Method       string
+    OriginalPath string
+    Query        string
+    Body         []byte
+    Meta         relayRequestMeta
+    Candidates   []relayCandidate
+}
+```
+
+说明：
+
+- `Gin` 仅保留在 controller 层使用，不传入 adaptor/protocol。
+- `Body` 保存客户端原始请求体。
+- `Meta` 保存解析出的 model/stream。
+- `Candidates` 保存已经解析好的渠道候选列表。
+- `App/Mode/Format` 对应第一批新增协议命名空间。
+
+### 1.3 新增构建函数
+
+```go
+func (rc *RelayController) newRequestContext(c *gin.Context, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat) (*RequestContext, bool)
+```
+
+返回值：
+
+- `*RequestContext`：成功时返回上下文。
+- `bool`：是否成功；失败时函数内部已完成日志和 JSON 错误响应。
+
+该函数负责：
+
+1. 生成 `requestID` 和 `startTime`。
+2. 读取 body。
+3. 调用 `parseRequestMeta`。
+4. 校验 model。
+5. 调用 `resolveCandidates`。
+6. 处理无候选渠道错误。
+7. 写入 `RequestContext`。
+
+这样 `handleRelay` 变为：
+
+```go
+func (rc *RelayController) handleRelay(c *gin.Context, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat) {
+    reqCtx, ok := rc.newRequestContext(c, app, mode, format)
+    if !ok {
+        return
+    }
+    if reqCtx.Meta.Stream {
+        rc.relayStream(reqCtx)
+        return
+    }
+    rc.relayJSON(reqCtx)
+}
+```
+
+---
+
+## 2. 抽象单次候选尝试
+
+### 2.1 新增类型
+
+建议在 `request_context.go` 或新文件：
+
+```text
+internal/relay/controller/forward_types.go
+```
+
+定义：
+
+```go
+type RelayAttempt struct {
+    Info            *relayinfo.RelayInfo
+    ProtocolAdaptor adaptor.Adaptor
+    RequestBody     []byte
+    ConvertedBody   []byte
+    Headers         http.Header
+    URL             string
+}
+```
+
+### 2.2 新增 attempt 构建函数
+
+```go
+func (rc *RelayController) buildRelayAttempt(reqCtx *RequestContext, candidate relayCandidate, isStream bool) (*RelayAttempt, error)
+```
+
+职责：
+
+1. 调用 `buildRelayInfo`。
+2. 根据 `info.APIType` 获取 adaptor。
+3. 调用 `bodyWithResolvedModel`。
+4. 调用 `convertRelayRequest`。
+5. 调用 `buildUpstreamHeaders`。
+6. 调用 `requestURL`。
+7. 返回 `RelayAttempt`。
+
+当前 `relayJSON` / `relayStream` 中重复的这些代码应迁移到该函数。
+
+### 2.3 上游 headers 构建函数
+
+新增：
+
+```go
+func buildUpstreamHeaders(protocolAdaptor adaptor.Adaptor, apiKey string, mode constant.RelayMode, stream bool) http.Header
+```
+
+第一批实现：
+
+- 调用 `protocolAdaptor.SetupHeaders(headers, apiKey, mode)`。
+- 如果 stream，设置 `Accept: text/event-stream`。
+
+暂不做客户端 header 透传，避免改变行为；header 透传留到第八批/后续独立批次。
+
+---
+
+## 3. 重构 JSON relay
+
+### 3.1 修改签名
+
+当前：
+
+```go
+func (rc *RelayController) relayJSON(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat, meta relayRequestMeta, body []byte, candidates []relayCandidate)
+```
+
+目标：
+
+```go
+func (rc *RelayController) relayJSON(reqCtx *RequestContext)
+```
+
+### 3.2 内部流程
+
+```go
+for _, candidate := range reqCtx.Candidates {
+    attempt, err := rc.buildRelayAttempt(reqCtx, candidate, false)
+    if err != nil { ... continue }
+
+    statusCode, respBody, err := rc.httpClient.DoJSON(
+        reqCtx.Gin.Request.Context(),
+        reqCtx.Method,
+        attempt.URL,
+        attempt.Headers,
+        attempt.ConvertedBody,
+        timeoutForChannel(attempt.Info.Channel),
+    )
+
+    // 保持当前 ConvertResponse、logRequest、writeFinalRelayError 行为。
+}
+```
+
+### 3.3 保持行为不变
+
+必须保持：
+
+- 成功时：`c.Data(statusCode, "application/json", convertedResp)`。
+- 转换失败时继续尝试下一个 candidate。
+- 所有 candidate 失败后调用 `writeFinalRelayError`。
+- 日志字段与第一批一致。
+
+---
+
+## 4. 重构 Stream relay
+
+### 4.1 修改签名
+
+当前：
+
+```go
+func (rc *RelayController) relayStream(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat, meta relayRequestMeta, body []byte, candidates []relayCandidate)
+```
+
+目标：
+
+```go
+func (rc *RelayController) relayStream(reqCtx *RequestContext)
+```
+
+### 4.2 内部流程
+
+```go
+for _, candidate := range reqCtx.Candidates {
+    attempt, err := rc.buildRelayAttempt(reqCtx, candidate, true)
+    if err != nil { ... continue }
+
+    resp, err := rc.httpClient.DoStream(
+        reqCtx.Gin.Request.Context(),
+        reqCtx.Method,
+        attempt.URL,
+        attempt.Headers,
+        attempt.ConvertedBody,
+        timeoutForChannel(attempt.Info.Channel),
+    )
+
+    // 保持当前非 2xx 读取 error body 行为。
+    // 保持当前 writeStreamHeaders -> copyStream 行为。
+}
+```
+
+### 4.3 保持行为不变
+
+第二批不引入首包预检，因此仍保持：
+
+- 2xx 后立即写 SSE headers。
+- `copyStream` 负责转换和透传。
+- 流开始后错误不再切换渠道。
+
+首包预检留到第五批。
+
+---
+
+## 5. Responses bridge 最小抽象
+
+Responses bridge 当前有特殊流程：
+
+```text
+Responses request -> Chat request -> candidate loop -> upstream chat -> chat response -> Responses response
+```
+
+第二批不改变此协议行为，只抽象重复构建逻辑。
+
+### 5.1 新增 Responses 专用 context
+
+可复用 `RequestContext`，但 Responses 的 body 已经从 Responses 转成 Chat：
+
+```go
+type ResponsesBridgeContext struct {
+    RequestContext *RequestContext
+    ChatBody []byte
+}
+```
+
+或者更简单：
+
+- 保留 `handleResponsesBridgeWithApp` 当前解析逻辑。
+- 构造一个 `RequestContext`：
+  - `Body` 使用 `chatBody`
+  - `Format` 使用 `RelayFormatOpenAIResponses`
+  - `Meta` 使用 Responses 解析后的 `model/stream`
+
+### 5.2 新增 Responses attempt 构建函数
+
+```go
+func (rc *RelayController) buildResponsesBridgeAttempt(reqCtx *RequestContext, candidate relayCandidate, isStream bool) (*RelayAttempt, error)
+```
+
+职责：
+
+1. `buildRelayInfo(... RelayModeResponses, RelayFormatOpenAIResponses ...)`。
+2. `bodyWithResolvedModel(chatBody, resolvedModel, RelayFormatOpenAI)`。
+3. `convertResponsesUpstreamRequest`。
+4. `SetupHeaders(... RelayModeChatCompletions)`。
+5. `responsesUpstreamURL(... RelayModeChatCompletions)`。
+
+### 5.3 重构目标
+
+- `relayResponsesJSON` 改为接收 `*RequestContext`。
+- `relayResponsesStream` 改为接收 `*RequestContext`。
+- 两者复用 `buildResponsesBridgeAttempt`。
+
+### 5.4 保持行为不变
+
+必须保持：
+
+- Responses request 仍转 Chat upstream。
+- JSON 成功后仍调用 `chatCompletionsResponseToResponses`。
+- Stream 成功后仍调用 `copyResponsesStream`。
+- `clientRequestedEventStream` 行为不变。
+
+---
+
+## 6. 错误分类预留
+
+### 6.1 新增文件
+
+```text
+internal/relay/controller/error_category.go
+```
+
+### 6.2 新增类型
+
+```go
+type RelayErrorCategory string
+
+const (
+    RelayErrorRetryable RelayErrorCategory = "retryable"
+    RelayErrorNonRetryable RelayErrorCategory = "non_retryable"
+)
+```
+
+### 6.3 新增函数
+
+```go
+func categorizeHTTPStatus(statusCode int) RelayErrorCategory
+func shouldTryNextCandidate(statusCode int, err error) bool
+```
+
+第二批可以先只提供函数并在 JSON/Stream 循环中使用，规则保持当前实际行为：
+
+- 当前代码基本上对所有非 2xx 都继续尝试下一个 candidate。
+- 因此第二批不应突然停止重试 400/422。
+- 只把规则集中起来，为第三/五/六批再精细化。
+
+建议第二批实现：
+
+```go
+func shouldTryNextCandidate(statusCode int, err error) bool {
+    return true
+}
+```
+
+并在注释中说明第三/六批会补齐 CC-Switch 的 retryable/non-retryable 分类。
+
+---
+
+## 7. 文件改动清单
+
+预计新增：
+
+```text
+internal/relay/controller/request_context.go
+internal/relay/controller/forward_types.go
+internal/relay/controller/error_category.go
+```
+
+预计修改：
+
+```text
+internal/relay/controller/relay_common.go
+internal/relay/controller/relay_json.go
+internal/relay/controller/stream.go
+internal/relay/controller/responses_bridge.go
+```
+
+可选修改：
+
+```text
+internal/relay/controller/relay_common_test.go
+internal/relay/controller/error_category_test.go
+```
+
+---
+
+## 8. 建议实施顺序
+
+1. 新增 `RequestContext` 和 `newRequestContext`。
+2. 修改 `handleRelay` 使用 `newRequestContext`，保持 `relayJSON/relayStream` 旧签名临时兼容。
+3. 新增 `RelayAttempt` 和 `buildRelayAttempt`。
+4. 改造 `relayJSON(reqCtx)`。
+5. 改造 `relayStream(reqCtx)`。
+6. 新增 Responses bridge context / attempt builder。
+7. 改造 `relayResponsesJSON` / `relayResponsesStream`。
+8. 新增错误分类预留函数。
+9. `gofmt`。
+10. 运行 `go test ./...`。
+11. 手动检查第一批新增路由仍不 404。
+
+---
+
+## 9. 验收标准
+
+### 9.1 自动测试
+
+```bash
+go test ./...
+```
+
+必须通过。
+
+### 9.2 原有行为回归
+
+以下接口行为应与第一批完成后保持一致：
+
+```http
+GET  /v1/models
+POST /v1/chat/completions
+POST /v1/messages
+POST /v1/responses
+POST /chat/completions
+POST /codex/v1/responses
+POST /claude/v1/messages
+POST /v1beta/models/{model}:generateContent
+POST /gemini/v1beta/models/{model}:generateContent
+```
+
+### 9.3 日志回归
+
+以下字段仍正确写入：
+
+- `request_id`
+- `relay_app`
+- `relay_mode`
+- `relay_format`
+- `api_type`
+- `requested_model`
+- `resolved_model`
+- `channel_id`
+
+### 9.4 结构验收
+
+- `handleRelay` 不再直接承担 body/meta/candidate 解析细节。
+- `relayJSON` 不再重复 adaptor/body/header/url 构建代码。
+- `relayStream` 不再重复 adaptor/body/header/url 构建代码。
+- Responses bridge 的 attempt 构建逻辑集中到单独函数。
+- 代码行为变化限制在结构抽象范围内。
+
+---
+
+## 10. 风险与回滚点
+
+### 风险 1：RequestContext 持有 `gin.Context` 导致边界不够干净
+
+第二批接受该风险，优先降低重构成本。后续若迁移到独立 forwarder 包，再拆出不依赖 Gin 的纯 RelayRequest。
+
+### 风险 2：Responses bridge 与普通 Chat relay 的行为混淆
+
+通过单独 `buildResponsesBridgeAttempt` 隔离，避免把 Responses 特殊桥接逻辑提前并入普通 Forwarder。
+
+### 风险 3：重构中改变错误重试行为
+
+第二批要求 `shouldTryNextCandidate` 暂时保持当前“失败继续下一个候选”的行为，不提前引入 CC-Switch non-retryable 分类。
+
+### 回滚点
+
+如果第二批引入回归，可以只回滚：
+
+- `request_context.go`
+- `forward_types.go`
+- `relay_json.go`
+- `stream.go`
+- `responses_bridge.go`
+- `relay_common.go` 中的签名改造
+
+第一批已完成的路由和 app 维度不需要回滚。
 
 ---
 
