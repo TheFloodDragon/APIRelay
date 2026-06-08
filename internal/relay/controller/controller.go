@@ -89,14 +89,18 @@ func (rc *RelayController) GetGeminiModels(c *gin.Context) {
 
 // GetGeminiModel 获取单个 Gemini 兼容模型元数据。
 func (rc *RelayController) GetGeminiModel(c *gin.Context) {
-	modelID := normalizePublicModelID(c.Param("modelPath"))
+	rc.writeGeminiModel(c, c.Param("modelPath"))
+}
+
+func (rc *RelayController) writeGeminiModel(c *gin.Context, modelID string) {
+	modelID = normalizePublicModelID(modelID)
 	modelRecord, ok, err := rc.findPublicModel(modelID)
 	if err != nil {
-		writeRelayError(c, http.StatusInternalServerError, "获取模型失败", "internal_error", err.Error())
+		writeGeminiError(c, http.StatusInternalServerError, "获取模型失败", "INTERNAL")
 		return
 	}
 	if !ok {
-		writeRelayError(c, http.StatusNotFound, "模型不存在", "invalid_request_error", "")
+		writeGeminiError(c, http.StatusNotFound, "模型不存在", "NOT_FOUND")
 		return
 	}
 

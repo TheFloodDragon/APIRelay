@@ -28,3 +28,8 @@ type RequestMetaAwareAdaptor interface {
 type ModelAwareURLAdaptor interface {
 	GetRequestURLWithModel(baseURL string, mode constant.RelayMode, model string, stream bool) string
 }
+
+// ConfigAwareHeaderAdaptor 可在不改变基础接口的前提下接收渠道配置来设置上游 Header。
+type ConfigAwareHeaderAdaptor interface {
+	SetupHeadersWithConfig(headers http.Header, apiKey string, mode constant.RelayMode, config map[string]interface{})
+}

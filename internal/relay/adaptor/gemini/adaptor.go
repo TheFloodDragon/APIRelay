@@ -37,26 +37,29 @@ func (a *Adaptor) GetRequestURLWithModel(baseURL string, mode constant.RelayMode
 		model = "gemini-pro"
 	}
 
-	methodSuffix := ":generateContent"
-	if stream {
-		methodSuffix = ":streamGenerateContent?alt=sse"
-	}
-
+	methodSuffix := geminiMethodSuffix(mode, stream)
 	if strings.Contains(baseURL, "{model}") {
-		return strings.ReplaceAll(baseURL, "{model}", model) + methodSuffixIfMissing(baseURL, methodSuffix)
-	}
-	if strings.Contains(baseURL, ":generateContent") || strings.Contains(baseURL, ":streamGenerateContent") {
-		return baseURL
+		baseURL = strings.ReplaceAll(baseURL, "{model}", model)
+		return withGeminiMethodSuffix(baseURL, methodSuffix)
 	}
 	if strings.Contains(baseURL, "/models/") {
-		return baseURL + methodSuffix
+		return withGeminiMethodSuffix(baseURL, methodSuffix)
 	}
 	return baseURL + "/models/" + model + methodSuffix
 }
 
 func (a *Adaptor) SetupHeaders(headers http.Header, apiKey string, mode constant.RelayMode) {
+	a.SetupHeadersWithConfig(headers, apiKey, mode, nil)
+}
+
+func (a *Adaptor) SetupHeadersWithConfig(headers http.Header, apiKey string, mode constant.RelayMode, config map[string]interface{}) {
+	apiKey = strings.TrimSpace(apiKey)
 	if apiKey != "" {
-		headers.Set("x-goog-api-key", apiKey)
+		if geminiUseBearerAuth(apiKey, config) {
+			headers.Set("Authorization", geminiBearerValue(apiKey))
+		} else {
+			headers.Set("x-goog-api-key", apiKey)
+		}
 	}
 	headers.Set("Content-Type", "application/json")
 }
@@ -66,6 +69,12 @@ func (a *Adaptor) ConvertRequest(req []byte, mode constant.RelayMode, format con
 }
 
 func (a *Adaptor) ConvertRequestWithMeta(req []byte, mode constant.RelayMode, format constant.RelayFormat, meta protocol.RequestMeta) ([]byte, error) {
+	if mode == constant.RelayModeCountTokens {
+		if format == constant.RelayFormatGemini {
+			return req, nil
+		}
+		return nil, fmt.Errorf("%s caller format is not supported for gemini countTokens yet", format)
+	}
 	if !mode.IsChatLike() {
 		return nil, fmt.Errorf("%s is not supported for gemini channels yet", mode)
 	}
@@ -199,11 +208,83 @@ func normalizeModelPath(model string) string {
 	return model
 }
 
-func methodSuffixIfMissing(url, suffix string) string {
-	if strings.Contains(url, ":generateContent") || strings.Contains(url, ":streamGenerateContent") {
-		return ""
+func geminiUseBearerAuth(apiKey string, config map[string]interface{}) bool {
+	if strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+		return true
 	}
-	return suffix
+	for _, key := range []string{"auth_type", "auth_mode", "credential_type"} {
+		if value, ok := configString(config, key); ok {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if value == "bearer" || value == "oauth" || value == "oauth2" || value == "access_token" {
+				return true
+			}
+		}
+	}
+	if value, ok := configBool(config, "use_bearer_auth"); ok {
+		return value
+	}
+	return false
+}
+
+func geminiBearerValue(apiKey string) string {
+	if strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+		return apiKey
+	}
+	return "Bearer " + apiKey
+}
+
+func configString(config map[string]interface{}, key string) (string, bool) {
+	if config == nil {
+		return "", false
+	}
+	value, ok := config[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := value.(string)
+	return s, ok
+}
+
+func configBool(config map[string]interface{}, key string) (bool, bool) {
+	if config == nil {
+		return false, false
+	}
+	value, ok := config[key]
+	if !ok {
+		return false, false
+	}
+	b, ok := value.(bool)
+	return b, ok
+}
+
+func geminiMethodSuffix(mode constant.RelayMode, stream bool) string {
+	if mode == constant.RelayModeCountTokens {
+		return ":countTokens"
+	}
+	if stream {
+		return ":streamGenerateContent?alt=sse"
+	}
+	return ":generateContent"
+}
+
+func withGeminiMethodSuffix(url, suffix string) string {
+	if hasGeminiMethodSuffix(url) {
+		if strings.Contains(url, ":streamGenerateContent") && !strings.Contains(url, "alt=sse") {
+			separator := "?"
+			if strings.Contains(url, "?") {
+				separator = "&"
+			}
+			return url + separator + "alt=sse"
+		}
+		return url
+	}
+	return url + suffix
+}
+
+func hasGeminiMethodSuffix(url string) bool {
+	return strings.Contains(url, ":generateContent") ||
+		strings.Contains(url, ":streamGenerateContent") ||
+		strings.Contains(url, ":countTokens")
 }
 
 func parseErrorMessage(resp []byte) string {

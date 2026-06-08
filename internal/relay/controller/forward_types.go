@@ -54,9 +54,14 @@ func buildUpstreamHeaders(
 	apiKey string,
 	mode constant.RelayMode,
 	stream bool,
+	config map[string]interface{},
 ) http.Header {
 	headers := http.Header{}
-	protocolAdaptor.SetupHeaders(headers, apiKey, mode)
+	if configAware, ok := protocolAdaptor.(adaptor.ConfigAwareHeaderAdaptor); ok {
+		configAware.SetupHeadersWithConfig(headers, apiKey, mode, config)
+	} else {
+		protocolAdaptor.SetupHeaders(headers, apiKey, mode)
+	}
 	if stream {
 		headers.Set("Accept", "text/event-stream")
 	}
@@ -87,7 +92,7 @@ func (rc *RelayController) buildRelayAttempt(
 		return attempt, newRelayAttemptBuildError(statusCode, err)
 	}
 	attempt.ConvertedBody = convertedBody
-	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, reqCtx.Mode, isStream)
+	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, reqCtx.Mode, isStream, info.Channel.Config)
 	attempt.URL = requestURL(protocolAdaptor, info, isStream)
 
 	return attempt, nil

@@ -45,7 +45,7 @@ func (rc *RelayController) buildResponsesNativeAttempt(respCtx *responsesRequest
 		return attempt, newRelayAttemptBuildError(statusCode, err)
 	}
 	attempt.ConvertedBody = convertedBody
-	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, constant.RelayModeResponses, isStream)
+	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, constant.RelayModeResponses, isStream, info.Channel.Config)
 	attempt.URL = requestURL(protocolAdaptor, info, isStream)
 
 	return attempt, nil

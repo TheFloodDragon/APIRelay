@@ -18,6 +18,19 @@ func writeRelayError(c *gin.Context, statusCode int, message, errorType, details
 	c.JSON(statusCode, gin.H{"error": errorBody})
 }
 
+func writeGeminiError(c *gin.Context, statusCode int, message, status string) {
+	if status == "" {
+		status = "UNKNOWN"
+	}
+	c.JSON(statusCode, gin.H{
+		"error": gin.H{
+			"code":    statusCode,
+			"message": message,
+			"status":  status,
+		},
+	})
+}
+
 func writeFinalRelayError(c *gin.Context, lastErr error, lastErrMsg string, attemptedUpstream bool) {
 	details := lastErrMsg
 	if details == "" && lastErr != nil {

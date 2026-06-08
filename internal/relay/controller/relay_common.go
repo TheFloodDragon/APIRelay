@@ -3,9 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/TheFloodDragon/APIRelay/internal/model"
@@ -52,26 +50,15 @@ func parseRequestMeta(c *gin.Context, body []byte, mode constant.RelayMode, form
 
 func parseGeminiRequestMeta(c *gin.Context, body []byte) (relayRequestMeta, error) {
 	meta := relayRequestMeta{}
-	modelAction := strings.TrimPrefix(c.Param("modelAction"), "/")
-	if modelAction == "" {
-		modelAction = strings.TrimPrefix(c.Param("path"), "/")
-	}
-	if modelAction != "" {
-		if decoded, err := url.PathUnescape(modelAction); err == nil {
-			modelAction = decoded
+	route, err := parseGeminiNativePath(c.Request.URL.Path, c.Request.URL.RawQuery)
+	if err == nil {
+		meta.Model = route.Model
+		meta.Stream = route.Stream
+		if route.Kind == geminiNativeRouteModels || route.Kind == geminiNativeRouteModel {
+			return meta, fmt.Errorf("Gemini 路径缺少 generateContent、streamGenerateContent 或 countTokens 操作")
 		}
-		model, action, _ := strings.Cut(modelAction, ":")
-		meta.Model = strings.TrimPrefix(model, "models/")
-		switch action {
-		case "generateContent":
-			meta.Stream = false
-		case "streamGenerateContent":
-			meta.Stream = true
-		case "":
-			return meta, fmt.Errorf("Gemini 路径缺少 generateContent 或 streamGenerateContent 操作")
-		default:
-			return meta, fmt.Errorf("不支持的 Gemini 操作: %s", action)
-		}
+	} else if c.Param("modelAction") != "" || c.Param("path") != "" {
+		return meta, err
 	}
 
 	var payload relayRequestMeta
@@ -81,7 +68,7 @@ func parseGeminiRequestMeta(c *gin.Context, body []byte) (relayRequestMeta, erro
 		}
 	}
 	if meta.Model == "" {
-		meta.Model = payload.Model
+		meta.Model = normalizeGeminiModelName(payload.Model)
 	}
 	if payload.Stream {
 		meta.Stream = true

@@ -268,7 +268,7 @@ func (rc *RelayController) buildResponsesChatBridgeAttempt(respCtx *responsesReq
 		return attempt, newRelayAttemptBuildError(statusCode, err)
 	}
 	attempt.ConvertedBody = convertedBody
-	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, constant.RelayModeChatCompletions, isStream)
+	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, constant.RelayModeChatCompletions, isStream, info.Channel.Config)
 	attempt.URL = responsesUpstreamURL(protocolAdaptor, info, isStream)
 
 	return attempt, nil

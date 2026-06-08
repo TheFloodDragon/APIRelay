@@ -42,6 +42,9 @@ func (a *Adaptor) ConvertRequest(req []byte, mode constant.RelayMode, format con
 }
 
 func (a *Adaptor) ConvertRequestWithMeta(req []byte, mode constant.RelayMode, format constant.RelayFormat, meta protocol.RequestMeta) ([]byte, error) {
+	if mode == constant.RelayModeCountTokens {
+		return nil, fmt.Errorf("%s is not supported for openai channels yet", mode)
+	}
 	switch format {
 	case constant.RelayFormatOpenAI, constant.RelayFormatOpenAIResponses:
 		return req, nil
