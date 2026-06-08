@@ -45,9 +45,11 @@
         </header>
 
         <main class="main">
-          <RouterView v-slot="{ Component }">
+          <RouterView v-slot="{ Component, route: viewRoute }">
             <Transition name="page" mode="out-in">
-              <component :is="Component" :key="route.fullPath" />
+              <div v-if="Component" :key="viewRoute.fullPath" class="page-view">
+                <component :is="Component" />
+              </div>
             </Transition>
           </RouterView>
         </main>
