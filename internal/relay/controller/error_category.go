@@ -30,3 +30,16 @@ func shouldTryNextCandidate(statusCode int, err error) bool {
 	// 第三/六批再接入 CC-Switch 风格 retryable/non-retryable 策略。
 	return true
 }
+
+func isSuccessfulStatus(statusCode int) bool {
+	return statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices
+}
+
+func shouldRecordCircuitFailure(statusCode int, err error) bool {
+	if err != nil {
+		if statusCode == 0 || isSuccessfulStatus(statusCode) {
+			return true
+		}
+	}
+	return statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+}

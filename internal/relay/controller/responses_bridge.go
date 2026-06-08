@@ -67,6 +67,7 @@ func (rc *RelayController) newResponsesBridgeRequestContext(c *gin.Context, app 
 		writeRelayError(c, http.StatusNotFound, "没有找到支持该模型的渠道", "invalid_request_error", "")
 		return nil, false
 	}
+	candidates = rc.filterCircuitOpenCandidates(app, candidates)
 
 	reqCtx := &RequestContext{
 		Gin:          c,
@@ -122,24 +123,28 @@ func (rc *RelayController) relayResponsesJSON(respCtx *responsesRequestContext) 
 			if err != nil {
 				lastErr = err
 				lastErrMsg = err.Error()
+				rc.recordCircuitFailure(attempt.Info, statusCode, err)
 				rc.logRequest(respCtx.Gin, attempt.Info, statusCode, lastErrMsg)
 				continue
 			}
 
-			if statusCode >= 200 && statusCode < 300 {
+			if isSuccessfulStatus(statusCode) {
 				responsesBody, err := responsesAttemptJSONBody(respCtx, attempt, kind, respHeaders, respBody)
 				if err != nil {
 					lastErr = err
 					lastErrMsg = err.Error()
+					rc.recordCircuitFailure(attempt.Info, http.StatusBadGateway, err)
 					rc.logRequest(respCtx.Gin, attempt.Info, http.StatusBadGateway, lastErrMsg)
 					continue
 				}
 
+				rc.recordCircuitSuccess(attempt.Info)
 				rc.logRequest(respCtx.Gin, attempt.Info, statusCode, "")
 				respCtx.Gin.Data(statusCode, "application/json", responsesBody)
 				return
 			}
 
+			rc.recordCircuitFailure(attempt.Info, statusCode, nil)
 			lastErr = nil
 			lastErrMsg = responsesUpstreamErrorMessage(attempt.ProtocolAdaptor, respBody, statusCode)
 			rc.logRequest(respCtx.Gin, attempt.Info, statusCode, lastErrMsg)
@@ -196,12 +201,13 @@ func (rc *RelayController) relayResponsesStream(respCtx *responsesRequestContext
 			if err != nil {
 				lastErr = err
 				lastErrMsg = err.Error()
+				rc.recordCircuitFailure(attempt.Info, 0, err)
 				rc.logRequest(respCtx.Gin, attempt.Info, 0, lastErrMsg)
 				continue
 			}
 			lastStatusCode = resp.StatusCode
 
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if !isSuccessfulStatus(resp.StatusCode) {
 				errorBody, readErr := io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
 				if readErr != nil {
@@ -211,6 +217,7 @@ func (rc *RelayController) relayResponsesStream(respCtx *responsesRequestContext
 					lastErr = nil
 					lastErrMsg = responsesUpstreamErrorMessage(attempt.ProtocolAdaptor, errorBody, resp.StatusCode)
 				}
+				rc.recordCircuitFailure(attempt.Info, resp.StatusCode, readErr)
 				rc.logRequest(respCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 				continue
 			}
@@ -219,6 +226,7 @@ func (rc *RelayController) relayResponsesStream(respCtx *responsesRequestContext
 			if err != nil {
 				lastErr = err
 				lastErrMsg = err.Error()
+				rc.recordCircuitFailure(attempt.Info, resp.StatusCode, err)
 				rc.logRequest(respCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 				continue
 			}
@@ -230,10 +238,12 @@ func (rc *RelayController) relayResponsesStream(respCtx *responsesRequestContext
 			if copyErr != nil {
 				lastErr = copyErr
 				lastErrMsg = copyErr.Error()
+				rc.recordCircuitFailure(attempt.Info, resp.StatusCode, copyErr)
 				rc.logRequest(respCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 				return
 			}
 
+			rc.recordCircuitSuccess(attempt.Info)
 			rc.logRequest(respCtx.Gin, attempt.Info, resp.StatusCode, "")
 			return
 		}

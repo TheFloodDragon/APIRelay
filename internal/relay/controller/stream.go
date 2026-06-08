@@ -39,11 +39,12 @@ func (rc *RelayController) relayStream(reqCtx *RequestContext) {
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
+			rc.recordCircuitFailure(attempt.Info, 0, err)
 			rc.logRequest(reqCtx.Gin, attempt.Info, 0, lastErrMsg)
 			continue
 		}
 
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if !isSuccessfulStatus(resp.StatusCode) {
 			errorBody, readErr := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			if readErr != nil {
@@ -56,6 +57,7 @@ func (rc *RelayController) relayStream(reqCtx *RequestContext) {
 					lastErrMsg = string(errorBody)
 				}
 			}
+			rc.recordCircuitFailure(attempt.Info, resp.StatusCode, readErr)
 			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 			continue
 		}
@@ -64,6 +66,7 @@ func (rc *RelayController) relayStream(reqCtx *RequestContext) {
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
+			rc.recordCircuitFailure(attempt.Info, resp.StatusCode, err)
 			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 			continue
 		}
@@ -74,10 +77,12 @@ func (rc *RelayController) relayStream(reqCtx *RequestContext) {
 		if copyErr != nil {
 			lastErr = copyErr
 			lastErrMsg = copyErr.Error()
+			rc.recordCircuitFailure(attempt.Info, resp.StatusCode, copyErr)
 			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
 			return
 		}
 
+		rc.recordCircuitSuccess(attempt.Info)
 		rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, "")
 		return
 	}

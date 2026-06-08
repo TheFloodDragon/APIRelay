@@ -95,6 +95,39 @@ func (rc *RelayController) resolveCandidates(requestedModel string) ([]relayCand
 	return candidates, nil
 }
 
+func (rc *RelayController) filterCircuitOpenCandidates(app constant.RelayApp, candidates []relayCandidate) []relayCandidate {
+	if rc == nil || rc.circuitBreaker == nil || len(candidates) == 0 {
+		return candidates
+	}
+
+	filtered := make([]relayCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if rc.circuitBreaker.Allow(app, candidate.Channel.ID) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) == 0 {
+		return candidates
+	}
+	return filtered
+}
+
+func (rc *RelayController) recordCircuitSuccess(info *relayinfo.RelayInfo) {
+	if rc == nil || rc.circuitBreaker == nil || info == nil || info.Channel == nil {
+		return
+	}
+	rc.circuitBreaker.RecordSuccess(info.RelayApp, info.Channel.ID)
+}
+
+func (rc *RelayController) recordCircuitFailure(info *relayinfo.RelayInfo, statusCode int, err error) {
+	if rc == nil || rc.circuitBreaker == nil || info == nil || info.Channel == nil {
+		return
+	}
+	if shouldRecordCircuitFailure(statusCode, err) {
+		rc.circuitBreaker.RecordFailure(info.RelayApp, info.Channel.ID)
+	}
+}
+
 func buildRelayInfo(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat, meta relayRequestMeta, candidate relayCandidate, isStream bool) *relayinfo.RelayInfo {
 	channel := candidate.Channel
 	apiType := constant.APITypeFromChannelType(channel.Type)

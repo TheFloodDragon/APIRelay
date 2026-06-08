@@ -36,23 +36,27 @@ func (rc *RelayController) relayJSON(reqCtx *RequestContext) {
 		if err != nil {
 			lastErr = err
 			lastErrMsg = err.Error()
+			rc.recordCircuitFailure(attempt.Info, statusCode, err)
 			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
 			continue
 		}
 
-		if statusCode >= 200 && statusCode < 300 {
+		if isSuccessfulStatus(statusCode) {
 			convertedResp, err := attempt.ProtocolAdaptor.ConvertResponse(respBody, reqCtx.Mode, reqCtx.Format)
 			if err != nil {
 				lastErr = err
 				lastErrMsg = err.Error()
+				rc.recordCircuitFailure(attempt.Info, http.StatusBadGateway, err)
 				rc.logRequest(reqCtx.Gin, attempt.Info, http.StatusBadGateway, lastErrMsg)
 				continue
 			}
+			rc.recordCircuitSuccess(attempt.Info)
 			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, "")
 			reqCtx.Gin.Data(statusCode, "application/json", convertedResp)
 			return
 		}
 
+		rc.recordCircuitFailure(attempt.Info, statusCode, nil)
 		lastErr = nil
 		lastErrMsg = attempt.ProtocolAdaptor.ErrorMessage(respBody)
 		if lastErrMsg == "" {

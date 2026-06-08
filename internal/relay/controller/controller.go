@@ -13,11 +13,12 @@ import (
 
 // RelayController 是 /v1/* 入口的新转发控制器。
 type RelayController struct {
-	scheduler   *scheduler.Scheduler
-	modelRouter *router.ModelRouter
-	httpClient  *client.HTTPClient
-	logRepo     *repository.LogRepository
-	modelRepo   *repository.ModelRepository
+	scheduler      *scheduler.Scheduler
+	modelRouter    *router.ModelRouter
+	httpClient     *client.HTTPClient
+	logRepo        *repository.LogRepository
+	modelRepo      *repository.ModelRepository
+	circuitBreaker *CircuitBreaker
 }
 
 func NewRelayController(
@@ -28,11 +29,12 @@ func NewRelayController(
 	modelRepo *repository.ModelRepository,
 ) *RelayController {
 	return &RelayController{
-		scheduler:   scheduler,
-		modelRouter: modelRouter,
-		httpClient:  httpClient,
-		logRepo:     logRepo,
-		modelRepo:   modelRepo,
+		scheduler:      scheduler,
+		modelRouter:    modelRouter,
+		httpClient:     httpClient,
+		logRepo:        logRepo,
+		modelRepo:      modelRepo,
+		circuitBreaker: NewCircuitBreaker(),
 	}
 }
 

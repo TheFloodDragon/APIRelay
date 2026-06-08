@@ -63,6 +63,7 @@ func (rc *RelayController) newRequestContext(
 		writeRelayError(c, http.StatusNotFound, "没有找到支持该模型的渠道", "invalid_request_error", "")
 		return nil, false
 	}
+	candidates = rc.filterCircuitOpenCandidates(app, candidates)
 
 	return &RequestContext{
 		Gin:          c,
