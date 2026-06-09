@@ -49,6 +49,14 @@ func configuredResponsesMode(channel model.Channel) responsesUpstreamMode {
 }
 
 func shouldAutoTryNativeResponses(channel model.Channel) bool {
+	// OpenAI 兼容渠道（NewAPI/OneAPI/第三方中转等）即使声明了
+	// supports_responses，也经常只兼容 /chat/completions；直接转发到
+	// /responses 会得到 openai_error，而 CC-Switch 的可用路径通常是
+	// Responses -> Chat Completions 桥接。因此 auto 模式只对 OpenAI 官方
+	// 渠道尝试原生 Responses，兼容渠道默认走 chat_bridge。
+	if !strings.EqualFold(strings.TrimSpace(channel.Type), "openai") {
+		return false
+	}
 	if constant.APITypeFromChannelType(channel.Type) != constant.APITypeOpenAI {
 		return false
 	}

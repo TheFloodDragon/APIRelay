@@ -25,6 +25,10 @@ func TestResponsesAttemptOrderAutoMode(t *testing.T) {
 	got = responsesAttemptOrder(openAI)
 	assertAttemptOrder(t, got, []responsesAttemptKind{responsesAttemptNative, responsesAttemptChatBridge})
 
+	compatible := relayCandidate{Channel: model.Channel{Type: "openai_compatible", Config: model.JSONMap{"supports_responses": true}}}
+	got = responsesAttemptOrder(compatible)
+	assertAttemptOrder(t, got, []responsesAttemptKind{responsesAttemptChatBridge})
+
 	anthropic := relayCandidate{Channel: model.Channel{Type: "anthropic"}}
 	got = responsesAttemptOrder(anthropic)
 	assertAttemptOrder(t, got, []responsesAttemptKind{responsesAttemptChatBridge})

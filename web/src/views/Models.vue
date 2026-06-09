@@ -3,7 +3,7 @@
     <div>
       <p class="eyebrow">Model Catalog</p>
       <h1>模型列表</h1>
-      <p>管理已同步模型的显示名称和可用状态,控制对外调用时的模型路由。</p>
+      <p>参与路由决定真实请求是否能命中模型；允许测试仅控制管理台连通性测试。两者互不影响，方便先验证再开放。</p>
     </div>
     <div class="page-actions toolbar-panel">
       <el-input
@@ -34,29 +34,33 @@
     </div>
   </section>
 
-  <div class="metric-grid compact">
+  <div class="metric-grid compact model-metrics">
     <div class="metric-card">
       <span class="metric-label">模型总数</span>
       <strong>{{ totalCount }}</strong>
       <small>全部同步模型</small>
     </div>
     <div class="metric-card accent-green">
-      <span class="metric-label">可用模型</span>
-      <strong>{{ enabledCount }}</strong>
-      <small>已启用并可调用</small>
+      <span class="metric-label">参与路由</span>
+      <strong>{{ routeEnabledCount }}</strong>
+      <small>真实请求可调用</small>
+    </div>
+    <div class="metric-card accent-purple">
+      <span class="metric-label">允许测试</span>
+      <strong>{{ testEnabledCount }}</strong>
+      <small>管理台可测试</small>
     </div>
     <div class="metric-card accent-red">
-      <span class="metric-label">隐藏模型</span>
+      <span class="metric-label">已隐藏</span>
       <strong>{{ disabledCount }}</strong>
-      <small>已禁用不可调用</small>
+      <small>不会参与路由</small>
     </div>
   </div>
 
-  <el-alert type="info" :closable="false" show-icon style="margin-bottom: 20px">
+  <el-alert class="guide-card" type="info" :closable="false" show-icon>
     <template #title>
-      <span style="font-size: 14px">
-        "调用名称/显示名"是对外调用时使用的模型名；"上游真实模型名"是渠道实际支持的模型。
-        关闭"参与路由"后,模型将隐藏且不可被真实请求路由调用；"允许测试"只影响管理台连通性测试。双击显示名可快速编辑。
+      <span>
+        “调用名称/显示名”是对外调用时使用的名称，下方小字为渠道真实模型名。关闭“参与路由”会从真实请求中隐藏；关闭“允许测试”只禁止管理台测试。双击行可快速编辑。
       </span>
     </template>
   </el-alert>
@@ -69,17 +73,18 @@
       empty-text="暂无模型,请先在渠道页获取模型"
       @row-dblclick="openEditDialogFromRow"
     >
-      <el-table-column type="selection" width="55" />
-      <el-table-column label="调用名称/显示名" min-width="200" sortable>
+      <el-table-column type="selection" width="48" />
+      <el-table-column label="调用名称 / 显示名" min-width="260" sortable>
         <template #default="{ row }">
           <div class="model-name-cell">
-            <div>
-              <span class="display-name" :class="{ 'is-disabled': !row.enabled }">
-                {{ row.display_name || row.name }}
-              </span>
-              <el-tag v-if="!row.enabled" type="info" size="small" effect="plain" style="margin-left: 8px">
-                隐藏
-              </el-tag>
+            <div class="model-title-wrap">
+              <div class="model-title-line">
+                <span class="display-name" :class="{ 'is-disabled': !row.enabled }">
+                  {{ row.display_name || row.name }}
+                </span>
+                <el-tag v-if="!row.enabled" type="info" size="small" effect="plain">隐藏</el-tag>
+              </div>
+              <small class="real-model-name">真实模型：{{ row.name || '-' }}</small>
             </div>
             <el-button type="primary" text size="small" :icon="Edit" @click.stop="openEditDialog(row)">
               编辑
@@ -87,54 +92,55 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="name" label="上游真实模型名" min-width="200" show-overflow-tooltip sortable />
-      <el-table-column label="所属渠道" min-width="150" show-overflow-tooltip sortable>
+      <el-table-column label="所属渠道" min-width="180" show-overflow-tooltip sortable>
         <template #default="{ row }">
-          <span class="channel-badge">{{ row.channel?.name || row.channel_id || '-' }}</span>
+          <div class="channel-cell">
+            <span class="channel-badge">{{ row.channel?.name || row.channel_id || '-' }}</span>
+            <small>{{ row.channel?.type || '未知协议' }}</small>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column label="渠道类型" min-width="130" sortable>
+      <el-table-column label="状态" min-width="220" align="center">
         <template #default="{ row }">
-          <el-tag effect="plain" size="small">{{ row.channel?.type || '-' }}</el-tag>
+          <div class="status-switch-group">
+            <label class="compact-switch-card" :class="{ active: row.enabled }" @click.stop>
+              <span>参与路由</span>
+              <el-switch
+                v-model="row.enabled"
+                size="small"
+                inline-prompt
+                active-text="开"
+                inactive-text="关"
+                @change="toggleModel(row)"
+              />
+            </label>
+            <label class="compact-switch-card" :class="{ active: row.test_enabled }" @click.stop>
+              <span>允许测试</span>
+              <el-switch
+                v-model="row.test_enabled"
+                size="small"
+                inline-prompt
+                active-text="开"
+                inactive-text="关"
+                @change="toggleModelTest(row)"
+              />
+            </label>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column label="参与路由" width="100" align="center">
-        <template #default="{ row }">
-          <el-switch
-            v-model="row.enabled"
-            size="small"
-            inline-prompt
-            active-text="启"
-            inactive-text="隐"
-            @click.stop
-            @change="toggleModel(row)"
-          />
-        </template>
-      </el-table-column>
-      <el-table-column label="允许测试" width="100" align="center">
-        <template #default="{ row }">
-          <el-switch
-            v-model="row.test_enabled"
-            size="small"
-            inline-prompt
-            active-text="测"
-            inactive-text="禁"
-            @click.stop
-            @change="toggleModelTest(row)"
-          />
-        </template>
-      </el-table-column>
-      <el-table-column label="创建时间" width="180" sortable>
+      <el-table-column label="创建时间" width="170" sortable>
         <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="170" fixed="right" align="center">
+      <el-table-column label="操作" width="190" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button type="primary" text :icon="Connection" size="small" @click.stop="openTestDialog(row)">
-            测试
-          </el-button>
-          <el-button type="danger" text :icon="Delete" size="small" @click.stop="handleDelete(row)">
-            删除
-          </el-button>
+          <div class="row-action-group">
+            <el-button type="primary" plain :icon="Connection" size="small" @click.stop="openTestDialog(row)">
+              测试
+            </el-button>
+            <el-button type="danger" plain :icon="Delete" size="small" @click.stop="handleDelete(row)">
+              删除
+            </el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -178,73 +184,102 @@
     </template>
   </el-dialog>
 
-  <el-dialog v-model="testDialogVisible" title="模型连通性测试" width="680px" class="form-dialog">
+  <el-dialog v-model="testDialogVisible" title="模型连通性测试" width="760px" class="form-dialog test-dialog">
     <div v-if="testingModel" class="test-summary">
       <div>
-        <span>调用名称</span>
+        <span>当前模型</span>
         <strong>{{ testingModel.display_name || testingModel.name }}</strong>
       </div>
       <div>
-        <span>上游模型</span>
-        <strong>{{ testingModel.name }}</strong>
+        <span>默认渠道</span>
+        <strong>{{ testingModel.channel?.name || '-' }}</strong>
       </div>
       <div>
-        <span>当前渠道</span>
-        <strong>{{ testingModel.channel?.name || '-' }}</strong>
+        <span>协议类型</span>
+        <strong>{{ testingModel.channel?.type || '-' }}</strong>
       </div>
     </div>
 
     <el-form :model="testForm" label-position="top">
       <el-form-item label="测试渠道">
-        <el-select v-model="testForm.channel_id" placeholder="选择测试渠道" style="width: 100%" :loading="loadingTestChannels">
+        <el-select
+          v-model="testForm.channel_id"
+          placeholder="选择测试渠道"
+          style="width: 100%"
+          :loading="loadingTestChannels"
+        >
           <el-option
             v-for="item in testChannels"
             :key="item.channel.id"
             :label="`${item.channel.name} · ${item.model_name}`"
             :value="item.channel.id"
           >
-            <span>{{ item.channel.name }} · {{ item.model_name }}</span>
-            <span style="float: right; color: var(--muted); font-size: 12px">
-              {{ item.route_enabled ? '可路由' : '不可路由' }} / {{ item.channel.enabled ? '渠道启用' : '渠道关闭' }}
-            </span>
+            <div class="test-channel-option">
+              <div>
+                <strong>{{ item.channel.name }}</strong>
+                <small>{{ item.model_name }}</small>
+              </div>
+              <div class="option-tags">
+                <el-tag :type="item.route_enabled ? 'success' : 'info'" size="small" effect="plain">
+                  {{ item.route_enabled ? '可路由' : '不路由' }}
+                </el-tag>
+                <el-tag :type="item.channel.enabled ? 'success' : 'danger'" size="small" effect="plain">
+                  {{ item.channel.enabled ? '渠道启用' : '渠道关闭' }}
+                </el-tag>
+              </div>
+            </div>
           </el-option>
         </el-select>
       </el-form-item>
       <el-form-item label="Prompt">
         <el-input v-model="testForm.prompt" type="textarea" :rows="3" />
       </el-form-item>
-      <el-collapse>
-        <el-collapse-item title="高级选项" name="advanced">
+      <el-collapse class="advanced-collapse">
+        <el-collapse-item title="高级参数" name="advanced">
+          <p class="param-note">兼容渠道可能拒绝 temperature 或 max tokens 等参数；系统会自动使用最小请求重试，帮助区分参数兼容问题与连通性问题。</p>
           <div class="advanced-grid">
             <el-form-item label="超时 ms">
               <el-input-number v-model="testForm.timeout_ms" :min="1000" :max="600000" :step="1000" style="width: 100%" />
+              <small class="form-tip">等待上游响应的最长时间。</small>
             </el-form-item>
             <el-form-item label="最大输出 tokens">
               <el-input-number v-model="testForm.max_output_tokens" :min="1" :max="8192" style="width: 100%" />
+              <small class="form-tip">限制模型最多返回的文本长度。</small>
             </el-form-item>
             <el-form-item label="temperature">
               <el-input-number v-model="testForm.temperature" :min="0" :max="2" :step="0.1" :precision="1" style="width: 100%" />
+              <small class="form-tip">控制输出随机性，0 更稳定，数值越高越发散。</small>
             </el-form-item>
           </div>
         </el-collapse-item>
       </el-collapse>
     </el-form>
 
-    <el-result
-      v-if="testResult"
-      :icon="testResult.ok ? 'success' : 'error'"
-      :title="testResult.ok ? '测试成功' : '测试失败'"
-      :sub-title="`${testResult.channel_name || '-'} · ${testResult.latency_ms || 0}ms · HTTP ${testResult.status_code || '-'}`"
-    >
-      <template #extra>
-        <el-input
-          :model-value="testResult.ok ? testResult.content : testResult.error || testResult.content"
-          type="textarea"
-          :rows="4"
-          readonly
-        />
-      </template>
-    </el-result>
+    <div v-if="testResult" class="test-result-card" :class="testResult.ok ? 'is-success' : 'is-error'">
+      <div class="result-header">
+        <div>
+          <span class="result-kicker">{{ testResult.ok ? 'Success' : 'Failed' }}</span>
+          <h3>{{ testResult.ok ? '测试成功' : '测试失败' }}</h3>
+        </div>
+        <el-tag :type="testResult.ok ? 'success' : 'danger'" effect="dark">
+          HTTP {{ testResult.status_code || '-' }}
+        </el-tag>
+      </div>
+      <div class="result-meta">
+        <span>{{ testResult.channel_name || '-' }}</span>
+        <span>{{ testResult.latency_ms || 0 }}ms</span>
+        <span>{{ testResult.resolved_model || testResult.model || '-' }}</span>
+      </div>
+      <div v-if="!testResult.ok" class="retry-hint">
+        上游返回错误。若错误与参数不兼容有关，请关注后端最小请求重试结果；也可调低高级参数后再次测试。
+      </div>
+      <el-input
+        :model-value="testResult.ok ? testResult.content : testResult.error || testResult.content"
+        type="textarea"
+        :rows="5"
+        readonly
+      />
+    </div>
 
     <template #footer>
       <el-button @click="testDialogVisible = false">关闭</el-button>
@@ -305,7 +340,8 @@ const testForm = reactive({
 })
 
 const totalCount = computed(() => models.value.length)
-const enabledCount = computed(() => models.value.filter((item) => item.enabled).length)
+const routeEnabledCount = computed(() => models.value.filter((item) => item.enabled).length)
+const testEnabledCount = computed(() => models.value.filter((item) => item.test_enabled).length)
 const disabledCount = computed(() => models.value.filter((item) => !item.enabled).length)
 
 const uniqueChannels = computed(() => {
@@ -542,6 +578,10 @@ function formatDate(value?: string) {
 </script>
 
 <style scoped>
+.model-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .model-name-cell {
   display: flex;
   align-items: center;
@@ -549,9 +589,23 @@ function formatDate(value?: string) {
   gap: 12px;
 }
 
+.model-title-wrap {
+  min-width: 0;
+}
+
+.model-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .display-name {
-  font-weight: 500;
+  overflow: hidden;
   color: var(--text);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition: var(--transition-fast);
 }
 
@@ -560,12 +614,81 @@ function formatDate(value?: string) {
   text-decoration: line-through;
 }
 
+.real-model-name {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.channel-cell small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .channel-badge {
+  max-width: 100%;
+  overflow: hidden;
   padding: 4px 10px;
   border-radius: 8px;
-  font-size: 13px;
   background: var(--primary-light);
   color: var(--primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-switch-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(92px, 1fr));
+  gap: 8px;
+}
+
+.compact-switch-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #f8fafc;
+  transition: var(--transition-fast);
+}
+
+.compact-switch-card.active {
+  border-color: rgba(18, 183, 106, 0.28);
+  background: rgba(220, 252, 231, 0.45);
+}
+
+.compact-switch-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.row-action-group {
+  display: inline-flex;
+  gap: 8px;
+  padding: 5px;
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.row-action-group :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 
 .enhanced-table {
@@ -609,8 +732,9 @@ function formatDate(value?: string) {
 .form-tip {
   display: block;
   margin-top: 4px;
-  font-size: 12px;
   color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .test-summary {
@@ -618,13 +742,17 @@ function formatDate(value?: string) {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 18px;
+  padding: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.9), rgba(255, 255, 255, 0.86));
 }
 
 .test-summary > div {
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: #f8fafc;
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .test-summary span,
@@ -640,8 +768,56 @@ function formatDate(value?: string) {
 }
 
 .test-summary strong {
+  overflow: hidden;
   color: var(--text);
-  word-break: break-all;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.test-channel-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  min-height: 42px;
+}
+
+.test-channel-option strong,
+.test-channel-option small {
+  display: block;
+}
+
+.test-channel-option strong {
+  line-height: 1.3;
+}
+
+.test-channel-option small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.option-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.advanced-collapse {
+  margin-bottom: 18px;
+}
+
+.param-note {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  border-radius: var(--radius-md);
+  background: var(--info-light);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .advanced-grid {
@@ -650,10 +826,101 @@ function formatDate(value?: string) {
   gap: 12px;
 }
 
+.test-result-card {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, #ffffff, #f8fafc);
+  box-shadow: var(--shadow-subtle);
+}
+
+.test-result-card.is-success {
+  border-color: rgba(18, 183, 106, 0.26);
+  background: linear-gradient(135deg, rgba(220, 252, 231, 0.72), #ffffff 55%);
+}
+
+.test-result-card.is-error {
+  border-color: rgba(240, 68, 56, 0.24);
+  background: linear-gradient(135deg, rgba(254, 228, 226, 0.72), #ffffff 55%);
+}
+
+.result-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.result-kicker {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.result-header h3 {
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+
+.result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.result-meta span {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.retry-hint {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--danger-light);
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 1180px) {
+  .model-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .test-summary,
-  .advanced-grid {
+  .advanced-grid,
+  .status-switch-group {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .model-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .row-action-group,
+  .test-channel-option,
+  .result-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .option-tags {
+    justify-content: flex-start;
   }
 }
 </style>

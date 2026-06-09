@@ -144,6 +144,25 @@
         </div>
       </div>
 
+      <div v-if="isOpenAIProtocol" class="form-section responses-mode-section">
+        <div class="section-heading inline">
+          <div>
+            <h3>Responses 转发模式</h3>
+            <p>CCS/Codex 会请求 /v1/responses；多数第三方 OpenAI 兼容渠道实际只支持 /chat/completions。</p>
+          </div>
+          <el-tag type="warning" effect="plain">建议桥接</el-tag>
+        </div>
+        <el-radio-group v-model="responsesMode" class="responses-mode-group">
+          <el-radio-button label="chat_bridge">桥接到 Chat Completions</el-radio-button>
+          <el-radio-button label="auto">自动</el-radio-button>
+          <el-radio-button label="native">原生 Responses</el-radio-button>
+        </el-radio-group>
+        <div class="responses-mode-hint">
+          <strong>{{ responsesModeTitle }}</strong>
+          <span>{{ responsesModeHint }}</span>
+        </div>
+      </div>
+
       <div class="form-section model-form-section">
         <div class="section-heading inline">
           <div>
@@ -224,6 +243,7 @@ const channels = ref<Channel[]>([])
 const dialogVisible = ref(false)
 const editingChannel = ref<Channel | null>(null)
 const modelsText = ref('')
+const responsesMode = ref<'chat_bridge' | 'auto' | 'native'>('chat_bridge')
 
 const protocolOptions: ProtocolOption[] = [
   {
@@ -278,6 +298,17 @@ const modelCount = computed(() => new Set(channels.value.flatMap((item) => item.
 const selectedProtocol = computed(
   () => protocolOptions.find((protocol) => protocol.type === form.type) || protocolOptions[0]
 )
+const isOpenAIProtocol = computed(() => ['openai', 'openai_compatible'].includes(String(form.type || '').toLowerCase()))
+const responsesModeTitle = computed(() => {
+  if (responsesMode.value === 'native') return '原生转发到 /responses'
+  if (responsesMode.value === 'auto') return '官方 OpenAI 可原生，兼容渠道走桥接'
+  return '桥接到 /chat/completions'
+})
+const responsesModeHint = computed(() => {
+  if (responsesMode.value === 'native') return '仅在确认上游完整支持 Responses API 时使用；不支持时会出现 openai_error。'
+  if (responsesMode.value === 'auto') return '系统仅对 OpenAI 官方类型尝试原生 Responses，第三方兼容渠道默认桥接。'
+  return '推荐用于 NewAPI、OneAPI、第三方中转和 CCS 场景，避免 /responses 不兼容。'
+})
 const parsedModelNames = computed(() => parseModelsText(modelsText.value))
 const previewModelNames = computed(() => parsedModelNames.value.slice(0, 10))
 const hiddenPreviewModelCount = computed(() => Math.max(0, parsedModelNames.value.length - previewModelNames.value.length))
@@ -340,6 +371,7 @@ function resetForm() {
   }
   Object.assign(form, defaultForm())
   modelsText.value = ''
+  responsesMode.value = 'chat_bridge'
 }
 
 function openCreateDialog() {
@@ -352,6 +384,7 @@ function openEditDialog(channel: Channel) {
   editingChannel.value = channel
   Object.assign(form, { ...channel })
   modelsText.value = channel.models?.join('\n') || ''
+  responsesMode.value = normalizeResponsesMode(channel.config?.responses_mode)
   dialogVisible.value = true
 }
 
@@ -374,8 +407,28 @@ function normalizeChannels(value?: Channel[] | null): Channel[] {
     weight: Number(channel.weight || 1),
     timeout: Number(channel.timeout || 60000),
     max_retries: Number(channel.max_retries || 0),
+    config: channel.config || {},
     health_status: channel.health_status || 'unknown'
   }))
+}
+
+function normalizeResponsesMode(value: unknown): 'chat_bridge' | 'auto' | 'native' {
+  if (value === 'native' || value === 'auto' || value === 'chat_bridge') return value
+  if (value === 'responses' || value === 'openai_responses') return 'native'
+  if (value === 'chat' || value === 'bridge' || value === 'chat-bridge') return 'chat_bridge'
+  return 'chat_bridge'
+}
+
+function channelConfigPayload(source: Partial<Channel>): Record<string, unknown> {
+  const config = { ...(source.config || {}) }
+  if (['openai', 'openai_compatible'].includes(String(source.type || '').toLowerCase())) {
+    config.responses_mode = responsesMode.value
+    config.supports_responses = responsesMode.value === 'native'
+  } else {
+    delete config.responses_mode
+    delete config.supports_responses
+  }
+  return config
 }
 
 function toChannelPayload(source: Partial<Channel>, models = source.models || []): Partial<Channel> {
@@ -390,7 +443,7 @@ function toChannelPayload(source: Partial<Channel>, models = source.models || []
     enabled: source.enabled ?? true,
     timeout: Number(source.timeout || 60000),
     max_retries: Number(source.max_retries || 0),
-    config: source.config || {}
+    config: channelConfigPayload(source)
   }
 
   if (source.id !== undefined) payload.id = source.id
@@ -497,6 +550,43 @@ async function onDragEnd(event: DragEndEvent) {
   padding-bottom: 18px;
   border-color: rgba(37, 99, 235, 0.14);
   background: linear-gradient(180deg, rgba(239, 246, 255, 0.72), #fbfcff 62%);
+}
+
+.responses-mode-section {
+  border-color: rgba(247, 144, 9, 0.2);
+  background: linear-gradient(180deg, rgba(254, 240, 199, 0.48), #fbfcff 62%);
+}
+
+.responses-mode-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.responses-mode-group :deep(.el-radio-button__inner) {
+  border-radius: 12px !important;
+  border-left: var(--el-border) !important;
+}
+
+.responses-mode-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(247, 144, 9, 0.22);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.responses-mode-hint strong {
+  color: var(--text);
+}
+
+.responses-mode-hint span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .section-heading {
