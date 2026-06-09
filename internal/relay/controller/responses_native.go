@@ -319,6 +319,10 @@ func writeFinalResponsesError(c *gin.Context, lastErr error, lastErrMsg string, 
 		writeRelayError(c, http.StatusRequestEntityTooLarge, "请求体过大，上游网关拒绝处理", "request_too_large", lastErrMsg)
 		return
 	}
+	if attemptedUpstream && lastStatusCode >= http.StatusBadRequest && lastStatusCode < http.StatusInternalServerError {
+		writeRelayError(c, lastStatusCode, "上游渠道请求失败", "upstream_error", lastErrMsg)
+		return
+	}
 	writeFinalRelayError(c, lastErr, lastErrMsg, attemptedUpstream)
 }
 

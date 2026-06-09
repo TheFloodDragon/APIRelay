@@ -3,8 +3,11 @@ package controller
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestResponsesSSEToJSONUsesCompletedResponse(t *testing.T) {
@@ -111,5 +114,46 @@ func TestResponsesUpstreamErrorMessage413(t *testing.T) {
 	got := responsesUpstreamErrorMessage(nil, []byte("too large"), http.StatusRequestEntityTooLarge)
 	if !strings.Contains(got, "请求体过大") {
 		t.Fatalf("message = %q, want request-too-large hint", got)
+	}
+}
+
+func TestWriteFinalResponsesErrorPreservesUpstream4xx(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(writer)
+
+	writeFinalResponsesError(ctx, nil, "model not found", true, http.StatusNotFound)
+
+	if writer.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body = %s", writer.Code, http.StatusNotFound, writer.Body.String())
+	}
+	var payload map[string]map[string]interface{}
+	if err := json.Unmarshal(writer.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if payload["error"]["type"] != "upstream_error" {
+		t.Fatalf("error type = %v, want upstream_error", payload["error"]["type"])
+	}
+	if payload["error"]["details"] != "model not found" {
+		t.Fatalf("details = %v, want model not found", payload["error"]["details"])
+	}
+}
+
+func TestWriteFinalResponsesErrorKeeps413SpecificType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(writer)
+
+	writeFinalResponsesError(ctx, nil, "too large", true, http.StatusRequestEntityTooLarge)
+
+	if writer.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body = %s", writer.Code, http.StatusRequestEntityTooLarge, writer.Body.String())
+	}
+	var payload map[string]map[string]interface{}
+	if err := json.Unmarshal(writer.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if payload["error"]["type"] != "request_too_large" {
+		t.Fatalf("error type = %v, want request_too_large", payload["error"]["type"])
 	}
 }
