@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,19 @@ func TestShouldTryNextCandidateTreatsBadRequestAsNonRetryable(t *testing.T) {
 	}
 	if !shouldTryNextCandidate(http.StatusBadGateway, nil) {
 		t.Fatal("502 should try next candidate")
+	}
+}
+
+func TestUpstreamRequestSummaryIncludesFieldsWithoutMessageContent(t *testing.T) {
+	attempt := &RelayAttempt{ConvertedBody: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"secret prompt"}],"stream":false,"max_completion_tokens":123}`)}
+	got := upstreamRequestSummary(attempt)
+	for _, want := range []string{"\"model\":\"gpt-5.5\"", "\"messages\":1", "\"max_completion_tokens\":123", "\"fields\""} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary = %s, want containing %s", got, want)
+		}
+	}
+	if strings.Contains(got, "secret prompt") {
+		t.Fatalf("summary should not contain message content: %s", got)
 	}
 }
 

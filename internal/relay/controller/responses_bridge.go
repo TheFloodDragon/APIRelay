@@ -384,7 +384,10 @@ func responseChatPassthroughFields(modelName string) []string {
 	// GPT-5 / o 系列 Chat Completions 端点通常只接受更窄的参数集合。
 	// 兼容上游经常会因 temperature/top_p/stop/logprobs 等旧 Chat 参数返回 400/openai_error。
 	if usesCompletionTokenLimit(modelName) {
-		return []string{"metadata", "n", "response_format", "seed", "service_tier", "stream_options", "user"}
+		// 对 GPT-5 / o 系列使用最小透传集。部分 OpenAI-compatible 上游会把
+		// metadata/n/response_format/seed/service_tier/user 等也视为不支持参数，
+		// 并只返回 bad_response_status_code 这类二次包装错误。
+		return []string{"stream_options"}
 	}
 	return []string{"frequency_penalty", "logit_bias", "logprobs", "metadata", "n", "presence_penalty", "response_format", "seed", "service_tier", "stop", "stream_options", "top_logprobs", "user"}
 }

@@ -173,7 +173,7 @@ func joinURL(baseURL, path string) string {
 }
 
 func formatOpenAIErrorObject(errObj map[string]interface{}, raw []byte) string {
-	parts := make([]string, 0, 5)
+	parts := make([]string, 0, 6)
 	if message, _ := errObj["message"].(string); message != "" {
 		parts = append(parts, message)
 	}
@@ -191,7 +191,17 @@ func formatOpenAIErrorObject(errObj map[string]interface{}, raw []byte) string {
 	if len(parts) == 0 {
 		return string(raw)
 	}
+	if isGenericOpenAIWrapperError(errObj) {
+		parts = append(parts, "raw="+string(raw))
+	}
 	return strings.Join(parts, "; ")
+}
+
+func isGenericOpenAIWrapperError(errObj map[string]interface{}) bool {
+	message, _ := errObj["message"].(string)
+	typ, _ := errObj["type"].(string)
+	code, _ := errObj["code"].(string)
+	return message == "openai_error" || typ == "bad_response_status_code" || code == "bad_response_status_code"
 }
 
 func parseErrorMessage(resp []byte) string {

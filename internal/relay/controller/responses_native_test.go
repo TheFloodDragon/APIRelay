@@ -124,8 +124,8 @@ func TestResponsesRequestToChatCompletionsPrunesLegacyGPT5Params(t *testing.T) {
 	if payload["max_completion_tokens"] != float64(123) {
 		t.Fatalf("max_completion_tokens = %v, want 123; body = %s", payload["max_completion_tokens"], string(got))
 	}
-	if _, ok := payload["metadata"].(map[string]interface{}); !ok {
-		t.Fatalf("metadata should be preserved; body = %s", string(got))
+	if _, exists := payload["metadata"]; exists {
+		t.Fatalf("metadata should be absent for gpt-5 bridge request; body = %s", string(got))
 	}
 }
 

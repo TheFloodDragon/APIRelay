@@ -2,10 +2,12 @@ package controller
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/TheFloodDragon/APIRelay/internal/model"
@@ -145,6 +147,35 @@ func (rc *RelayController) forwarderForRequest(reqCtx *RequestContext) *forwarde
 	return forwarder.NewForwarderWithBuilder(providerRouter, httpClient, len(providers)-1, nil, nil)
 }
 
+func upstreamRequestSummary(attempt *RelayAttempt) string {
+	if attempt == nil || len(attempt.ConvertedBody) == 0 {
+		return ""
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(attempt.ConvertedBody, &payload); err != nil {
+		return ""
+	}
+	keys := make([]string, 0, len(payload))
+	for key := range payload {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	summary := map[string]interface{}{"fields": keys}
+	for _, key := range []string{"model", "stream", "max_tokens", "max_completion_tokens"} {
+		if value, ok := payload[key]; ok {
+			summary[key] = value
+		}
+	}
+	if messages, ok := payload["messages"].([]interface{}); ok {
+		summary["messages"] = len(messages)
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
 func relayAttemptFromForwarderAttempt(attempt *forwarder.Attempt) *RelayAttempt {
 	if attempt == nil || attempt.Meta == nil {
 		return nil
@@ -168,6 +199,9 @@ func relayJSONPreflight(resp *http.Response, attempt *forwarder.Attempt) error {
 		if adaptorMessage := relayAttempt.ProtocolAdaptor.ErrorMessage(body); adaptorMessage != "" {
 			message = adaptorMessage
 		}
+	}
+	if summary := upstreamRequestSummary(relayAttempt); summary != "" {
+		message += "; request=" + summary
 	}
 	return &relayUpstreamError{
 		statusCode: resp.StatusCode,
@@ -201,6 +235,9 @@ func relayStreamPreflight(resp *http.Response, attempt *forwarder.Attempt) error
 		if adaptorMessage := relayAttempt.ProtocolAdaptor.ErrorMessage(body); adaptorMessage != "" {
 			message = adaptorMessage
 		}
+	}
+	if summary := upstreamRequestSummary(relayAttempt); summary != "" {
+		message += "; request=" + summary
 	}
 	return &relayUpstreamError{
 		statusCode: resp.StatusCode,
