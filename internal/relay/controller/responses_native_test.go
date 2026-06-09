@@ -76,6 +76,58 @@ func TestResponsesInputFunctionCallOutputToToolMessage(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestToChatCompletionsUsesCompletionTokensForGPT5(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","input":"hello","max_output_tokens":123,"parallel_tool_calls":true,"tool_choice":"auto"}`)
+	got, modelName, stream, err := responsesRequestToChatCompletions(body, false)
+	if err != nil {
+		t.Fatalf("responsesRequestToChatCompletions returned error: %v", err)
+	}
+	if modelName != "gpt-5.5" {
+		t.Fatalf("model = %q, want gpt-5.5", modelName)
+	}
+	if stream {
+		t.Fatalf("stream = true, want false")
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if payload["max_completion_tokens"] != float64(123) {
+		t.Fatalf("max_completion_tokens = %v, want 123; body = %s", payload["max_completion_tokens"], string(got))
+	}
+	if _, exists := payload["max_tokens"]; exists {
+		t.Fatalf("max_tokens should be absent for gpt-5 series; body = %s", string(got))
+	}
+	if _, exists := payload["parallel_tool_calls"]; exists {
+		t.Fatalf("parallel_tool_calls should be absent without tools; body = %s", string(got))
+	}
+	if _, exists := payload["tool_choice"]; exists {
+		t.Fatalf("tool_choice should be absent without tools; body = %s", string(got))
+	}
+}
+
+func TestResponsesRequestToChatCompletionsAddsStreamUsage(t *testing.T) {
+	body := []byte(`{"model":"gpt-4o","input":"hello","stream":true,"stream_options":{"foo":"bar"}}`)
+	got, _, stream, err := responsesRequestToChatCompletions(body, false)
+	if err != nil {
+		t.Fatalf("responsesRequestToChatCompletions returned error: %v", err)
+	}
+	if !stream {
+		t.Fatalf("stream = false, want true")
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	streamOptions, ok := payload["stream_options"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("stream_options missing or invalid: %s", string(got))
+	}
+	if streamOptions["include_usage"] != true || streamOptions["foo"] != "bar" {
+		t.Fatalf("stream_options = %+v, want include_usage=true and foo preserved", streamOptions)
+	}
+}
+
 func TestResponsesSSEToJSONAggregatesFunctionCall(t *testing.T) {
 	body := []byte(strings.Join([]string{
 		"event: response.output_item.added",

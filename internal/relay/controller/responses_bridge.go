@@ -340,16 +340,52 @@ func responsesRequestToChatCompletions(body []byte, streamRequested bool) ([]byt
 
 	copyIfPresent(chatReq, raw, "temperature", "temperature")
 	copyIfPresent(chatReq, raw, "top_p", "top_p")
-	copyIfPresent(chatReq, raw, "max_output_tokens", "max_tokens")
-	copyIfPresent(chatReq, raw, "max_tokens", "max_tokens")
-	if tools, ok := raw["tools"]; ok {
-		chatReq["tools"] = responsesToolsToChatTools(tools)
+	if maxOutputTokens, ok := raw["max_output_tokens"]; ok {
+		if usesCompletionTokenLimit(modelName) {
+			chatReq["max_completion_tokens"] = maxOutputTokens
+		} else {
+			chatReq["max_tokens"] = maxOutputTokens
+		}
 	}
-	copyIfPresent(chatReq, raw, "tool_choice", "tool_choice")
-	copyIfPresent(chatReq, raw, "parallel_tool_calls", "parallel_tool_calls")
+	copyIfPresent(chatReq, raw, "max_tokens", "max_tokens")
+	copyIfPresent(chatReq, raw, "max_completion_tokens", "max_completion_tokens")
+	for _, key := range []string{"frequency_penalty", "logit_bias", "logprobs", "metadata", "n", "presence_penalty", "response_format", "seed", "service_tier", "stop", "stream_options", "top_logprobs", "user"} {
+		copyIfPresent(chatReq, raw, key, key)
+	}
+	if tools, ok := raw["tools"]; ok {
+		chatTools := responsesToolsToChatTools(tools)
+		if len(chatTools) > 0 {
+			chatReq["tools"] = chatTools
+		}
+	}
+	if hasChatTools(chatReq) {
+		copyIfPresent(chatReq, raw, "tool_choice", "tool_choice")
+		copyIfPresent(chatReq, raw, "parallel_tool_calls", "parallel_tool_calls")
+	}
+	if stream {
+		ensureStreamOptionsIncludeUsage(chatReq)
+	}
 
 	chatBody, err := json.Marshal(chatReq)
 	return chatBody, modelName, stream, err
+}
+
+func usesCompletionTokenLimit(modelName string) bool {
+	model := strings.ToLower(strings.TrimSpace(modelName))
+	return strings.HasPrefix(model, "o1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") || strings.HasPrefix(model, "gpt-5")
+}
+
+func hasChatTools(chatReq map[string]interface{}) bool {
+	tools, ok := chatReq["tools"].([]interface{})
+	return ok && len(tools) > 0
+}
+
+func ensureStreamOptionsIncludeUsage(chatReq map[string]interface{}) {
+	if existing, ok := chatReq["stream_options"].(map[string]interface{}); ok {
+		existing["include_usage"] = true
+		return
+	}
+	chatReq["stream_options"] = map[string]interface{}{"include_usage": true}
 }
 
 func clientRequestedEventStream(c *gin.Context) bool {
