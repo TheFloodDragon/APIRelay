@@ -16,12 +16,16 @@ type ChatRequest struct {
 	Stream      bool
 	Stop        []string
 	MaxTokens   *int
+	Tools       []map[string]interface{}
+	ToolChoice  interface{}
 }
 
 // ChatMessage 表示通用文本消息。第一阶段仅保留基础角色与文本内容。
 type ChatMessage struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	ToolCallID string
+	ToolCalls  []map[string]interface{}
 }
 
 // ChatResponse 是非流式文本聊天响应的最小公共表示。
@@ -30,6 +34,7 @@ type ChatResponse struct {
 	Model        string
 	Role         string
 	Content      string
+	ToolCalls    []map[string]interface{}
 	FinishReason string
 	Usage        *Usage
 	Created      int64
@@ -44,14 +49,18 @@ type Usage struct {
 
 // StreamEvent 是流式文本增量的公共表示。
 type StreamEvent struct {
-	ID           string
-	Model        string
-	Role         string
-	Content      string
-	FinishReason string
-	Index        int
-	Start        bool
-	Done         bool
+	ID            string
+	Model         string
+	Role          string
+	Content       string
+	ToolCalls     []map[string]interface{}
+	ToolCallID    string
+	ToolName      string
+	ToolArguments string
+	FinishReason  string
+	Index         int
+	Start         bool
+	Done          bool
 }
 
 // RequestMeta 是控制器已解析出的请求元信息，供 URL 带模型的入口（例如 Gemini）参与协议转换。
@@ -77,6 +86,8 @@ func normalizeRole(role string) string {
 		return "assistant"
 	case "system", "developer":
 		return "system"
+	case "tool":
+		return "tool"
 	default:
 		return "user"
 	}
@@ -88,7 +99,7 @@ func normalizeFinishReason(reason string) string {
 		return "length"
 	case "content_filter", "safety", "recitation", "blocklist", "prohibited_content", "spii":
 		return "content_filter"
-	case "tool_use":
+	case "tool_use", "tool_calls", "function_call":
 		return "tool_calls"
 	case "stop_sequence", "end_turn", "stop", "":
 		fallthrough

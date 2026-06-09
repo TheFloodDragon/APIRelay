@@ -6,19 +6,23 @@ import (
 )
 
 type openAIChatRequest struct {
-	Model               string              `json:"model"`
-	Messages            []openAIChatMessage `json:"messages"`
-	Temperature         *float64            `json:"temperature,omitempty"`
-	TopP                *float64            `json:"top_p,omitempty"`
-	Stream              bool                `json:"stream,omitempty"`
-	Stop                interface{}         `json:"stop,omitempty"`
-	MaxTokens           *int                `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
+	Model               string                   `json:"model"`
+	Messages            []openAIChatMessage      `json:"messages"`
+	Temperature         *float64                 `json:"temperature,omitempty"`
+	TopP                *float64                 `json:"top_p,omitempty"`
+	Stream              bool                     `json:"stream,omitempty"`
+	Stop                interface{}              `json:"stop,omitempty"`
+	MaxTokens           *int                     `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                     `json:"max_completion_tokens,omitempty"`
+	Tools               []map[string]interface{} `json:"tools,omitempty"`
+	ToolChoice          interface{}              `json:"tool_choice,omitempty"`
 }
 
 type openAIChatMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"`
+	Role       string                   `json:"role"`
+	Content    interface{}              `json:"content"`
+	ToolCallID string                   `json:"tool_call_id,omitempty"`
+	ToolCalls  []map[string]interface{} `json:"tool_calls,omitempty"`
 }
 
 type openAIChatResponse struct {
@@ -31,10 +35,10 @@ type openAIChatResponse struct {
 }
 
 type openAIChatChoice struct {
-	Index        int                `json:"index"`
-	Message      *openAIChatMessage `json:"message,omitempty"`
-	Delta        map[string]string  `json:"delta,omitempty"`
-	FinishReason *string            `json:"finish_reason"`
+	Index        int                    `json:"index"`
+	Message      *openAIChatMessage     `json:"message,omitempty"`
+	Delta        map[string]interface{} `json:"delta,omitempty"`
+	FinishReason *string                `json:"finish_reason"`
 }
 
 type openAIUsage struct {
@@ -57,6 +61,8 @@ func OpenAIChatRequestToProtocol(body []byte) (*ChatRequest, error) {
 		Stream:      req.Stream,
 		Stop:        stringList(req.Stop),
 		MaxTokens:   req.MaxTokens,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
 	}
 	if chatReq.MaxTokens == nil {
 		chatReq.MaxTokens = req.MaxCompletionTokens
@@ -65,15 +71,23 @@ func OpenAIChatRequestToProtocol(body []byte) (*ChatRequest, error) {
 	systemParts := make([]string, 0)
 	for _, message := range req.Messages {
 		role := normalizeRole(message.Role)
+		if message.Role == "tool" {
+			role = "tool"
+		}
 		text := contentToText(message.Content)
-		if text == "" {
+		if text == "" && len(message.ToolCalls) == 0 {
 			continue
 		}
 		if role == "system" {
 			systemParts = append(systemParts, text)
 			continue
 		}
-		chatReq.Messages = append(chatReq.Messages, ChatMessage{Role: role, Content: text})
+		chatReq.Messages = append(chatReq.Messages, ChatMessage{
+			Role:       role,
+			Content:    text,
+			ToolCallID: message.ToolCallID,
+			ToolCalls:  message.ToolCalls,
+		})
 	}
 	chatReq.System = textParts(systemParts, "\n\n")
 
@@ -91,6 +105,8 @@ func ProtocolToOpenAIChatRequest(req *ChatRequest) ([]byte, error) {
 		TopP:        req.TopP,
 		Stream:      req.Stream,
 		MaxTokens:   req.MaxTokens,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
 	}
 	if len(req.Stop) > 0 {
 		openAIReq.Stop = req.Stop
@@ -100,10 +116,18 @@ func ProtocolToOpenAIChatRequest(req *ChatRequest) ([]byte, error) {
 	}
 	for _, message := range req.Messages {
 		role := normalizeRole(message.Role)
+		if message.Role == "tool" {
+			role = "tool"
+		}
 		if role == "system" {
 			role = "user"
 		}
-		openAIReq.Messages = append(openAIReq.Messages, openAIChatMessage{Role: role, Content: message.Content})
+		openAIReq.Messages = append(openAIReq.Messages, openAIChatMessage{
+			Role:       role,
+			Content:    message.Content,
+			ToolCallID: message.ToolCallID,
+			ToolCalls:  message.ToolCalls,
+		})
 	}
 	return json.Marshal(openAIReq)
 }
@@ -132,6 +156,7 @@ func OpenAIChatResponseToProtocol(body []byte) (*ChatResponse, error) {
 		if choice.Message != nil {
 			chatResp.Role = firstNonEmpty(choice.Message.Role, "assistant")
 			chatResp.Content = contentToText(choice.Message.Content)
+			chatResp.ToolCalls = choice.Message.ToolCalls
 		}
 		if choice.FinishReason != nil {
 			chatResp.FinishReason = normalizeFinishReason(*choice.FinishReason)
@@ -162,8 +187,9 @@ func ProtocolToOpenAIChatResponse(resp *ChatResponse) ([]byte, error) {
 			{
 				Index: 0,
 				Message: &openAIChatMessage{
-					Role:    firstNonEmpty(resp.Role, "assistant"),
-					Content: resp.Content,
+					Role:      firstNonEmpty(resp.Role, "assistant"),
+					Content:   resp.Content,
+					ToolCalls: resp.ToolCalls,
 				},
 				FinishReason: &finishReason,
 			},
@@ -211,10 +237,17 @@ func OpenAIStreamEventsFromData(data string) ([]StreamEvent, error) {
 		if content, _ := choice.Delta["content"].(string); content != "" {
 			event.Content = content
 		}
+		if calls, ok := choice.Delta["tool_calls"].([]interface{}); ok {
+			for _, value := range calls {
+				if call, ok := value.(map[string]interface{}); ok {
+					event.ToolCalls = append(event.ToolCalls, normalizeOpenAIToolCallDelta(call))
+				}
+			}
+		}
 		if choice.FinishReason != nil {
 			event.FinishReason = normalizeFinishReason(*choice.FinishReason)
 		}
-		if event.Start || event.Content != "" || event.FinishReason != "" {
+		if event.Start || event.Content != "" || len(event.ToolCalls) > 0 || event.FinishReason != "" {
 			events = append(events, event)
 		}
 	}
@@ -227,12 +260,15 @@ func ProtocolStreamEventToOpenAIData(event StreamEvent) ([]byte, error) {
 		return []byte("data: [DONE]\n\n"), nil
 	}
 
-	delta := map[string]string{}
+	delta := map[string]interface{}{}
 	if event.Role != "" {
 		delta["role"] = normalizeRole(event.Role)
 	}
 	if event.Content != "" {
 		delta["content"] = event.Content
+	}
+	if len(event.ToolCalls) > 0 {
+		delta["tool_calls"] = event.ToolCalls
 	}
 	var finishReason *string
 	if event.FinishReason != "" {

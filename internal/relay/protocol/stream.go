@@ -9,13 +9,14 @@ import (
 type AnthropicStreamEncoder struct {
 	started        bool
 	contentStarted bool
+	toolStarted    map[int]bool
 	stopped        bool
 	id             string
 	model          string
 }
 
 func NewAnthropicStreamEncoder() *AnthropicStreamEncoder {
-	return &AnthropicStreamEncoder{}
+	return &AnthropicStreamEncoder{toolStarted: map[int]bool{}}
 }
 
 func (e *AnthropicStreamEncoder) Encode(event StreamEvent) ([]byte, error) {
@@ -31,7 +32,7 @@ func (e *AnthropicStreamEncoder) Encode(event StreamEvent) ([]byte, error) {
 		e.model = event.Model
 	}
 
-	if event.Start || event.Content != "" || event.FinishReason != "" || event.Done {
+	if event.Start || event.Content != "" || len(event.ToolCalls) > 0 || event.FinishReason != "" || event.Done {
 		if err := e.ensureStarted(&out); err != nil {
 			return nil, err
 		}
@@ -49,6 +50,12 @@ func (e *AnthropicStreamEncoder) Encode(event StreamEvent) ([]byte, error) {
 				"text": event.Content,
 			},
 		}); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, toolCall := range event.ToolCalls {
+		if err := e.writeToolCall(&out, event.Index, toolCall); err != nil {
 			return nil, err
 		}
 	}
@@ -103,6 +110,49 @@ func (e *AnthropicStreamEncoder) ensureContentStarted(out *bytes.Buffer, index i
 	})
 }
 
+func (e *AnthropicStreamEncoder) writeToolCall(out *bytes.Buffer, fallbackIndex int, toolCall map[string]interface{}) error {
+	index := fallbackIndex
+	if rawIndex, ok := toolCall["index"].(float64); ok {
+		index = int(rawIndex)
+	} else if rawIndex, ok := toolCall["index"].(int); ok {
+		index = rawIndex
+	}
+	if index == 0 && e.contentStarted {
+		index = 1
+	}
+	name, arguments := toolCallNameAndArguments(toolCall)
+	id := ensureToolCallID(toolCallID(toolCall))
+	if name == "" {
+		name = formatToolNameFallback(id)
+	}
+	if !e.toolStarted[index] {
+		e.toolStarted[index] = true
+		if err := writeAnthropicSSE(out, "content_block_start", map[string]interface{}{
+			"type":  "content_block_start",
+			"index": index,
+			"content_block": map[string]interface{}{
+				"type":  "tool_use",
+				"id":    id,
+				"name":  name,
+				"input": map[string]interface{}{},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	if arguments == "" {
+		return nil
+	}
+	return writeAnthropicSSE(out, "content_block_delta", map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]interface{}{
+			"type":         "input_json_delta",
+			"partial_json": arguments,
+		},
+	})
+}
+
 func (e *AnthropicStreamEncoder) stop(out *bytes.Buffer, reason string) error {
 	if e.stopped {
 		return nil
@@ -111,6 +161,14 @@ func (e *AnthropicStreamEncoder) stop(out *bytes.Buffer, reason string) error {
 		if err := writeAnthropicSSE(out, "content_block_stop", map[string]interface{}{
 			"type":  "content_block_stop",
 			"index": 0,
+		}); err != nil {
+			return err
+		}
+	}
+	for index := range e.toolStarted {
+		if err := writeAnthropicSSE(out, "content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": index,
 		}); err != nil {
 			return err
 		}

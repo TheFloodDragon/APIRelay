@@ -11,6 +11,8 @@ type geminiGenerateContentRequest struct {
 	SystemInstruction *geminiContent           `json:"systemInstruction,omitempty"`
 	GenerationConfig  *geminiGenerationConfig  `json:"generationConfig,omitempty"`
 	SafetySettings    []geminiSafetySetting    `json:"safetySettings,omitempty"`
+	Tools             []map[string]interface{} `json:"tools,omitempty"`
+	ToolConfig        interface{}              `json:"toolConfig,omitempty"`
 }
 
 type geminiContent struct {
@@ -19,7 +21,9 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text string `json:"text,omitempty"`
+	Text             string                 `json:"text,omitempty"`
+	FunctionCall     map[string]interface{} `json:"functionCall,omitempty"`
+	FunctionResponse map[string]interface{} `json:"functionResponse,omitempty"`
 }
 
 type geminiGenerationConfig struct {
@@ -35,7 +39,7 @@ type geminiSafetySetting struct {
 }
 
 type geminiGenerateContentResponse struct {
-	Candidates     []geminiCandidate    `json:"candidates"`
+	Candidates     []geminiCandidate     `json:"candidates"`
 	PromptFeedback *geminiPromptFeedback `json:"promptFeedback,omitempty"`
 	UsageMetadata  *geminiUsageMetadata  `json:"usageMetadata,omitempty"`
 	ModelVersion   string                `json:"modelVersion,omitempty"`
@@ -64,7 +68,7 @@ func GeminiGenerateContentRequestToProtocol(body []byte, model string, stream bo
 		return nil, fmt.Errorf("解析 Gemini 请求失败: %w", err)
 	}
 
-	chatReq := &ChatRequest{Model: model, Stream: stream}
+	chatReq := &ChatRequest{Model: model, Stream: stream, Tools: geminiToolsToOpenAI(req.Tools), ToolChoice: geminiToolChoiceToOpenAI(req.ToolConfig)}
 	if req.GenerationConfig != nil {
 		chatReq.Temperature = req.GenerationConfig.Temperature
 		chatReq.TopP = req.GenerationConfig.TopP
@@ -75,15 +79,8 @@ func GeminiGenerateContentRequestToProtocol(body []byte, model string, stream bo
 		chatReq.System = geminiContentText(*req.SystemInstruction)
 	}
 	for _, content := range req.Contents {
-		text := geminiContentText(content)
-		if text == "" {
-			continue
-		}
-		role := "user"
-		if strings.ToLower(content.Role) == "model" || strings.ToLower(content.Role) == "assistant" {
-			role = "assistant"
-		}
-		chatReq.Messages = append(chatReq.Messages, ChatMessage{Role: role, Content: text})
+		messages := geminiContentToChatMessages(content)
+		chatReq.Messages = append(chatReq.Messages, messages...)
 	}
 	if len(chatReq.Messages) == 0 && chatReq.System == "" {
 		return nil, fmt.Errorf("缺少可转发的 contents")
@@ -101,16 +98,17 @@ func ProtocolToGeminiGenerateContentRequest(req *ChatRequest) ([]byte, error) {
 			StopSequences:   req.Stop,
 		},
 		SafetySettings: defaultGeminiSafetySettings(),
+		Tools:          openAIToolsToGemini(req.Tools),
+		ToolConfig:     openAIToolChoiceToGemini(req.ToolChoice),
 	}
 	if req.System != "" {
 		geminiReq.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: req.System}}}
 	}
 	for _, message := range req.Messages {
-		role := "user"
-		if normalizeRole(message.Role) == "assistant" {
-			role = "model"
+		content, ok := chatMessageToGeminiContent(message)
+		if ok {
+			geminiReq.Contents = append(geminiReq.Contents, content)
 		}
-		geminiReq.Contents = append(geminiReq.Contents, geminiContent{Role: role, Parts: []geminiPart{{Text: message.Content}}})
 	}
 	if len(geminiReq.Contents) == 0 && req.System != "" {
 		geminiReq.Contents = append(geminiReq.Contents, geminiContent{Role: "user", Parts: []geminiPart{{Text: req.System}}})
@@ -133,13 +131,18 @@ func GeminiGenerateContentResponseToProtocol(body []byte) (*ChatResponse, error)
 	}
 
 	candidate := resp.Candidates[0]
+	toolCalls := geminiContentToolCalls(candidate.Content)
 	chatResp := &ChatResponse{
 		ID:           generatedID("chatcmpl"),
 		Model:        resp.ModelVersion,
 		Role:         "assistant",
 		Content:      geminiContentText(candidate.Content),
+		ToolCalls:    toolCalls,
 		FinishReason: normalizeFinishReason(candidate.FinishReason),
 		Created:      nowUnix(),
+	}
+	if len(toolCalls) > 0 && (chatResp.FinishReason == "" || chatResp.FinishReason == "stop") {
+		chatResp.FinishReason = "tool_calls"
 	}
 	if resp.UsageMetadata != nil {
 		chatResp.Usage = &Usage{
@@ -153,13 +156,19 @@ func GeminiGenerateContentResponseToProtocol(body []byte) (*ChatResponse, error)
 
 // ProtocolToGeminiGenerateContentResponse 将通用响应转为 Gemini generateContent 响应。
 func ProtocolToGeminiGenerateContentResponse(resp *ChatResponse) ([]byte, error) {
+	parts := []geminiPart{}
+	if resp.Content != "" || len(resp.ToolCalls) == 0 {
+		parts = append(parts, geminiPart{Text: resp.Content})
+	}
+	for _, toolCall := range resp.ToolCalls {
+		if call := openAIToolCallToGeminiFunctionCall(toolCall); call != nil {
+			parts = append(parts, geminiPart{FunctionCall: call})
+		}
+	}
 	geminiResp := geminiGenerateContentResponse{
 		Candidates: []geminiCandidate{
 			{
-				Content: geminiContent{
-					Role:  "model",
-					Parts: []geminiPart{{Text: resp.Content}},
-				},
+				Content:      geminiContent{Role: "model", Parts: parts},
 				FinishReason: finishReasonToGemini(resp.FinishReason),
 				Index:        0,
 			},
@@ -198,13 +207,18 @@ func GeminiStreamEventsFromData(data string) ([]StreamEvent, error) {
 
 	events := make([]StreamEvent, 0, len(resp.Candidates))
 	for _, candidate := range resp.Candidates {
+		toolCalls := geminiContentToolCalls(candidate.Content)
 		event := StreamEvent{
 			Model:        resp.ModelVersion,
 			Content:      geminiContentText(candidate.Content),
+			ToolCalls:    toolCalls,
 			FinishReason: normalizeFinishReason(candidate.FinishReason),
 			Index:        candidate.Index,
 		}
-		if event.Content != "" || candidate.FinishReason != "" {
+		if len(toolCalls) > 0 && (event.FinishReason == "" || event.FinishReason == "stop") {
+			event.FinishReason = "tool_calls"
+		}
+		if event.Content != "" || len(event.ToolCalls) > 0 || candidate.FinishReason != "" {
 			events = append(events, event)
 		}
 	}
@@ -216,12 +230,21 @@ func ProtocolStreamEventToGeminiData(event StreamEvent) ([]byte, error) {
 	if event.Done {
 		return nil, nil
 	}
-	if event.Content == "" && event.FinishReason == "" {
+	if event.Content == "" && event.FinishReason == "" && len(event.ToolCalls) == 0 {
 		return nil, nil
 	}
 	candidate := geminiCandidate{Index: event.Index}
+	parts := []geminiPart{}
 	if event.Content != "" {
-		candidate.Content = geminiContent{Role: "model", Parts: []geminiPart{{Text: event.Content}}}
+		parts = append(parts, geminiPart{Text: event.Content})
+	}
+	for _, toolCall := range event.ToolCalls {
+		if call := openAIToolCallToGeminiFunctionCall(toolCall); call != nil {
+			parts = append(parts, geminiPart{FunctionCall: call})
+		}
+	}
+	if len(parts) > 0 {
+		candidate.Content = geminiContent{Role: "model", Parts: parts}
 	}
 	if event.FinishReason != "" {
 		candidate.FinishReason = finishReasonToGemini(event.FinishReason)
@@ -247,6 +270,79 @@ func geminiContentText(content geminiContent) string {
 	return strings.Join(parts, "")
 }
 
+func geminiContentToolCalls(content geminiContent) []map[string]interface{} {
+	toolCalls := make([]map[string]interface{}, 0)
+	for _, part := range content.Parts {
+		if part.FunctionCall != nil {
+			if toolCall := geminiFunctionCallToOpenAI(part.FunctionCall); toolCall != nil {
+				toolCalls = append(toolCalls, toolCall)
+			}
+		}
+	}
+	return toolCalls
+}
+
+func geminiContentToChatMessages(content geminiContent) []ChatMessage {
+	role := "user"
+	if strings.ToLower(content.Role) == "model" || strings.ToLower(content.Role) == "assistant" {
+		role = "assistant"
+	}
+	messages := make([]ChatMessage, 0)
+	textParts := make([]string, 0)
+	flushText := func() {
+		text := strings.Join(textParts, "")
+		textParts = textParts[:0]
+		if text != "" {
+			messages = append(messages, ChatMessage{Role: role, Content: text})
+		}
+	}
+	for _, part := range content.Parts {
+		if part.Text != "" {
+			textParts = append(textParts, part.Text)
+			continue
+		}
+		if part.FunctionCall != nil {
+			flushText()
+			if toolCall := geminiFunctionCallToOpenAI(part.FunctionCall); toolCall != nil {
+				messages = append(messages, ChatMessage{Role: "assistant", ToolCalls: []map[string]interface{}{toolCall}})
+			}
+			continue
+		}
+		if part.FunctionResponse != nil {
+			flushText()
+			if message, ok := geminiFunctionResponseToChatMessage(part.FunctionResponse); ok {
+				messages = append(messages, message)
+			}
+		}
+	}
+	flushText()
+	return messages
+}
+
+func chatMessageToGeminiContent(message ChatMessage) (geminiContent, bool) {
+	role := "user"
+	if normalizeRole(message.Role) == "assistant" {
+		role = "model"
+	}
+	parts := make([]geminiPart, 0)
+	if message.Role == "tool" {
+		parts = append(parts, geminiPart{FunctionResponse: chatToolMessageToGeminiFunctionResponse(message)})
+		return geminiContent{Role: "user", Parts: parts}, true
+	}
+	if message.Content != "" {
+		parts = append(parts, geminiPart{Text: message.Content})
+	}
+	for _, toolCall := range message.ToolCalls {
+		if call := openAIToolCallToGeminiFunctionCall(toolCall); call != nil {
+			parts = append(parts, geminiPart{FunctionCall: call})
+		}
+	}
+	if len(parts) == 0 {
+		return geminiContent{}, false
+	}
+	return geminiContent{Role: role, Parts: parts}, true
+}
+
 func defaultGeminiSafetySettings() []geminiSafetySetting {
 	return []geminiSafetySetting{
 		{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
@@ -262,6 +358,8 @@ func finishReasonToGemini(reason string) string {
 		return "MAX_TOKENS"
 	case "content_filter":
 		return "SAFETY"
+	case "tool_calls":
+		return "FUNCTION_CALL"
 	default:
 		return "STOP"
 	}

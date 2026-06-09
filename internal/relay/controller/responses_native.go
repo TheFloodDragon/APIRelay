@@ -92,6 +92,8 @@ func responsesSSEToJSON(body []byte, fallbackModel string) ([]byte, error) {
 	events := parseSSEEvents(body)
 	var outputText strings.Builder
 	modelName := fallbackModel
+	toolItems := map[string]map[string]interface{}{}
+	toolOrder := make([]string, 0)
 
 	for _, event := range events {
 		if event.Data == "" || event.Data == "[DONE]" {
@@ -109,7 +111,48 @@ func responsesSSEToJSON(body []byte, fallbackModel string) ([]byte, error) {
 				return json.Marshal(responseValue)
 			}
 		}
-		if delta, _ := payload["delta"].(string); delta != "" {
+		if event.Event == "response.output_item.added" || event.Event == "response.output_item.done" {
+			if item, ok := payload["item"].(map[string]interface{}); ok {
+				if itemType, _ := item["type"].(string); itemType == "function_call" {
+					id, _ := item["id"].(string)
+					if id == "" {
+						id, _ = item["call_id"].(string)
+					}
+					if id != "" {
+						if _, exists := toolItems[id]; !exists {
+							toolOrder = append(toolOrder, id)
+						}
+						toolItems[id] = mergeResponsesFunctionCallItem(toolItems[id], item)
+					}
+				}
+			}
+		}
+		if event.Event == "response.function_call_arguments.delta" {
+			id, _ := payload["item_id"].(string)
+			if id != "" {
+				if _, exists := toolItems[id]; !exists {
+					toolOrder = append(toolOrder, id)
+					toolItems[id] = map[string]interface{}{"id": id, "type": "function_call", "call_id": id, "status": "in_progress"}
+				}
+				delta, _ := payload["delta"].(string)
+				old, _ := toolItems[id]["arguments"].(string)
+				toolItems[id]["arguments"] = old + delta
+			}
+		}
+		if event.Event == "response.function_call_arguments.done" {
+			id, _ := payload["item_id"].(string)
+			if id != "" {
+				if _, exists := toolItems[id]; !exists {
+					toolOrder = append(toolOrder, id)
+					toolItems[id] = map[string]interface{}{"id": id, "type": "function_call", "call_id": id}
+				}
+				if arguments, _ := payload["arguments"].(string); arguments != "" {
+					toolItems[id]["arguments"] = arguments
+				}
+				toolItems[id]["status"] = "completed"
+			}
+		}
+		if delta, _ := payload["delta"].(string); delta != "" && event.Event == "response.output_text.delta" {
 			outputText.WriteString(delta)
 		}
 		if text, _ := payload["text"].(string); text != "" && event.Event == "response.output_text.done" && outputText.Len() == 0 {
@@ -117,11 +160,24 @@ func responsesSSEToJSON(body []byte, fallbackModel string) ([]byte, error) {
 		}
 	}
 
-	if outputText.Len() == 0 {
+	if outputText.Len() == 0 && len(toolItems) == 0 {
 		return nil, fmt.Errorf("无法从 Responses SSE 聚合出完整响应")
 	}
 	responseID := "resp_" + timeNowCompact()
-	return json.Marshal(baseResponsesObject(responseID, "msg_"+responseID, modelName, "completed", outputText.String()))
+	response := baseResponsesObject(responseID, "msg_"+responseID, modelName, "completed", outputText.String())
+	if len(toolItems) > 0 {
+		output := make([]interface{}, 0, 1+len(toolItems))
+		if outputText.Len() > 0 {
+			output = append(output, response["output"].([]interface{})...)
+		}
+		for _, id := range toolOrder {
+			item := toolItems[id]
+			item["status"] = "completed"
+			output = append(output, item)
+		}
+		response["output"] = output
+	}
+	return json.Marshal(response)
 }
 
 type parsedSSEEvent struct {

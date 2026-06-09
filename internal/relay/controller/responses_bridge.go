@@ -290,12 +290,16 @@ func copyResponsesStream(c *gin.Context, body io.Reader, attempt *RelayAttempt, 
 				return err
 			}
 		}
-		for _, content := range extractChatStreamContent(convertedChunk) {
-			if content == "" {
-				continue
+		for _, delta := range extractChatStreamDeltas(convertedChunk) {
+			if delta.Content != "" {
+				if err := emitter.delta(delta.Content); err != nil {
+					return err
+				}
 			}
-			if err := emitter.delta(content); err != nil {
-				return err
+			for _, toolCall := range delta.ToolCalls {
+				if err := emitter.toolCallDelta(toolCall); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -338,7 +342,11 @@ func responsesRequestToChatCompletions(body []byte, streamRequested bool) ([]byt
 	copyIfPresent(chatReq, raw, "top_p", "top_p")
 	copyIfPresent(chatReq, raw, "max_output_tokens", "max_tokens")
 	copyIfPresent(chatReq, raw, "max_tokens", "max_tokens")
-	copyIfPresent(chatReq, raw, "tools", "tools")
+	if tools, ok := raw["tools"]; ok {
+		chatReq["tools"] = responsesToolsToChatTools(tools)
+	}
+	copyIfPresent(chatReq, raw, "tool_choice", "tool_choice")
+	copyIfPresent(chatReq, raw, "parallel_tool_calls", "parallel_tool_calls")
 
 	chatBody, err := json.Marshal(chatReq)
 	return chatBody, modelName, stream, err
@@ -390,6 +398,25 @@ func responseInputItemToMessage(item interface{}) (map[string]interface{}, bool)
 	inputItem, ok := item.(map[string]interface{})
 	if !ok {
 		return nil, false
+	}
+
+	itemType, _ := inputItem["type"].(string)
+	if itemType == "function_call_output" {
+		callID, _ := inputItem["call_id"].(string)
+		if callID == "" {
+			callID, _ = inputItem["tool_call_id"].(string)
+		}
+		output := responseContentToText(inputItem["output"])
+		if output == "" {
+			output = responseContentToText(inputItem["content"])
+		}
+		if output == "" {
+			output = responseJSONString(inputItem["output"])
+		}
+		if callID == "" || output == "" {
+			return nil, false
+		}
+		return map[string]interface{}{"role": "tool", "tool_call_id": callID, "content": output}, true
 	}
 
 	role, _ := inputItem["role"].(string)
@@ -447,10 +474,14 @@ func chatCompletionsResponseToResponses(respBody []byte, requestedModel string) 
 	}
 
 	outputText := ""
+	var toolCalls []interface{}
 	if choices, ok := chatResp["choices"].([]interface{}); ok && len(choices) > 0 {
 		if choice, ok := choices[0].(map[string]interface{}); ok {
 			if message, ok := choice["message"].(map[string]interface{}); ok {
 				outputText, _ = message["content"].(string)
+				if calls, ok := message["tool_calls"].([]interface{}); ok {
+					toolCalls = calls
+				}
 			}
 		}
 	}
@@ -465,6 +496,10 @@ func chatCompletionsResponseToResponses(respBody []byte, requestedModel string) 
 	}
 
 	response := baseResponsesObject(responseID, "msg_"+responseID, modelName, "completed", outputText)
+	if len(toolCalls) > 0 {
+		response["output"] = chatToolCallsToResponsesOutput(toolCalls)
+		response["output_text"] = outputText
+	}
 	if usage, ok := chatResp["usage"].(map[string]interface{}); ok {
 		response["usage"] = map[string]interface{}{
 			"input_tokens":  usage["prompt_tokens"],
@@ -476,9 +511,24 @@ func chatCompletionsResponseToResponses(respBody []byte, requestedModel string) 
 	return json.Marshal(response)
 }
 
+type chatStreamDelta struct {
+	Content      string
+	ToolCalls    []map[string]interface{}
+	FinishReason string
+}
+
 func extractChatStreamContent(chunk []byte) []string {
+	deltas := extractChatStreamDeltas(chunk)
+	contents := make([]string, 0, len(deltas))
+	for _, delta := range deltas {
+		contents = append(contents, delta.Content)
+	}
+	return contents
+}
+
+func extractChatStreamDeltas(chunk []byte) []chatStreamDelta {
 	scanner := bufio.NewScanner(bytes.NewReader(chunk))
-	contents := make([]string, 0)
+	deltas := make([]chatStreamDelta, 0)
 	var dataLines []string
 
 	flushData := func() {
@@ -503,12 +553,23 @@ func extractChatStreamContent(chunk []byte) []string {
 		if !ok {
 			return
 		}
-		delta, ok := choice["delta"].(map[string]interface{})
+		deltaMap, ok := choice["delta"].(map[string]interface{})
 		if !ok {
 			return
 		}
-		content, _ := delta["content"].(string)
-		contents = append(contents, content)
+		delta := chatStreamDelta{}
+		delta.Content, _ = deltaMap["content"].(string)
+		if finishReason, _ := choice["finish_reason"].(string); finishReason != "" {
+			delta.FinishReason = finishReason
+		}
+		if calls, ok := deltaMap["tool_calls"].([]interface{}); ok {
+			for _, value := range calls {
+				if call, ok := value.(map[string]interface{}); ok {
+					delta.ToolCalls = append(delta.ToolCalls, normalizeChatToolCallDelta(call))
+				}
+			}
+		}
+		deltas = append(deltas, delta)
 	}
 
 	for scanner.Scan() {
@@ -525,24 +586,28 @@ func extractChatStreamContent(chunk []byte) []string {
 		}
 	}
 	flushData()
-	return contents
+	return deltas
 }
 
 type responsesStreamEmitter struct {
-	writer        gin.ResponseWriter
-	responseID    string
-	messageID     string
-	modelName     string
-	sequence      int
-	collectedText strings.Builder
+	writer          gin.ResponseWriter
+	responseID      string
+	messageID       string
+	modelName       string
+	sequence        int
+	collectedText   strings.Builder
+	toolCalls       map[int]map[string]interface{}
+	toolOutputIndex map[int]int
 }
 
 func newResponsesStreamEmitter(writer gin.ResponseWriter, responseID, messageID, modelName string) *responsesStreamEmitter {
 	return &responsesStreamEmitter{
-		writer:     writer,
-		responseID: responseID,
-		messageID:  messageID,
-		modelName:  modelName,
+		writer:          writer,
+		responseID:      responseID,
+		messageID:       messageID,
+		modelName:       modelName,
+		toolCalls:       map[int]map[string]interface{}{},
+		toolOutputIndex: map[int]int{},
 	}
 }
 
@@ -596,6 +661,38 @@ func (e *responsesStreamEmitter) delta(content string) error {
 	})
 }
 
+func (e *responsesStreamEmitter) toolCallDelta(delta map[string]interface{}) error {
+	index := chatToolCallIndex(delta)
+	current := e.toolCalls[index]
+	current = mergeChatToolCallDelta(current, delta)
+	e.toolCalls[index] = current
+	outputIndex, ok := e.toolOutputIndex[index]
+	if !ok {
+		outputIndex = 1 + len(e.toolOutputIndex)
+		e.toolOutputIndex[index] = outputIndex
+		item := chatToolCallToResponsesItem(current)
+		if err := e.write("response.output_item.added", map[string]interface{}{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item":         item,
+		}); err != nil {
+			return err
+		}
+	}
+	_, arguments := chatToolCallNameAndArguments(delta)
+	if arguments != "" {
+		if err := e.write("response.function_call_arguments.delta", map[string]interface{}{
+			"type":         "response.function_call_arguments.delta",
+			"item_id":      responseToolCallID(current),
+			"output_index": outputIndex,
+			"delta":        arguments,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *responsesStreamEmitter) complete() error {
 	outputText := e.collectedText.String()
 	if err := e.write("response.output_text.done", map[string]interface{}{
@@ -639,10 +736,58 @@ func (e *responsesStreamEmitter) complete() error {
 	}); err != nil {
 		return err
 	}
+	for index, toolCall := range e.toolCalls {
+		outputIndex := e.toolOutputIndex[index]
+		item := chatToolCallToResponsesItem(toolCall)
+		if err := e.write("response.function_call_arguments.done", map[string]interface{}{
+			"type":         "response.function_call_arguments.done",
+			"item_id":      responseToolCallID(toolCall),
+			"output_index": outputIndex,
+			"arguments":    item["arguments"],
+		}); err != nil {
+			return err
+		}
+		item["status"] = "completed"
+		if err := e.write("response.output_item.done", map[string]interface{}{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item":         item,
+		}); err != nil {
+			return err
+		}
+	}
+	completed := baseResponsesObject(e.responseID, e.messageID, e.modelName, "completed", outputText)
+	if len(e.toolCalls) > 0 {
+		completed["output"] = e.completedOutputItems(outputText)
+		completed["output_text"] = outputText
+	}
 	return e.write("response.completed", map[string]interface{}{
 		"type":     "response.completed",
-		"response": baseResponsesObject(e.responseID, e.messageID, e.modelName, "completed", outputText),
+		"response": completed,
 	})
+}
+
+func (e *responsesStreamEmitter) completedOutputItems(outputText string) []interface{} {
+	items := []interface{}{
+		map[string]interface{}{
+			"id":     e.messageID,
+			"type":   "message",
+			"status": "completed",
+			"role":   "assistant",
+			"content": []interface{}{
+				map[string]interface{}{"type": "output_text", "text": outputText, "annotations": []interface{}{}},
+			},
+		},
+	}
+	for index, toolCall := range e.toolCalls {
+		item := chatToolCallToResponsesItem(toolCall)
+		item["status"] = "completed"
+		if outputIndex, ok := e.toolOutputIndex[index]; ok {
+			item["output_index"] = outputIndex
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (e *responsesStreamEmitter) write(eventName string, payload map[string]interface{}) error {
@@ -725,6 +870,184 @@ func baseResponsesObject(responseID, messageID, modelName, status, outputText st
 		"usage":       nil,
 		"user":        nil,
 	}
+}
+
+func responsesToolsToChatTools(value interface{}) []interface{} {
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	tools := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		tool, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		toolType, _ := tool["type"].(string)
+		if toolType == "function" && tool["function"] != nil {
+			tools = append(tools, tool)
+			continue
+		}
+		if name, _ := tool["name"].(string); name != "" {
+			function := map[string]interface{}{
+				"name":        name,
+				"description": tool["description"],
+				"parameters":  tool["parameters"],
+			}
+			if function["parameters"] == nil {
+				function["parameters"] = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+			}
+			tools = append(tools, map[string]interface{}{"type": "function", "function": function})
+		}
+	}
+	return tools
+}
+
+func chatToolCallsToResponsesOutput(toolCalls []interface{}) []interface{} {
+	output := make([]interface{}, 0, len(toolCalls))
+	for _, value := range toolCalls {
+		toolCall, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		item := chatToolCallToResponsesItem(toolCall)
+		item["status"] = "completed"
+		output = append(output, item)
+	}
+	return output
+}
+
+func normalizeChatToolCallDelta(delta map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if index, ok := delta["index"]; ok {
+		out["index"] = index
+	}
+	if id, _ := delta["id"].(string); id != "" {
+		out["id"] = id
+	}
+	if typ, _ := delta["type"].(string); typ != "" {
+		out["type"] = typ
+	} else {
+		out["type"] = "function"
+	}
+	if function, ok := delta["function"].(map[string]interface{}); ok {
+		fn := map[string]interface{}{}
+		if name, _ := function["name"].(string); name != "" {
+			fn["name"] = name
+		}
+		if arguments, _ := function["arguments"].(string); arguments != "" {
+			fn["arguments"] = arguments
+		}
+		if len(fn) > 0 {
+			out["function"] = fn
+		}
+	}
+	return out
+}
+
+func mergeChatToolCallDelta(existing map[string]interface{}, delta map[string]interface{}) map[string]interface{} {
+	if existing == nil {
+		existing = map[string]interface{}{"type": "function", "function": map[string]interface{}{}}
+	}
+	if id, _ := delta["id"].(string); id != "" {
+		existing["id"] = id
+	}
+	if typ, _ := delta["type"].(string); typ != "" {
+		existing["type"] = typ
+	}
+	fn, _ := existing["function"].(map[string]interface{})
+	if fn == nil {
+		fn = map[string]interface{}{}
+		existing["function"] = fn
+	}
+	if deltaFn, _ := delta["function"].(map[string]interface{}); deltaFn != nil {
+		if name, _ := deltaFn["name"].(string); name != "" {
+			fn["name"] = name
+		}
+		if args, _ := deltaFn["arguments"].(string); args != "" {
+			old, _ := fn["arguments"].(string)
+			fn["arguments"] = old + args
+		}
+	}
+	return existing
+}
+
+func chatToolCallIndex(toolCall map[string]interface{}) int {
+	switch value := toolCall["index"].(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	case json.Number:
+		intValue, _ := value.Int64()
+		return int(intValue)
+	default:
+		return 0
+	}
+}
+
+func chatToolCallNameAndArguments(toolCall map[string]interface{}) (string, string) {
+	function, _ := toolCall["function"].(map[string]interface{})
+	name, _ := function["name"].(string)
+	arguments, _ := function["arguments"].(string)
+	return name, arguments
+}
+
+func responseToolCallID(toolCall map[string]interface{}) string {
+	id, _ := toolCall["id"].(string)
+	if id == "" {
+		id = "fc_" + time.Now().Format("20060102150405.000000000")
+		toolCall["id"] = id
+	}
+	return id
+}
+
+func chatToolCallToResponsesItem(toolCall map[string]interface{}) map[string]interface{} {
+	id := responseToolCallID(toolCall)
+	name, arguments := chatToolCallNameAndArguments(toolCall)
+	return map[string]interface{}{
+		"id":        id,
+		"type":      "function_call",
+		"status":    "in_progress",
+		"call_id":   id,
+		"name":      name,
+		"arguments": arguments,
+	}
+}
+
+func responseJSONString(value interface{}) string {
+	if value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func mergeResponsesFunctionCallItem(existing map[string]interface{}, item map[string]interface{}) map[string]interface{} {
+	if existing == nil {
+		existing = map[string]interface{}{"type": "function_call"}
+	}
+	for _, key := range []string{"id", "type", "status", "call_id", "name"} {
+		if value, ok := item[key]; ok && value != nil && value != "" {
+			existing[key] = value
+		}
+	}
+	if arguments, _ := item["arguments"].(string); arguments != "" {
+		existing["arguments"] = arguments
+	}
+	if existing["status"] == nil {
+		existing["status"] = "in_progress"
+	}
+	if existing["call_id"] == nil {
+		existing["call_id"] = existing["id"]
+	}
+	return existing
 }
 
 func copyIfPresent(dst map[string]interface{}, src map[string]interface{}, srcKey, dstKey string) {
