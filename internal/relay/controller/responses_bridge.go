@@ -79,6 +79,7 @@ func (rc *RelayController) newResponsesBridgeRequestContext(c *gin.Context, app 
 		Method:       c.Request.Method,
 		OriginalPath: c.Request.URL.Path,
 		Query:        c.Request.URL.RawQuery,
+		RawBody:      body,
 		Body:         chatBody,
 		Meta:         meta,
 		Candidates:   candidates,
@@ -162,9 +163,13 @@ func responsesAttemptJSONBody(respCtx *responsesRequestContext, attempt *RelayAt
 		return respBody, nil
 	}
 
-	chatResp, err := attempt.ProtocolAdaptor.ConvertResponse(respBody, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
-	if err != nil {
-		return nil, err
+	chatResp := respBody
+	if attempt.NeedsTransform {
+		var err error
+		chatResp, err = attempt.ProtocolAdaptor.ConvertResponse(respBody, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return chatCompletionsResponseToResponses(chatResp, respCtx.Meta.Model)
 }
@@ -263,32 +268,48 @@ func copyResponsesAttemptStream(respCtx *responsesRequestContext, attempt *Relay
 		}
 		return writeResponsesJSONAsStream(respCtx.Gin, body, attempt.Info.ResolvedModel)
 	}
-	return copyResponsesStream(respCtx.Gin, resp.Body, attempt.ProtocolAdaptor, attempt.Info.ResolvedModel)
+	return copyResponsesStream(respCtx.Gin, resp.Body, attempt, attempt.Info.ResolvedModel)
 }
 
 func (rc *RelayController) buildResponsesChatBridgeAttempt(respCtx *responsesRequestContext, candidate relayCandidate, isStream bool) (*RelayAttempt, error) {
 	reqCtx := respCtx.RequestContext
 	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.App, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
 	protocolAdaptor := adaptor.GetAdaptor(info.APIType)
-	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor}
+	providerAdaptor := adaptor.AsProviderAdapter(protocolAdaptor)
+	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor, ProviderAdapter: providerAdaptor}
 
-	requestBody, err := bodyWithResolvedModel(respCtx.ChatBody, info.ResolvedModel, constant.RelayFormatOpenAI)
+	requestBody, err := bodyWithResolvedModel(respCtx.ChatBody, info.RequestedModel, info.ResolvedModel, constant.RelayFormatOpenAI)
 	if err != nil {
 		return attempt, newRelayAttemptBuildError(http.StatusBadRequest, err)
 	}
 	attempt.RequestBody = requestBody
+	attempt.NeedsTransform = providerAdaptor.NeedsTransform(info.Channel, constant.RelayFormatOpenAI)
 
-	convertedBody, err := convertResponsesUpstreamRequest(protocolAdaptor, requestBody, info)
-	if err != nil {
-		statusCode := http.StatusBadGateway
-		if isUnsupportedRelayModeError(err) {
-			statusCode = http.StatusBadRequest
+	if attempt.NeedsTransform {
+		convertedBody, err := convertResponsesUpstreamRequest(protocolAdaptor, requestBody, info)
+		if err != nil {
+			statusCode := http.StatusBadGateway
+			if isUnsupportedRelayModeError(err) {
+				statusCode = http.StatusBadRequest
+			}
+			return attempt, newRelayAttemptBuildError(statusCode, err)
 		}
-		return attempt, newRelayAttemptBuildError(statusCode, err)
+		attempt.ConvertedBody = convertedBody
+	} else {
+		attempt.ConvertedBody = requestBody
 	}
-	attempt.ConvertedBody = convertedBody
-	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, constant.RelayModeChatCompletions, isStream, info.Channel.Config)
-	attempt.URL = responsesUpstreamURL(protocolAdaptor, info, isStream)
+
+	baseURL, err := providerAdaptor.ExtractBaseURL(info.Channel)
+	if err != nil {
+		return attempt, newRelayAttemptBuildError(http.StatusBadGateway, err)
+	}
+	apiKey, config := providerAdaptor.ExtractAuth(info.Channel)
+	headers, err := providerAdaptor.GetAuthHeaders(apiKey, config, constant.RelayModeChatCompletions, isStream)
+	if err != nil {
+		return attempt, newRelayAttemptBuildError(http.StatusBadGateway, err)
+	}
+	attempt.Headers = headers
+	attempt.URL = providerAdaptor.BuildURL(baseURL, constant.RelayModeChatCompletions, info.ResolvedModel, isStream)
 
 	return attempt, nil
 }
@@ -301,14 +322,7 @@ func convertResponsesUpstreamRequest(protocolAdaptor adaptor.Adaptor, requestBod
 	return protocolAdaptor.ConvertRequest(requestBody, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
 }
 
-func responsesUpstreamURL(protocolAdaptor adaptor.Adaptor, info *relayinfo.RelayInfo, stream bool) string {
-	if urlAdaptor, ok := protocolAdaptor.(adaptor.ModelAwareURLAdaptor); ok {
-		return urlAdaptor.GetRequestURLWithModel(info.Channel.BaseURL, constant.RelayModeChatCompletions, info.ResolvedModel, stream)
-	}
-	return protocolAdaptor.GetRequestURL(info.Channel.BaseURL, constant.RelayModeChatCompletions)
-}
-
-func copyResponsesStream(c *gin.Context, body io.Reader, protocolAdaptor adaptor.Adaptor, modelName string) error {
+func copyResponsesStream(c *gin.Context, body io.Reader, attempt *RelayAttempt, modelName string) error {
 	responseID := "resp_" + time.Now().Format("20060102150405.000000000")
 	messageID := "msg_" + time.Now().Format("20060102150405.000000000")
 	emitter := newResponsesStreamEmitter(c.Writer, responseID, messageID, modelName)
@@ -325,9 +339,13 @@ func copyResponsesStream(c *gin.Context, body io.Reader, protocolAdaptor adaptor
 		}
 
 		chunkBytes := []byte(line + "\n")
-		convertedChunk, err := protocolAdaptor.ConvertStreamChunk(chunkBytes, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
-		if err != nil {
-			return err
+		convertedChunk := chunkBytes
+		if attempt != nil && attempt.NeedsTransform {
+			var err error
+			convertedChunk, err = attempt.ProtocolAdaptor.ConvertStreamChunk(chunkBytes, constant.RelayModeChatCompletions, constant.RelayFormatOpenAI)
+			if err != nil {
+				return err
+			}
 		}
 		for _, content := range extractChatStreamContent(convertedChunk) {
 			if content == "" {

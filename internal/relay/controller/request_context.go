@@ -19,9 +19,12 @@ type RequestContext struct {
 	Method       string
 	OriginalPath string
 	Query        string
-	Body         []byte
-	Meta         relayRequestMeta
-	Candidates   []relayCandidate
+	// RawBody 保留客户端原始请求体，供透传场景直接转发。
+	RawBody []byte
+	// Body 是当前控制器路径使用的请求体。普通 relay 中等同 RawBody；Responses bridge 中为 Chat Completions 兼容体。
+	Body       []byte
+	Meta       relayRequestMeta
+	Candidates []relayCandidate
 }
 
 func (rc *RelayController) newRequestContext(
@@ -75,6 +78,7 @@ func (rc *RelayController) newRequestContext(
 		Method:       c.Request.Method,
 		OriginalPath: c.Request.URL.Path,
 		Query:        c.Request.URL.RawQuery,
+		RawBody:      body,
 		Body:         body,
 		Meta:         meta,
 		Candidates:   candidates,

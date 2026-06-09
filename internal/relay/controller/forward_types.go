@@ -5,17 +5,18 @@ import (
 	"net/http"
 
 	"github.com/TheFloodDragon/APIRelay/internal/relay/adaptor"
-	"github.com/TheFloodDragon/APIRelay/internal/relay/constant"
 	"github.com/TheFloodDragon/APIRelay/internal/relay/relayinfo"
 )
 
 type RelayAttempt struct {
 	Info            *relayinfo.RelayInfo
 	ProtocolAdaptor adaptor.Adaptor
+	ProviderAdapter adaptor.ProviderAdapter
 	RequestBody     []byte
 	ConvertedBody   []byte
 	Headers         http.Header
 	URL             string
+	NeedsTransform  bool
 }
 
 type relayAttemptBuildError struct {
@@ -49,25 +50,6 @@ func relayAttemptErrorStatus(err error, fallback int) int {
 	return fallback
 }
 
-func buildUpstreamHeaders(
-	protocolAdaptor adaptor.Adaptor,
-	apiKey string,
-	mode constant.RelayMode,
-	stream bool,
-	config map[string]interface{},
-) http.Header {
-	headers := http.Header{}
-	if configAware, ok := protocolAdaptor.(adaptor.ConfigAwareHeaderAdaptor); ok {
-		configAware.SetupHeadersWithConfig(headers, apiKey, mode, config)
-	} else {
-		protocolAdaptor.SetupHeaders(headers, apiKey, mode)
-	}
-	if stream {
-		headers.Set("Accept", "text/event-stream")
-	}
-	return headers
-}
-
 func (rc *RelayController) buildRelayAttempt(
 	reqCtx *RequestContext,
 	candidate relayCandidate,
@@ -75,25 +57,41 @@ func (rc *RelayController) buildRelayAttempt(
 ) (*RelayAttempt, error) {
 	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.App, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
 	protocolAdaptor := adaptor.GetAdaptor(info.APIType)
-	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor}
+	providerAdaptor := adaptor.AsProviderAdapter(protocolAdaptor)
+	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor, ProviderAdapter: providerAdaptor}
 
-	requestBody, err := bodyWithResolvedModel(reqCtx.Body, info.ResolvedModel, reqCtx.Format)
+	requestBody, err := bodyWithResolvedModel(reqCtx.Body, info.RequestedModel, info.ResolvedModel, reqCtx.Format)
 	if err != nil {
 		return attempt, newRelayAttemptBuildError(http.StatusBadRequest, err)
 	}
 	attempt.RequestBody = requestBody
+	attempt.NeedsTransform = providerAdaptor.NeedsTransform(info.Channel, reqCtx.Format)
 
-	convertedBody, err := convertRelayRequest(protocolAdaptor, requestBody, info)
-	if err != nil {
-		statusCode := http.StatusBadGateway
-		if isUnsupportedRelayModeError(err) {
-			statusCode = http.StatusBadRequest
+	if attempt.NeedsTransform {
+		convertedBody, err := convertRelayRequest(protocolAdaptor, requestBody, info)
+		if err != nil {
+			statusCode := http.StatusBadGateway
+			if isUnsupportedRelayModeError(err) {
+				statusCode = http.StatusBadRequest
+			}
+			return attempt, newRelayAttemptBuildError(statusCode, err)
 		}
-		return attempt, newRelayAttemptBuildError(statusCode, err)
+		attempt.ConvertedBody = convertedBody
+	} else {
+		attempt.ConvertedBody = requestBody
 	}
-	attempt.ConvertedBody = convertedBody
-	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, reqCtx.Mode, isStream, info.Channel.Config)
-	attempt.URL = requestURL(protocolAdaptor, info, isStream)
+
+	baseURL, err := providerAdaptor.ExtractBaseURL(info.Channel)
+	if err != nil {
+		return attempt, newRelayAttemptBuildError(http.StatusBadGateway, err)
+	}
+	apiKey, config := providerAdaptor.ExtractAuth(info.Channel)
+	headers, err := providerAdaptor.GetAuthHeaders(apiKey, config, reqCtx.Mode, isStream)
+	if err != nil {
+		return attempt, newRelayAttemptBuildError(http.StatusBadGateway, err)
+	}
+	attempt.Headers = headers
+	attempt.URL = providerAdaptor.BuildURL(baseURL, reqCtx.Mode, info.ResolvedModel, isStream)
 
 	return attempt, nil
 }

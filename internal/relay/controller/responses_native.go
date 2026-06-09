@@ -28,25 +28,41 @@ func (rc *RelayController) buildResponsesNativeAttempt(respCtx *responsesRequest
 	reqCtx := respCtx.RequestContext
 	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.App, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
 	protocolAdaptor := adaptor.GetAdaptor(info.APIType)
-	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor}
+	providerAdaptor := adaptor.AsProviderAdapter(protocolAdaptor)
+	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor, ProviderAdapter: providerAdaptor}
 
 	requestBody, err := responsesNativeRequestBody(respCtx.ResponsesBody, info.ResolvedModel, isStream)
 	if err != nil {
 		return attempt, newRelayAttemptBuildError(http.StatusBadRequest, err)
 	}
 	attempt.RequestBody = requestBody
+	attempt.NeedsTransform = providerAdaptor.NeedsTransform(info.Channel, reqCtx.Format)
 
-	convertedBody, err := convertRelayRequest(protocolAdaptor, requestBody, info)
-	if err != nil {
-		statusCode := http.StatusBadGateway
-		if isUnsupportedRelayModeError(err) {
-			statusCode = http.StatusBadRequest
+	if attempt.NeedsTransform {
+		convertedBody, err := convertRelayRequest(protocolAdaptor, requestBody, info)
+		if err != nil {
+			statusCode := http.StatusBadGateway
+			if isUnsupportedRelayModeError(err) {
+				statusCode = http.StatusBadRequest
+			}
+			return attempt, newRelayAttemptBuildError(statusCode, err)
 		}
-		return attempt, newRelayAttemptBuildError(statusCode, err)
+		attempt.ConvertedBody = convertedBody
+	} else {
+		attempt.ConvertedBody = requestBody
 	}
-	attempt.ConvertedBody = convertedBody
-	attempt.Headers = buildUpstreamHeaders(protocolAdaptor, info.Channel.APIKey, constant.RelayModeResponses, isStream, info.Channel.Config)
-	attempt.URL = requestURL(protocolAdaptor, info, isStream)
+
+	baseURL, err := providerAdaptor.ExtractBaseURL(info.Channel)
+	if err != nil {
+		return attempt, newRelayAttemptBuildError(http.StatusBadGateway, err)
+	}
+	apiKey, config := providerAdaptor.ExtractAuth(info.Channel)
+	headers, err := providerAdaptor.GetAuthHeaders(apiKey, config, constant.RelayModeResponses, isStream)
+	if err != nil {
+		return attempt, newRelayAttemptBuildError(http.StatusBadGateway, err)
+	}
+	attempt.Headers = headers
+	attempt.URL = providerAdaptor.BuildURL(baseURL, constant.RelayModeResponses, info.ResolvedModel, isStream)
 
 	return attempt, nil
 }

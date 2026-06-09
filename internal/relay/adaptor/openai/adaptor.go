@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/TheFloodDragon/APIRelay/internal/model"
 	"github.com/TheFloodDragon/APIRelay/internal/relay/constant"
 	"github.com/TheFloodDragon/APIRelay/internal/relay/protocol"
+	"github.com/TheFloodDragon/APIRelay/internal/relay/transform"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"
@@ -24,6 +26,41 @@ func NewAdaptor() *Adaptor {
 
 func (a *Adaptor) APIType() constant.APIType {
 	return constant.APITypeOpenAI
+}
+
+func (a *Adaptor) Name() string {
+	return constant.APITypeOpenAI.String()
+}
+
+func (a *Adaptor) ExtractBaseURL(channel *model.Channel) (string, error) {
+	if channel == nil {
+		return "", fmt.Errorf("channel is nil")
+	}
+	return channel.BaseURL, nil
+}
+
+func (a *Adaptor) ExtractAuth(channel *model.Channel) (string, map[string]interface{}) {
+	if channel == nil {
+		return "", nil
+	}
+	return channel.APIKey, channel.Config
+}
+
+func (a *Adaptor) BuildURL(baseURL string, mode constant.RelayMode, resolvedModel string, stream bool) string {
+	return a.GetRequestURL(baseURL, mode)
+}
+
+func (a *Adaptor) GetAuthHeaders(apiKey string, config map[string]interface{}, mode constant.RelayMode, stream bool) (http.Header, error) {
+	headers := http.Header{}
+	a.SetupHeaders(headers, apiKey, mode)
+	if stream {
+		headers.Set("Accept", "text/event-stream")
+	}
+	return headers, nil
+}
+
+func (a *Adaptor) NeedsTransform(channel *model.Channel, callerFormat constant.RelayFormat) bool {
+	return callerFormat != constant.RelayFormatOpenAI && callerFormat != constant.RelayFormatOpenAIResponses
 }
 
 func (a *Adaptor) GetRequestURL(baseURL string, mode constant.RelayMode) string {
@@ -42,64 +79,11 @@ func (a *Adaptor) ConvertRequest(req []byte, mode constant.RelayMode, format con
 }
 
 func (a *Adaptor) ConvertRequestWithMeta(req []byte, mode constant.RelayMode, format constant.RelayFormat, meta protocol.RequestMeta) ([]byte, error) {
-	if mode == constant.RelayModeCountTokens {
-		return nil, fmt.Errorf("%s is not supported for openai channels yet", mode)
-	}
-	switch format {
-	case constant.RelayFormatOpenAI, constant.RelayFormatOpenAIResponses:
-		return req, nil
-	case constant.RelayFormatAnthropic:
-		if !mode.IsChatLike() {
-			return nil, fmt.Errorf("%s is not supported for anthropic caller format on openai channels yet", mode)
-		}
-		chatReq, err := protocol.AnthropicMessagesRequestToProtocol(req)
-		if err != nil {
-			return nil, err
-		}
-		if meta.Model != "" {
-			chatReq.Model = meta.Model
-		}
-		return protocol.ProtocolToOpenAIChatRequest(chatReq)
-	case constant.RelayFormatGemini:
-		if !mode.IsChatLike() {
-			return nil, fmt.Errorf("%s is not supported for gemini caller format on openai channels yet", mode)
-		}
-		chatReq, err := protocol.GeminiGenerateContentRequestToProtocol(req, meta.Model, meta.Stream)
-		if err != nil {
-			return nil, err
-		}
-		if meta.Model != "" {
-			chatReq.Model = meta.Model
-		}
-		return protocol.ProtocolToOpenAIChatRequest(chatReq)
-	default:
-		return req, nil
-	}
+	return transform.RequestToOpenAI(req, mode, format, meta)
 }
 
 func (a *Adaptor) ConvertResponse(resp []byte, mode constant.RelayMode, format constant.RelayFormat) ([]byte, error) {
-	if !mode.IsChatLike() {
-		return resp, nil
-	}
-
-	switch format {
-	case constant.RelayFormatOpenAI, constant.RelayFormatOpenAIResponses:
-		return resp, nil
-	case constant.RelayFormatAnthropic:
-		chatResp, err := protocol.OpenAIChatResponseToProtocol(resp)
-		if err != nil {
-			return nil, err
-		}
-		return protocol.ProtocolToAnthropicMessagesResponse(chatResp)
-	case constant.RelayFormatGemini:
-		chatResp, err := protocol.OpenAIChatResponseToProtocol(resp)
-		if err != nil {
-			return nil, err
-		}
-		return protocol.ProtocolToGeminiGenerateContentResponse(chatResp)
-	default:
-		return resp, nil
-	}
+	return transform.ResponseFromOpenAI(resp, mode, format)
 }
 
 func (a *Adaptor) ConvertStreamChunk(chunk []byte, mode constant.RelayMode, format constant.RelayFormat) ([]byte, error) {

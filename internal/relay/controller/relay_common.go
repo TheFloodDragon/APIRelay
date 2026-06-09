@@ -149,8 +149,8 @@ func buildRelayInfo(c *gin.Context, requestID string, startTime time.Time, app c
 	}
 }
 
-func bodyWithResolvedModel(body []byte, resolvedModel string, format constant.RelayFormat) ([]byte, error) {
-	if resolvedModel == "" || format == constant.RelayFormatGemini {
+func bodyWithResolvedModel(body []byte, requestedModel, resolvedModel string, format constant.RelayFormat) ([]byte, error) {
+	if resolvedModel == "" || resolvedModel == requestedModel || format == constant.RelayFormatGemini {
 		return body, nil
 	}
 

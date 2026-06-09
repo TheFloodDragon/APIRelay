@@ -72,7 +72,7 @@ func (rc *RelayController) relayStream(reqCtx *RequestContext) {
 		}
 
 		writeStreamHeaders(reqCtx.Gin, resp.StatusCode)
-		copyErr := copyStream(reqCtx.Gin, preparedBody, attempt.ProtocolAdaptor, reqCtx.Mode, reqCtx.Format)
+		copyErr := copyAttemptStream(reqCtx.Gin, preparedBody, attempt)
 		_ = preparedBody.Close()
 		if copyErr != nil {
 			lastErr = copyErr
@@ -98,6 +98,16 @@ func writeStreamHeaders(c *gin.Context, statusCode int) {
 	writer.Header().Set("X-Accel-Buffering", "no")
 	writer.WriteHeader(statusCode)
 	writer.Flush()
+}
+
+func copyAttemptStream(c *gin.Context, body io.Reader, attempt *RelayAttempt) error {
+	if attempt == nil {
+		return copyPassthroughStream(c.Writer, body, c.Writer.Flush)
+	}
+	if !attempt.NeedsTransform {
+		return copyPassthroughStream(c.Writer, body, c.Writer.Flush)
+	}
+	return copyStream(c, body, attempt.ProtocolAdaptor, attempt.Info.RelayMode, attempt.Info.RelayFormat)
 }
 
 func copyStream(c *gin.Context, body io.Reader, protocolAdaptor adaptor.Adaptor, mode constant.RelayMode, format constant.RelayFormat) error {

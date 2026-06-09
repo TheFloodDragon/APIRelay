@@ -1,11 +1,6 @@
 package controller
 
-import (
-	"net/http"
-
-	"github.com/TheFloodDragon/APIRelay/internal/relay/adaptor"
-	"github.com/TheFloodDragon/APIRelay/internal/relay/relayinfo"
-)
+import "net/http"
 
 func (rc *RelayController) relayJSON(reqCtx *RequestContext) {
 	var lastErr error
@@ -42,7 +37,7 @@ func (rc *RelayController) relayJSON(reqCtx *RequestContext) {
 		}
 
 		if isSuccessfulStatus(statusCode) {
-			convertedResp, err := attempt.ProtocolAdaptor.ConvertResponse(respBody, reqCtx.Mode, reqCtx.Format)
+			convertedResp, err := relayResponseBody(attempt, respBody)
 			if err != nil {
 				lastErr = err
 				lastErrMsg = err.Error()
@@ -66,11 +61,4 @@ func (rc *RelayController) relayJSON(reqCtx *RequestContext) {
 	}
 
 	writeFinalRelayError(reqCtx.Gin, lastErr, lastErrMsg, attemptedUpstream)
-}
-
-func requestURL(protocolAdaptor adaptor.Adaptor, info *relayinfo.RelayInfo, stream bool) string {
-	if urlAdaptor, ok := protocolAdaptor.(adaptor.ModelAwareURLAdaptor); ok {
-		return urlAdaptor.GetRequestURLWithModel(info.Channel.BaseURL, info.RelayMode, info.ResolvedModel, stream)
-	}
-	return protocolAdaptor.GetRequestURL(info.Channel.BaseURL, info.RelayMode)
 }
