@@ -419,11 +419,14 @@ function normalizeResponsesMode(value: unknown): 'chat_bridge' | 'auto' | 'nativ
   return 'chat_bridge'
 }
 
-function channelConfigPayload(source: Partial<Channel>): Record<string, unknown> {
+function channelConfigPayload(
+  source: Partial<Channel>,
+  mode = normalizeResponsesMode(source.config?.responses_mode)
+): Record<string, unknown> {
   const config = { ...(source.config || {}) }
   if (['openai', 'openai_compatible'].includes(String(source.type || '').toLowerCase())) {
-    config.responses_mode = responsesMode.value
-    config.supports_responses = responsesMode.value === 'native'
+    config.responses_mode = mode
+    config.supports_responses = mode === 'native'
   } else {
     delete config.responses_mode
     delete config.supports_responses
@@ -431,7 +434,11 @@ function channelConfigPayload(source: Partial<Channel>): Record<string, unknown>
   return config
 }
 
-function toChannelPayload(source: Partial<Channel>, models = source.models || []): Partial<Channel> {
+function toChannelPayload(
+  source: Partial<Channel>,
+  models = source.models || [],
+  mode?: 'chat_bridge' | 'auto' | 'native'
+): Partial<Channel> {
   const payload: Partial<Channel> = {
     name: String(source.name || '').trim(),
     type: source.type || 'openai_compatible',
@@ -443,7 +450,7 @@ function toChannelPayload(source: Partial<Channel>, models = source.models || []
     enabled: source.enabled ?? true,
     timeout: Number(source.timeout || 60000),
     max_retries: Number(source.max_retries || 0),
-    config: channelConfigPayload(source)
+    config: channelConfigPayload(source, mode)
   }
 
   if (source.id !== undefined) payload.id = source.id
