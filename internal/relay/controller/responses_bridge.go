@@ -338,18 +338,23 @@ func responsesRequestToChatCompletions(body []byte, streamRequested bool) ([]byt
 		"stream":   stream,
 	}
 
-	copyIfPresent(chatReq, raw, "temperature", "temperature")
-	copyIfPresent(chatReq, raw, "top_p", "top_p")
+	usesCompletionTokens := usesCompletionTokenLimit(modelName)
+	if !usesCompletionTokens {
+		copyIfPresent(chatReq, raw, "temperature", "temperature")
+		copyIfPresent(chatReq, raw, "top_p", "top_p")
+	}
 	if maxOutputTokens, ok := raw["max_output_tokens"]; ok {
-		if usesCompletionTokenLimit(modelName) {
+		if usesCompletionTokens {
 			chatReq["max_completion_tokens"] = maxOutputTokens
 		} else {
 			chatReq["max_tokens"] = maxOutputTokens
 		}
 	}
-	copyIfPresent(chatReq, raw, "max_tokens", "max_tokens")
+	if !usesCompletionTokens {
+		copyIfPresent(chatReq, raw, "max_tokens", "max_tokens")
+	}
 	copyIfPresent(chatReq, raw, "max_completion_tokens", "max_completion_tokens")
-	for _, key := range []string{"frequency_penalty", "logit_bias", "logprobs", "metadata", "n", "presence_penalty", "response_format", "seed", "service_tier", "stop", "stream_options", "top_logprobs", "user"} {
+	for _, key := range responseChatPassthroughFields(modelName) {
 		copyIfPresent(chatReq, raw, key, key)
 	}
 	if tools, ok := raw["tools"]; ok {
@@ -373,6 +378,15 @@ func responsesRequestToChatCompletions(body []byte, streamRequested bool) ([]byt
 func usesCompletionTokenLimit(modelName string) bool {
 	model := strings.ToLower(strings.TrimSpace(modelName))
 	return strings.HasPrefix(model, "o1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") || strings.HasPrefix(model, "gpt-5")
+}
+
+func responseChatPassthroughFields(modelName string) []string {
+	// GPT-5 / o 系列 Chat Completions 端点通常只接受更窄的参数集合。
+	// 兼容上游经常会因 temperature/top_p/stop/logprobs 等旧 Chat 参数返回 400/openai_error。
+	if usesCompletionTokenLimit(modelName) {
+		return []string{"metadata", "n", "response_format", "seed", "service_tier", "stream_options", "user"}
+	}
+	return []string{"frequency_penalty", "logit_bias", "logprobs", "metadata", "n", "presence_penalty", "response_format", "seed", "service_tier", "stop", "stream_options", "top_logprobs", "user"}
 }
 
 func hasChatTools(chatReq map[string]interface{}) bool {

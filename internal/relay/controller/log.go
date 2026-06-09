@@ -31,6 +31,8 @@ func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo,
 	if apiType == "" {
 		apiType = "-"
 	}
+	result := relayLogResult(statusCode, errMsg)
+
 	requestLog := &model.RequestLog{
 		RequestID:     info.RequestID,
 		ChannelID:     channelID,
@@ -50,7 +52,8 @@ func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo,
 	}
 
 	if err := rc.logRepo.Create(requestLog); err != nil {
-		log.Printf("[MODEL] request_id=%s model=%s resolved_model=%s channel_id=%v channel_type=%s api_type=%s relay_mode=%s relay_format=%s status=%d latency=%dms ip=%s error=%q log_error=%q",
+		log.Printf("[MODEL] result=%s request_id=%s model=%s resolved_model=%s channel_id=%v channel_type=%s api_type=%s relay_mode=%s relay_format=%s status=%d latency=%dms ip=%s error=%q log_error=%q",
+			result,
 			info.RequestID,
 			info.RequestedModel,
 			info.ResolvedModel,
@@ -68,7 +71,8 @@ func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo,
 		return
 	}
 
-	log.Printf("[MODEL] request_id=%s model=%s resolved_model=%s channel_id=%v channel_type=%s api_type=%s relay_mode=%s relay_format=%s status=%d latency=%dms ip=%s error=%q",
+	log.Printf("[MODEL] result=%s request_id=%s model=%s resolved_model=%s channel_id=%v channel_type=%s api_type=%s relay_mode=%s relay_format=%s status=%d latency=%dms ip=%s error=%q",
+		result,
 		info.RequestID,
 		info.RequestedModel,
 		info.ResolvedModel,
@@ -97,6 +101,16 @@ func (rc *RelayController) logNoChannel(c *gin.Context, requestID string, startT
 		ClientIP:       c.ClientIP(),
 	}
 	rc.logRequest(c, info, statusCode, errMsg)
+}
+
+func relayLogResult(statusCode int, errMsg string) string {
+	if errMsg != "" || statusCode >= 400 {
+		return "failed"
+	}
+	if statusCode >= 200 && statusCode < 400 {
+		return "success"
+	}
+	return "unknown"
 }
 
 func logChannelID(channelID *uint) interface{} {

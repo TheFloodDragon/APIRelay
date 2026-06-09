@@ -26,9 +26,10 @@ func categorizeHTTPStatus(statusCode int) RelayErrorCategory {
 }
 
 func shouldTryNextCandidate(statusCode int, err error) bool {
-	// 第二批保持现有行为：失败继续尝试下一个候选。
-	// 第三/六批再接入 CC-Switch 风格 retryable/non-retryable 策略。
-	return true
+	if err != nil {
+		return true
+	}
+	return categorizeHTTPStatus(statusCode) == RelayErrorRetryable
 }
 
 func isSuccessfulStatus(statusCode int) bool {

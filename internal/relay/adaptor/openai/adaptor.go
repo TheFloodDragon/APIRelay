@@ -172,6 +172,28 @@ func joinURL(baseURL, path string) string {
 	return baseURL + path
 }
 
+func formatOpenAIErrorObject(errObj map[string]interface{}, raw []byte) string {
+	parts := make([]string, 0, 5)
+	if message, _ := errObj["message"].(string); message != "" {
+		parts = append(parts, message)
+	}
+	if typ, _ := errObj["type"].(string); typ != "" {
+		parts = append(parts, "type="+typ)
+	}
+	if code, _ := errObj["code"].(string); code != "" {
+		parts = append(parts, "code="+code)
+	} else if code := errObj["code"]; code != nil {
+		parts = append(parts, fmt.Sprintf("code=%v", code))
+	}
+	if param, _ := errObj["param"].(string); param != "" {
+		parts = append(parts, "param="+param)
+	}
+	if len(parts) == 0 {
+		return string(raw)
+	}
+	return strings.Join(parts, "; ")
+}
+
 func parseErrorMessage(resp []byte) string {
 	if len(resp) == 0 {
 		return ""
@@ -185,9 +207,7 @@ func parseErrorMessage(resp []byte) string {
 	if errorValue, ok := payload["error"]; ok {
 		switch errObj := errorValue.(type) {
 		case map[string]interface{}:
-			if message, ok := errObj["message"].(string); ok && message != "" {
-				return message
-			}
+			return formatOpenAIErrorObject(errObj, resp)
 		case string:
 			return errObj
 		}

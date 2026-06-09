@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -42,6 +43,18 @@ func writeFinalRelayError(c *gin.Context, lastErr error, lastErrMsg string, atte
 
 	if !attemptedUpstream && isUnsupportedRelayModeMessage(details) {
 		writeRelayError(c, http.StatusBadRequest, details, "unsupported_relay_mode", "")
+		return
+	}
+
+	var upstreamErr *relayUpstreamError
+	if errors.As(lastErr, &upstreamErr) && upstreamErr.statusCode >= http.StatusBadRequest && upstreamErr.statusCode < http.StatusInternalServerError {
+		writeRelayError(c, upstreamErr.statusCode, "上游渠道请求失败", "upstream_error", details)
+		return
+	}
+
+	var buildErr *nonRetryableBuildError
+	if errors.As(lastErr, &buildErr) && buildErr.statusCode >= http.StatusBadRequest && buildErr.statusCode < http.StatusInternalServerError {
+		writeRelayError(c, buildErr.statusCode, details, "invalid_request_error", "")
 		return
 	}
 

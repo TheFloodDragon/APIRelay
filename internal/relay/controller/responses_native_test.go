@@ -106,6 +106,29 @@ func TestResponsesRequestToChatCompletionsUsesCompletionTokensForGPT5(t *testing
 	}
 }
 
+func TestResponsesRequestToChatCompletionsPrunesLegacyGPT5Params(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","input":"hello","temperature":0.7,"top_p":0.9,"max_tokens":100,"max_output_tokens":123,"frequency_penalty":0.1,"presence_penalty":0.1,"logprobs":true,"top_logprobs":1,"stop":["x"],"metadata":{"trace":"1"}}`)
+	got, _, _, err := responsesRequestToChatCompletions(body, false)
+	if err != nil {
+		t.Fatalf("responsesRequestToChatCompletions returned error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	for _, key := range []string{"temperature", "top_p", "max_tokens", "frequency_penalty", "presence_penalty", "logprobs", "top_logprobs", "stop"} {
+		if _, exists := payload[key]; exists {
+			t.Fatalf("%s should be absent for gpt-5 bridge request; body = %s", key, string(got))
+		}
+	}
+	if payload["max_completion_tokens"] != float64(123) {
+		t.Fatalf("max_completion_tokens = %v, want 123; body = %s", payload["max_completion_tokens"], string(got))
+	}
+	if _, ok := payload["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("metadata should be preserved; body = %s", string(got))
+	}
+}
+
 func TestResponsesRequestToChatCompletionsAddsStreamUsage(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","input":"hello","stream":true,"stream_options":{"foo":"bar"}}`)
 	got, _, stream, err := responsesRequestToChatCompletions(body, false)

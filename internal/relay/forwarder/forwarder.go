@@ -129,9 +129,10 @@ func (f *Forwarder) ForwardWithBuilder(ctx *RequestContext, build AttemptBuilder
 				return resp, attempt, nil
 			}
 
-			if isRetryableError(err) {
-				f.router.RecordFailureWithPermit(provider.ID, err.Error(), allow.UsedHalfOpenPermit)
+			if !isRetryableError(err) {
+				return nil, attempt, err
 			}
+			f.router.RecordFailureWithPermit(provider.ID, err.Error(), allow.UsedHalfOpenPermit)
 			lastErr = err
 		}
 		if !progressed {

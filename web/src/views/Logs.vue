@@ -57,7 +57,14 @@
       empty-text="暂无请求日志"
       @row-dblclick="openDetail"
     >
-      <el-table-column label="状态" width="96" fixed>
+      <el-table-column label="结果" width="110" fixed>
+        <template #default="{ row }">
+          <el-tag :type="resultTagType(row)" effect="dark" round>
+            {{ resultText(row) }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="HTTP" width="88">
         <template #default="{ row }">
           <el-tag :type="statusType(row.status_code)" effect="light" round>
             {{ row.status_code || '-' }}
@@ -124,15 +131,52 @@
 
   <el-drawer v-model="detailVisible" title="请求详情" size="520px" class="detail-drawer">
     <template v-if="selectedLog">
-      <div class="detail-status">
+      <div class="detail-status" :class="detailStatusClass(selectedLog)">
         <div>
+          <el-tag :type="resultTagType(selectedLog)" effect="dark" round>
+            {{ resultText(selectedLog) }}
+          </el-tag>
           <el-tag :type="statusType(selectedLog.status_code)" effect="light" round>
-            {{ selectedLog.status_code || '-' }}
+            HTTP {{ selectedLog.status_code || '-' }}
           </el-tag>
           <strong>{{ selectedLog.model || '-' }}</strong>
         </div>
         <small>{{ selectedLog.channel?.name || selectedLog.channel_id || '未匹配渠道' }} · {{ formatLatency(selectedLog.latency) }}</small>
       </div>
+
+      <el-alert
+        v-if="selectedLog.error"
+        class="error-alert"
+        title="调用失败 / 上游错误"
+        type="error"
+        :closable="false"
+        show-icon
+      >
+        <template #default>
+          <pre class="error-detail">{{ selectedLog.error }}</pre>
+          <el-button type="danger" text size="small" @click="copyText(selectedLog.error || '')">复制错误</el-button>
+        </template>
+      </el-alert>
+      <el-alert
+        v-else-if="isSuccessful(selectedLog)"
+        class="error-alert"
+        title="调用成功"
+        type="success"
+        :closable="false"
+        show-icon
+      >
+        <template #default>本次请求没有记录错误信息。</template>
+      </el-alert>
+      <el-alert
+        v-else
+        class="error-alert"
+        title="结果未知"
+        type="warning"
+        :closable="false"
+        show-icon
+      >
+        <template #default>日志没有记录明确错误，但 HTTP 状态码不是 2xx/3xx，请结合响应状态继续排查。</template>
+      </el-alert>
 
       <div class="detail-section-title">链路字段</div>
       <el-descriptions :column="1" border class="detail-descriptions">
@@ -149,6 +193,10 @@
         <el-descriptions-item label="API 类型">{{ selectedLog.api_type || '-' }}</el-descriptions-item>
         <el-descriptions-item label="转发模式">{{ selectedLog.relay_mode || '-' }}</el-descriptions-item>
         <el-descriptions-item label="转发格式">{{ selectedLog.relay_format || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="调用结果">
+          <el-tag :type="resultTagType(selectedLog)" effect="dark" round>{{ resultText(selectedLog) }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="HTTP 状态码">{{ selectedLog.status_code || '-' }}</el-descriptions-item>
         <el-descriptions-item label="路径">{{ selectedLog.method }} {{ selectedLog.path }}</el-descriptions-item>
         <el-descriptions-item label="Token">
           输入 {{ selectedLog.request_tokens || 0 }} / 输出 {{ selectedLog.response_tokens || 0 }}
@@ -186,8 +234,9 @@ const selectedLog = ref<RequestLog | null>(null)
 let loadToken = 0
 
 type TagType = 'success' | 'warning' | 'danger' | 'info'
+type ResultState = 'success' | 'failed' | 'unknown'
 
-const failedCount = computed(() => logs.value.filter((item) => item.status_code >= 400 || item.error).length)
+const failedCount = computed(() => logs.value.filter((item) => resultState(item) === 'failed').length)
 const averageLatency = computed(() => {
   if (logs.value.length === 0) return 0
   const totalLatency = logs.value.reduce((sum, item) => sum + (item.latency || 0), 0)
@@ -198,9 +247,9 @@ const filteredLogs = computed(() => {
   let result = logs.value
 
   if (statusFilter.value === 'success') {
-    result = result.filter((item) => item.status_code >= 200 && item.status_code < 400 && !item.error)
+    result = result.filter((item) => resultState(item) === 'success')
   } else if (statusFilter.value === 'failed') {
-    result = result.filter((item) => item.status_code >= 400 || !!item.error)
+    result = result.filter((item) => resultState(item) === 'failed')
   }
 
   if (searchKeyword.value.trim()) {
@@ -326,6 +375,34 @@ function copyTextFallback(value: string) {
   }
 }
 
+function resultState(log: RequestLog): ResultState {
+  if (log.error || log.status_code >= 400) return 'failed'
+  if (log.status_code >= 200 && log.status_code < 400) return 'success'
+  return 'unknown'
+}
+
+function isSuccessful(log: RequestLog) {
+  return resultState(log) === 'success'
+}
+
+function resultText(log: RequestLog) {
+  const state = resultState(log)
+  if (state === 'success') return '成功'
+  if (state === 'failed') return '失败'
+  return '未知'
+}
+
+function resultTagType(log: RequestLog): TagType {
+  const state = resultState(log)
+  if (state === 'success') return 'success'
+  if (state === 'failed') return 'danger'
+  return 'warning'
+}
+
+function detailStatusClass(log: RequestLog) {
+  return `detail-status--${resultState(log)}`
+}
+
 function statusType(status: number): TagType {
   if (status >= 200 && status < 300) return 'success'
   if (status >= 400 && status < 500) return 'warning'
@@ -383,6 +460,32 @@ function formatDate(value?: string) {
   border-radius: var(--radius-lg);
   background: linear-gradient(135deg, var(--primary-light), #ffffff);
   box-shadow: var(--shadow-subtle);
+}
+
+.detail-status--success {
+  border-color: rgba(22, 163, 74, 0.24);
+  background: linear-gradient(135deg, rgba(22, 163, 74, 0.12), #ffffff);
+}
+
+.detail-status--failed {
+  border-color: rgba(220, 38, 38, 0.24);
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.12), #ffffff);
+}
+
+.detail-status--unknown {
+  border-color: rgba(217, 119, 6, 0.24);
+  background: linear-gradient(135deg, rgba(217, 119, 6, 0.12), #ffffff);
+}
+
+.error-alert {
+  margin-bottom: 18px;
+}
+
+.error-detail {
+  margin: 6px 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
 }
 
 .detail-status > div {
