@@ -106,6 +106,7 @@ func (r *ModelRepository) SyncChannelModels(channelID uint, modelNames []string)
 				DisplayName: name, // 默认显示名与上游名相同
 				ChannelID:   channelID,
 				Enabled:     true,
+				TestEnabled: true,
 			})
 		}
 	}
@@ -131,13 +132,24 @@ func (r *ModelRepository) SyncChannelModels(channelID uint, modelNames []string)
 	return nil
 }
 
-// UpdateMetadata 更新模型的元数据（display_name, enabled）
-func (r *ModelRepository) UpdateMetadata(id uint, displayName string, enabled bool) error {
+// GetTestCandidatesByDisplayName 获取同一调用名下允许测试的模型记录。
+func (r *ModelRepository) GetTestCandidatesByDisplayName(displayName string) ([]model.Model, error) {
+	var models []model.Model
+	err := r.db.Where("test_enabled = ? AND (display_name = ? OR (display_name = '' AND name = ?))", true, displayName, displayName).
+		Preload("Channel").
+		Order("id ASC").
+		Find(&models).Error
+	return models, err
+}
+
+// UpdateMetadata 更新模型的元数据（display_name, enabled, test_enabled）
+func (r *ModelRepository) UpdateMetadata(id uint, displayName string, enabled bool, testEnabled bool) error {
 	return r.db.Model(&model.Model{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"display_name": displayName,
 			"enabled":      enabled,
+			"test_enabled": testEnabled,
 		}).Error
 }
 

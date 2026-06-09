@@ -43,13 +43,16 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	proxyConfigRepo := repository.NewProxyConfigRepository(db)
 	failoverQueueRepo := repository.NewFailoverQueueRepository(db)
 	providerHealthRepo := repository.NewProviderHealthRepository(db)
+	systemConfigRepo := repository.NewSystemConfigRepository(db)
 	// 服务层
 	channelService := service.NewChannelService(channelRepo, modelRepo)
+	settingsService := service.NewSettingsService(systemConfigRepo)
+	modelTestService := service.NewModelTestService(modelRepo, settingsService, relayclient.NewHTTPClient().Client())
 
 	// 处理器
-	systemHandler := handler.NewSystemHandler()
+	systemHandler := handler.NewSystemHandler(settingsService)
 	channelHandler := handler.NewChannelHandler(channelService)
-	modelHandler := handler.NewModelHandler(modelRepo)
+	modelHandler := handler.NewModelHandler(modelRepo, modelTestService)
 	keyHandler := handler.NewKeyHandler(keyRepo)
 	logHandler := handler.NewLogHandler(logRepo)
 	relayHTTPClient := relayclient.NewHTTPClient()
@@ -120,6 +123,8 @@ func setupAdminRoutes(
 
 		// 系统管理
 		apiGroup.GET("/system/info", systemHandler.Info)
+		apiGroup.GET("/settings", systemHandler.GetSettings)
+		apiGroup.PUT("/settings", systemHandler.UpdateSettings)
 
 		// 渠道管理
 		apiGroup.GET("/channels", channelHandler.GetChannels)
@@ -133,6 +138,8 @@ func setupAdminRoutes(
 		// 模型管理
 		apiGroup.GET("/models", modelHandler.GetModels)
 		apiGroup.GET("/models/available", modelHandler.GetAvailableModels)
+		apiGroup.GET("/models/:id/test-channels", modelHandler.GetModelTestChannels)
+		apiGroup.POST("/models/:id/test", modelHandler.TestModel)
 		apiGroup.PUT("/models/:id", modelHandler.UpdateModel)
 		apiGroup.DELETE("/models/:id", modelHandler.DeleteModel)
 

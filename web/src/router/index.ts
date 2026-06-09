@@ -4,6 +4,7 @@ import Dashboard from '@/views/Dashboard.vue'
 import Logs from '@/views/Logs.vue'
 import Models from '@/views/Models.vue'
 import Proxy from '@/views/Proxy.vue'
+import Settings from '@/views/Settings.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -13,6 +14,7 @@ const router = createRouter({
     { path: '/channels', component: Channels },
     { path: '/models', component: Models },
     { path: '/proxy', component: Proxy },
+    { path: '/settings', component: Settings },
     { path: '/logs', component: Logs }
   ]
 })

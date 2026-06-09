@@ -23,6 +23,8 @@ func InitDB(dbPath string) error {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
 
+	hadModelTestEnabled := DB.Migrator().HasColumn(&Model{}, "test_enabled")
+
 	// 自动迁移表结构
 	err = DB.AutoMigrate(
 		&Channel{},
@@ -41,6 +43,13 @@ func InitDB(dbPath string) error {
 	// 数据迁移：旧数据 display_name 为空时填充为 name
 	if err := migrateModelDisplayName(); err != nil {
 		log.Printf("模型显示名迁移警告: %v", err)
+	}
+
+	// 数据迁移：旧数据 test_enabled 默认允许测试
+	if !hadModelTestEnabled {
+		if err := migrateModelTestEnabled(); err != nil {
+			log.Printf("模型测试开关迁移警告: %v", err)
+		}
 	}
 
 	// 针对 SQLite 尝试删除旧的全局 name 唯一索引（如果存在）
@@ -69,6 +78,11 @@ func migrateModelDisplayName() error {
 	return DB.Model(&Model{}).
 		Where("display_name = ? OR display_name IS NULL", "").
 		Update("display_name", gorm.Expr("name")).Error
+}
+
+// migrateModelTestEnabled 迁移旧数据：新增测试开关后默认允许测试。
+func migrateModelTestEnabled() error {
+	return DB.Model(&Model{}).Where("test_enabled = ?", false).Update("test_enabled", true).Error
 }
 
 // removeOldNameUniqueIndex 删除旧的 name 唯一索引（如果存在）

@@ -36,6 +36,7 @@ type Model struct {
 	Alias       string    `json:"alias" gorm:"size:100"`
 	RedirectTo  string    `json:"redirect_to" gorm:"size:100"`
 	Enabled     bool      `json:"enabled" gorm:"default:true;index"`
+	TestEnabled bool      `json:"test_enabled" gorm:"default:true;index"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
