@@ -5,7 +5,7 @@
       <h1>模型列表</h1>
       <p>管理已同步模型的显示名称和可用状态,控制对外调用时的模型路由。</p>
     </div>
-    <div class="page-actions">
+    <div class="page-actions toolbar-panel">
       <el-input
         v-model="searchKeyword"
         placeholder="搜索模型名称或渠道..."
@@ -138,9 +138,10 @@
 
   <el-dialog v-model="editDialogVisible" title="编辑模型" width="500px" class="form-dialog">
     <el-form :model="editForm" label-position="top">
-      <el-form-item label="上游真实模型名（只读）">
-        <el-input v-model="editForm.name" disabled />
-      </el-form-item>
+      <div class="readonly-field">
+        <span>上游真实模型名（只读）</span>
+        <strong>{{ editForm.name || '-' }}</strong>
+      </div>
       <el-form-item label="调用名称/显示名">
         <el-input v-model="editForm.display_name" placeholder="如 gpt-4o-mini" />
         <small class="form-tip">留空则使用上游真实模型名</small>
@@ -397,6 +398,31 @@ function formatDate(value?: string) {
 
 .enhanced-table :deep(.el-table__row:hover) {
   transform: scale(1.005);
+}
+
+.readonly-field {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, #f8fafc, #ffffff);
+}
+
+.readonly-field span,
+.readonly-field strong {
+  display: block;
+}
+
+.readonly-field span {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.readonly-field strong {
+  color: var(--text);
+  word-break: break-all;
 }
 
 .form-tip {

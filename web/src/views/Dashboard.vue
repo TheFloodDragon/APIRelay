@@ -13,6 +13,7 @@
 
   <div class="metric-grid">
     <div class="metric-card accent-blue" @click="router.push('/channels')">
+      <span class="metric-icon">CH</span>
       <span class="metric-label">渠道总数</span>
       <strong>{{ channels.length }}</strong>
       <small>{{ enabledChannels }} 个已启用</small>
@@ -21,6 +22,7 @@
       </div>
     </div>
     <div class="metric-card accent-green" @click="router.push('/models')">
+      <span class="metric-icon">MD</span>
       <span class="metric-label">模型总数</span>
       <strong>{{ models.length }}</strong>
       <small>{{ enabledModels }} 个可用模型</small>
@@ -29,11 +31,13 @@
       </div>
     </div>
     <div class="metric-card accent-purple" @click="router.push('/logs')">
+      <span class="metric-icon">RQ</span>
       <span class="metric-label">请求总数</span>
       <strong>{{ logTotal }}</strong>
       <small>日志表记录总量</small>
     </div>
     <div class="metric-card accent-red">
+      <span class="metric-icon">ER</span>
       <span class="metric-label">近 {{ logs.length }} 条失败</span>
       <strong>{{ failedRequests }}</strong>
       <small>错误或 4xx / 5xx</small>
@@ -45,6 +49,7 @@
       </div>
     </div>
     <div class="metric-card accent-amber">
+      <span class="metric-icon">ms</span>
       <span class="metric-label">平均延迟</span>
       <strong>{{ averageLatency }}ms</strong>
       <small>最近请求样本</small>
@@ -324,6 +329,43 @@ function formatDate(value?: string) {
 <style scoped>
 .metric-card {
   cursor: pointer;
+}
+
+.metric-icon {
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  z-index: 1;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  border-radius: 14px;
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.accent-green .metric-icon {
+  color: var(--success);
+  background: rgba(18, 183, 106, 0.12);
+}
+
+.accent-purple .metric-icon {
+  color: var(--purple);
+  background: rgba(124, 58, 237, 0.12);
+}
+
+.accent-red .metric-icon {
+  color: var(--danger);
+  background: rgba(240, 68, 56, 0.12);
+}
+
+.accent-amber .metric-icon {
+  color: var(--warning);
+  background: rgba(247, 144, 9, 0.14);
 }
 
 .metric-progress {

@@ -1,11 +1,14 @@
 <template>
-  <article class="channel-card" :class="{ 'is-disabled': !channel.enabled }">
+  <article class="channel-card" :class="[{ 'is-disabled': !channel.enabled }, `health-${channel.health_status || 'unknown'}`]">
     <div class="card-topline">
       <button class="drag-handle" type="button" title="拖动调整优先级">
         <el-icon><Rank /></el-icon>
       </button>
       <div class="channel-title">
-        <h3>{{ channel.name }}</h3>
+        <h3>
+          <span class="channel-health-dot" :class="healthMeta.pulseClass"></span>
+          {{ channel.name }}
+        </h3>
         <p>{{ channel.base_url || '未配置 Base URL' }}</p>
       </div>
       <el-switch :model-value="channel.enabled" @change="onToggle" />
@@ -223,13 +226,36 @@ function onToggle(value: boolean | string | number) {
   white-space: nowrap;
 }
 
-.health-indicator {
+.health-indicator,
+.channel-health-dot {
   display: inline-block;
   width: 8px;
   height: 8px;
-  margin-right: 6px;
   border-radius: 999px;
   background: currentColor;
+}
+
+.health-indicator {
+  margin-right: 6px;
+}
+
+.channel-health-dot {
+  flex: 0 0 auto;
+  margin-right: 7px;
+  color: var(--success);
+  vertical-align: 2px;
+}
+
+.health-degraded .channel-health-dot {
+  color: var(--warning);
+}
+
+.health-unhealthy .channel-health-dot {
+  color: var(--danger);
+}
+
+.health-unknown .channel-health-dot {
+  color: var(--muted-2);
 }
 
 .pulse-success {

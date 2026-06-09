@@ -5,7 +5,7 @@
       <h1>请求日志</h1>
       <p>追踪每一次中转请求的协议、渠道、状态码、延迟和错误信息。</p>
     </div>
-    <div class="page-actions">
+    <div class="page-actions toolbar-panel">
       <el-input
         v-model="searchKeyword"
         placeholder="搜索模型、渠道、错误..."
@@ -125,13 +125,17 @@
   <el-drawer v-model="detailVisible" title="请求详情" size="520px" class="detail-drawer">
     <template v-if="selectedLog">
       <div class="detail-status">
-        <el-tag :type="statusType(selectedLog.status_code)" effect="light" round>
-          {{ selectedLog.status_code || '-' }}
-        </el-tag>
-        <strong>{{ selectedLog.model || '-' }}</strong>
+        <div>
+          <el-tag :type="statusType(selectedLog.status_code)" effect="light" round>
+            {{ selectedLog.status_code || '-' }}
+          </el-tag>
+          <strong>{{ selectedLog.model || '-' }}</strong>
+        </div>
+        <small>{{ selectedLog.channel?.name || selectedLog.channel_id || '未匹配渠道' }} · {{ formatLatency(selectedLog.latency) }}</small>
       </div>
 
-      <el-descriptions :column="1" border>
+      <div class="detail-section-title">链路字段</div>
+      <el-descriptions :column="1" border class="detail-descriptions">
         <el-descriptions-item label="请求 ID">
           <span>{{ selectedLog.request_id || '-' }}</span>
           <el-button v-if="selectedLog.request_id" type="primary" text size="small" @click="copyText(selectedLog.request_id || '')">
@@ -371,17 +375,50 @@ function formatDate(value?: string) {
 
 .detail-status {
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--primary-light), #ffffff);
+  box-shadow: var(--shadow-subtle);
+}
+
+.detail-status > div {
+  display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 18px;
-  padding: 14px;
-  border-radius: var(--radius-md);
-  background: var(--primary-light);
+  min-width: 0;
 }
 
 .detail-status strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.detail-status small {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.detail-section-title {
+  margin: 18px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.detail-descriptions :deep(.el-descriptions__label) {
+  width: 122px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.detail-descriptions :deep(.el-descriptions__content) {
+  word-break: break-word;
 }
 </style>

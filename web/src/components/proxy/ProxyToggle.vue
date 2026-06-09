@@ -12,14 +12,14 @@
 
     <el-form :model="form" label-position="top" class="proxy-config-form">
       <div class="toggle-row">
-        <div class="toggle-item">
+        <div class="toggle-item" :class="{ active: form.enabled }">
           <div>
             <strong>代理开关</strong>
             <span>关闭后兼容 API 不再选择任何上游渠道。</span>
           </div>
           <el-switch v-model="form.enabled" active-text="启用" inactive-text="关闭" />
         </div>
-        <div class="toggle-item">
+        <div class="toggle-item" :class="{ active: form.auto_failover_enabled }">
           <div>
             <strong>自动故障转移</strong>
             <span>启用后按全局队列顺序尝试可用渠道。</span>
@@ -127,14 +127,35 @@ function saveConfig() {
 }
 
 .toggle-item {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 18px;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: linear-gradient(135deg, #ffffff, #f8fafc);
+  transition: var(--transition-fast);
+}
+
+.toggle-item::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  content: "";
+  background: var(--muted-2);
+}
+
+.toggle-item.active {
+  border-color: rgba(18, 183, 106, 0.24);
+  background: linear-gradient(135deg, rgba(220, 252, 231, 0.64), #ffffff);
+  box-shadow: var(--shadow-subtle);
+}
+
+.toggle-item.active::before {
+  background: var(--success);
 }
 
 .toggle-item strong,

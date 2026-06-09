@@ -302,8 +302,10 @@ function formatMS(value?: number) {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--border-light);
+  padding: 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #ffffff, #f8fafc);
 }
 
 .summary-row:last-child {
