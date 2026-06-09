@@ -1,64 +1,77 @@
 package controller
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+
+	"github.com/TheFloodDragon/APIRelay/internal/model"
+)
 
 func (rc *RelayController) relayJSON(reqCtx *RequestContext) {
-	var lastErr error
-	var lastErrMsg string
-	attemptedUpstream := false
-
-	for _, candidate := range reqCtx.Candidates {
-		attempt, err := rc.buildRelayAttempt(reqCtx, candidate, false)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
-			if attempt != nil {
-				rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
+	resp, attempt, err := rc.forwardRelayAttempt(
+		reqCtx,
+		false,
+		func(provider model.Channel) (*RelayAttempt, error) {
+			candidate, ok := reqCtx.candidateForProvider(provider.ID)
+			if !ok {
+				return nil, newNonRetryableBuildError(http.StatusNotFound, "provider does not support requested model")
 			}
-			continue
+			candidate.Channel = provider
+			return rc.buildRelayAttempt(reqCtx, candidate, false)
+		},
+		relayJSONPreflight,
+	)
+	if err != nil {
+		statusCode, errMsg := relayFailureDetails(err, attempt)
+		if attempt != nil {
+			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, errMsg)
 		}
+		writeFinalRelayError(reqCtx.Gin, err, errMsg, attempt != nil)
+		return
+	}
+	defer resp.Body.Close()
 
-		attemptedUpstream = true
-		statusCode, respBody, err := rc.httpClient.DoJSON(
-			reqCtx.Gin.Request.Context(),
-			reqCtx.Method,
-			attempt.URL,
-			attempt.Headers,
-			attempt.ConvertedBody,
-			timeoutForChannel(attempt.Info.Channel),
-		)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			rc.recordCircuitFailure(attempt.Info, statusCode, err)
-			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
-			continue
-		}
-
-		if isSuccessfulStatus(statusCode) {
-			convertedResp, err := relayResponseBody(attempt, respBody)
-			if err != nil {
-				lastErr = err
-				lastErrMsg = err.Error()
-				rc.recordCircuitFailure(attempt.Info, http.StatusBadGateway, err)
-				rc.logRequest(reqCtx.Gin, attempt.Info, http.StatusBadGateway, lastErrMsg)
-				continue
+	convertedResp, err := responseProcessor.ReadAndTransform(resp, func(respBody []byte) ([]byte, error) {
+		return relayResponseBody(attempt, respBody)
+	})
+	if err != nil {
+		errMsg := err.Error()
+		if attempt != nil {
+			if rc.providerRouter != nil {
+				rc.providerRouter.RecordFailure(attempt.Info.Channel.ID, errMsg)
 			}
-			rc.recordCircuitSuccess(attempt.Info)
-			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, "")
-			reqCtx.Gin.Data(statusCode, "application/json", convertedResp)
-			return
+			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, errMsg)
 		}
-
-		rc.recordCircuitFailure(attempt.Info, statusCode, nil)
-		lastErr = nil
-		lastErrMsg = attempt.ProtocolAdaptor.ErrorMessage(respBody)
-		if lastErrMsg == "" {
-			lastErrMsg = string(respBody)
-		}
-		rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
+		writeFinalRelayError(reqCtx.Gin, err, errMsg, true)
+		return
 	}
 
-	writeFinalRelayError(reqCtx.Gin, lastErr, lastErrMsg, attemptedUpstream)
+	if rc.providerRouter != nil && attempt != nil {
+		rc.providerRouter.RecordSuccess(attempt.Info.Channel.ID)
+	}
+
+	if attempt != nil {
+		rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, "")
+	}
+	responseProcessor.WriteBody(reqCtx.Gin.Writer, resp.StatusCode, resp.Header, "application/json", convertedResp)
+}
+
+func relayFailureDetails(err error, attempt *RelayAttempt) (int, string) {
+	statusCode := http.StatusServiceUnavailable
+	message := ""
+	var upstreamErr *relayUpstreamError
+	if errors.As(err, &upstreamErr) {
+		statusCode = upstreamErr.statusCode
+		message = upstreamErr.Error()
+	} else if err != nil {
+		message = err.Error()
+	}
+	var buildErr *nonRetryableBuildError
+	if errors.As(err, &buildErr) && buildErr.statusCode != 0 {
+		statusCode = buildErr.statusCode
+	}
+	if attempt != nil && attempt.Info != nil {
+		statusCode = relayAttemptErrorStatus(err, statusCode)
+	}
+	return statusCode, message
 }

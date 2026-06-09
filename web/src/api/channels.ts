@@ -21,19 +21,6 @@ export interface Channel {
   updated_at?: string
 }
 
-export interface ModelTestResult {
-  success: boolean
-  status: ChannelHealthStatus
-  message: string
-  response_time_ms: number
-  ttfb_ms?: number | null
-  http_status?: number | null
-  model_used: string
-  tested_at: string
-  retry_count: number
-  error_category: string
-}
-
 export interface ApiResponse<T> {
   success: boolean
   data: T
@@ -59,14 +46,6 @@ export function deleteChannel(id: number) {
 
 export function reorderChannels(orders: Array<{ id: number; priority: number }>) {
   return request.put('/channels/reorder', { orders })
-}
-
-export function testChannel(id: number) {
-  return request.post<{ success: boolean; message: string; data?: ModelTestResult }>(`/channels/${id}/test`)
-}
-
-export function modelTestChannel(id: number) {
-  return request.post<{ success: boolean; message: string; data: ModelTestResult }>(`/channels/${id}/model-test`)
 }
 
 export function fetchChannelModels(id: number) {

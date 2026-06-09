@@ -6,5 +6,5 @@ import (
 )
 
 func (rc *RelayController) Embeddings(c *gin.Context) {
-	rc.handleRelay(c, constant.RelayAppOpenAI, constant.RelayModeEmbeddings, constant.RelayFormatOpenAI)
+	rc.handleRelay(c, constant.RelayModeEmbeddings, constant.RelayFormatOpenAI)
 }

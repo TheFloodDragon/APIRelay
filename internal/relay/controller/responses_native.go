@@ -26,7 +26,7 @@ func (rc *RelayController) buildResponsesAttempt(respCtx *responsesRequestContex
 
 func (rc *RelayController) buildResponsesNativeAttempt(respCtx *responsesRequestContext, candidate relayCandidate, isStream bool) (*RelayAttempt, error) {
 	reqCtx := respCtx.RequestContext
-	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.App, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
+	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
 	protocolAdaptor := adaptor.GetAdaptor(info.APIType)
 	providerAdaptor := adaptor.AsProviderAdapter(protocolAdaptor)
 	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor, ProviderAdapter: providerAdaptor}

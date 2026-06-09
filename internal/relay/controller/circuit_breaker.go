@@ -4,8 +4,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/TheFloodDragon/APIRelay/internal/relay/constant"
 )
 
 const (
@@ -13,7 +11,7 @@ const (
 	defaultCircuitBreakerOpenDuration     = 30 * time.Second
 )
 
-// CircuitBreakerState 表示单个 app/channel 熔断器的状态。
+// CircuitBreakerState 表示单个渠道熔断器的状态。
 type CircuitBreakerState string
 
 const (
@@ -28,7 +26,7 @@ type circuitEntry struct {
 	openedUntil         time.Time
 }
 
-// CircuitBreaker 是进程内、按 relay_app:channel_id 隔离的轻量熔断器。
+// CircuitBreaker 是进程内、按 channel_id 隔离的轻量熔断器。
 type CircuitBreaker struct {
 	mu               sync.Mutex
 	entries          map[string]*circuitEntry
@@ -59,7 +57,7 @@ func newCircuitBreaker(failureThreshold int, openDuration time.Duration, now fun
 	}
 }
 
-func (cb *CircuitBreaker) Allow(app constant.RelayApp, channelID uint) bool {
+func (cb *CircuitBreaker) Allow(channelID uint) bool {
 	if cb == nil {
 		return true
 	}
@@ -67,7 +65,7 @@ func (cb *CircuitBreaker) Allow(app constant.RelayApp, channelID uint) bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	entry := cb.entries[circuitKey(app, channelID)]
+	entry := cb.entries[circuitKey(channelID)]
 	if entry == nil {
 		return true
 	}
@@ -75,7 +73,7 @@ func (cb *CircuitBreaker) Allow(app constant.RelayApp, channelID uint) bool {
 	return entry.state != CircuitBreakerOpen
 }
 
-func (cb *CircuitBreaker) RecordSuccess(app constant.RelayApp, channelID uint) {
+func (cb *CircuitBreaker) RecordSuccess(channelID uint) {
 	if cb == nil {
 		return
 	}
@@ -83,10 +81,10 @@ func (cb *CircuitBreaker) RecordSuccess(app constant.RelayApp, channelID uint) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	delete(cb.entries, circuitKey(app, channelID))
+	delete(cb.entries, circuitKey(channelID))
 }
 
-func (cb *CircuitBreaker) RecordFailure(app constant.RelayApp, channelID uint) {
+func (cb *CircuitBreaker) RecordFailure(channelID uint) {
 	if cb == nil {
 		return
 	}
@@ -94,7 +92,7 @@ func (cb *CircuitBreaker) RecordFailure(app constant.RelayApp, channelID uint) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	key := circuitKey(app, channelID)
+	key := circuitKey(channelID)
 	entry := cb.entries[key]
 	if entry == nil {
 		entry = &circuitEntry{state: CircuitBreakerClosed}
@@ -114,7 +112,7 @@ func (cb *CircuitBreaker) RecordFailure(app constant.RelayApp, channelID uint) {
 	}
 }
 
-func (cb *CircuitBreaker) State(app constant.RelayApp, channelID uint) CircuitBreakerState {
+func (cb *CircuitBreaker) State(channelID uint) CircuitBreakerState {
 	if cb == nil {
 		return CircuitBreakerClosed
 	}
@@ -122,7 +120,7 @@ func (cb *CircuitBreaker) State(app constant.RelayApp, channelID uint) CircuitBr
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	entry := cb.entries[circuitKey(app, channelID)]
+	entry := cb.entries[circuitKey(channelID)]
 	if entry == nil {
 		return CircuitBreakerClosed
 	}
@@ -143,6 +141,6 @@ func (cb *CircuitBreaker) openLocked(entry *circuitEntry, now time.Time) {
 	entry.openedUntil = now.Add(cb.openDuration)
 }
 
-func circuitKey(app constant.RelayApp, channelID uint) string {
-	return app.String() + ":" + strconv.FormatUint(uint64(channelID), 10)
+func circuitKey(channelID uint) string {
+	return strconv.FormatUint(uint64(channelID), 10)
 }

@@ -5,35 +5,38 @@ import (
 	"strings"
 
 	"github.com/TheFloodDragon/APIRelay/internal/relay/client"
+	"github.com/TheFloodDragon/APIRelay/internal/relay/forwarder"
+	providerrouter "github.com/TheFloodDragon/APIRelay/internal/relay/router"
 	"github.com/TheFloodDragon/APIRelay/internal/repository"
-	"github.com/TheFloodDragon/APIRelay/internal/router"
-	"github.com/TheFloodDragon/APIRelay/internal/scheduler"
 	"github.com/gin-gonic/gin"
 )
 
 // RelayController 是 /v1/* 入口的新转发控制器。
 type RelayController struct {
-	scheduler      *scheduler.Scheduler
-	modelRouter    *router.ModelRouter
+	channelRepo    *repository.ChannelRepository
 	httpClient     *client.HTTPClient
 	logRepo        *repository.LogRepository
 	modelRepo      *repository.ModelRepository
+	providerRouter *providerrouter.ProviderRouter
+	forwarder      *forwarder.Forwarder
 	circuitBreaker *CircuitBreaker
 }
 
 func NewRelayController(
-	scheduler *scheduler.Scheduler,
-	modelRouter *router.ModelRouter,
+	channelRepo *repository.ChannelRepository,
 	httpClient *client.HTTPClient,
 	logRepo *repository.LogRepository,
 	modelRepo *repository.ModelRepository,
+	providerRouter *providerrouter.ProviderRouter,
+	forwarder *forwarder.Forwarder,
 ) *RelayController {
 	return &RelayController{
-		scheduler:      scheduler,
-		modelRouter:    modelRouter,
+		channelRepo:    channelRepo,
 		httpClient:     httpClient,
 		logRepo:        logRepo,
 		modelRepo:      modelRepo,
+		providerRouter: providerRouter,
+		forwarder:      forwarder,
 		circuitBreaker: NewCircuitBreaker(),
 	}
 }

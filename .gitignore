@@ -16,6 +16,7 @@ data/
 logs/
 *.db
 *.log
+.tmp/
 
 # Environment files
 .env

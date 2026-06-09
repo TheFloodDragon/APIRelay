@@ -11,7 +11,6 @@ import (
 type RelayInfo struct {
 	RequestID      string
 	StartTime      time.Time
-	RelayApp       constant.RelayApp
 	RelayMode      constant.RelayMode
 	RelayFormat    constant.RelayFormat
 	APIType        constant.APIType

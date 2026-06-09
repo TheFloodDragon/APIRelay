@@ -31,17 +31,11 @@ func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo,
 	if apiType == "" {
 		apiType = "-"
 	}
-	relayApp := string(info.RelayApp)
-	if relayApp == "" {
-		relayApp = "-"
-	}
-
 	requestLog := &model.RequestLog{
 		RequestID:     info.RequestID,
 		ChannelID:     channelID,
 		ChannelType:   channelType,
 		APIType:       apiType,
-		RelayApp:      relayApp,
 		RelayMode:     string(info.RelayMode),
 		RelayFormat:   string(info.RelayFormat),
 		ResolvedModel: info.ResolvedModel,
@@ -56,14 +50,13 @@ func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo,
 	}
 
 	if err := rc.logRepo.Create(requestLog); err != nil {
-		log.Printf("[MODEL] request_id=%s model=%s resolved_model=%s channel_id=%v channel_type=%s api_type=%s relay_app=%s relay_mode=%s relay_format=%s status=%d latency=%dms ip=%s error=%q log_error=%q",
+		log.Printf("[MODEL] request_id=%s model=%s resolved_model=%s channel_id=%v channel_type=%s api_type=%s relay_mode=%s relay_format=%s status=%d latency=%dms ip=%s error=%q log_error=%q",
 			info.RequestID,
 			info.RequestedModel,
 			info.ResolvedModel,
 			logChannelID(channelID),
 			channelType,
 			apiType,
-			relayApp,
 			info.RelayMode,
 			info.RelayFormat,
 			statusCode,
@@ -75,14 +68,13 @@ func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo,
 		return
 	}
 
-	log.Printf("[MODEL] request_id=%s model=%s resolved_model=%s channel_id=%v channel_type=%s api_type=%s relay_app=%s relay_mode=%s relay_format=%s status=%d latency=%dms ip=%s error=%q",
+	log.Printf("[MODEL] request_id=%s model=%s resolved_model=%s channel_id=%v channel_type=%s api_type=%s relay_mode=%s relay_format=%s status=%d latency=%dms ip=%s error=%q",
 		info.RequestID,
 		info.RequestedModel,
 		info.ResolvedModel,
 		logChannelID(channelID),
 		channelType,
 		apiType,
-		relayApp,
 		info.RelayMode,
 		info.RelayFormat,
 		statusCode,
@@ -92,11 +84,10 @@ func (rc *RelayController) logRequest(c *gin.Context, info *relayinfo.RelayInfo,
 	)
 }
 
-func (rc *RelayController) logNoChannel(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat, requestedModel string, statusCode int, errMsg string) {
+func (rc *RelayController) logNoChannel(c *gin.Context, requestID string, startTime time.Time, mode constant.RelayMode, format constant.RelayFormat, requestedModel string, statusCode int, errMsg string) {
 	info := &relayinfo.RelayInfo{
 		RequestID:      requestID,
 		StartTime:      startTime,
-		RelayApp:       app,
 		RelayMode:      mode,
 		RelayFormat:    format,
 		RequestedModel: requestedModel,

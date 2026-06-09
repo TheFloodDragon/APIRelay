@@ -22,14 +22,14 @@ const (
 	responsesAttemptChatBridge responsesAttemptKind = "chat_bridge"
 )
 
-func responsesAttemptOrder(app constant.RelayApp, candidate relayCandidate) []responsesAttemptKind {
+func responsesAttemptOrder(candidate relayCandidate) []responsesAttemptKind {
 	switch configuredResponsesMode(candidate.Channel) {
 	case responsesModeNative:
 		return []responsesAttemptKind{responsesAttemptNative}
 	case responsesModeChatBridge:
 		return []responsesAttemptKind{responsesAttemptChatBridge}
 	default:
-		if shouldAutoTryNativeResponses(app, candidate.Channel) {
+		if shouldAutoTryNativeResponses(candidate.Channel) {
 			return []responsesAttemptKind{responsesAttemptNative, responsesAttemptChatBridge}
 		}
 		return []responsesAttemptKind{responsesAttemptChatBridge}
@@ -48,14 +48,11 @@ func configuredResponsesMode(channel model.Channel) responsesUpstreamMode {
 	}
 }
 
-func shouldAutoTryNativeResponses(app constant.RelayApp, channel model.Channel) bool {
+func shouldAutoTryNativeResponses(channel model.Channel) bool {
 	if constant.APITypeFromChannelType(channel.Type) != constant.APITypeOpenAI {
 		return false
 	}
-	if channelConfigBool(channel.Config, "supports_responses") {
-		return true
-	}
-	return app == constant.RelayAppCodex
+	return channelConfigBool(channel.Config, "supports_responses")
 }
 
 func channelConfigString(config model.JSONMap, key string) string {

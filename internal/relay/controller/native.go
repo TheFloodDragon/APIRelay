@@ -10,12 +10,12 @@ import (
 
 // AnthropicMessages 提供 Anthropic Messages 兼容入口：/v1/messages。
 func (rc *RelayController) AnthropicMessages(c *gin.Context) {
-	rc.handleRelay(c, constant.RelayAppClaude, constant.RelayModeMessages, constant.RelayFormatAnthropic)
+	rc.handleRelay(c, constant.RelayModeMessages, constant.RelayFormatAnthropic)
 }
 
 // ClaudeMessages 提供带 /claude 命名空间的 Anthropic Messages 兼容入口。
 func (rc *RelayController) ClaudeMessages(c *gin.Context) {
-	rc.handleRelay(c, constant.RelayAppClaude, constant.RelayModeMessages, constant.RelayFormatAnthropic)
+	rc.handleRelay(c, constant.RelayModeMessages, constant.RelayFormatAnthropic)
 }
 
 // GeminiGenerateContent 提供 Gemini generateContent / streamGenerateContent 兼容入口。
@@ -50,7 +50,7 @@ func (rc *RelayController) handleGeminiNative(c *gin.Context) {
 		if !geminiMethodAllowed(c, http.MethodPost, route.Kind) {
 			return
 		}
-		rc.handleRelay(c, constant.RelayAppGemini, constant.RelayModeGeminiNative, constant.RelayFormatGemini)
+		rc.handleRelay(c, constant.RelayModeGeminiNative, constant.RelayFormatGemini)
 	case geminiNativeRouteCountTokens:
 		if !geminiMethodAllowed(c, http.MethodPost, route.Kind) {
 			return
@@ -62,7 +62,7 @@ func (rc *RelayController) handleGeminiNative(c *gin.Context) {
 }
 
 func (rc *RelayController) handleGeminiCountTokens(c *gin.Context) {
-	reqCtx, ok := rc.newRequestContext(c, constant.RelayAppGemini, constant.RelayModeCountTokens, constant.RelayFormatGemini)
+	reqCtx, ok := rc.newRequestContext(c, constant.RelayModeCountTokens, constant.RelayFormatGemini)
 	if !ok {
 		return
 	}

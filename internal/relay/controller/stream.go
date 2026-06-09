@@ -5,98 +5,57 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/TheFloodDragon/APIRelay/internal/model"
 	"github.com/TheFloodDragon/APIRelay/internal/relay/adaptor"
 	"github.com/TheFloodDragon/APIRelay/internal/relay/constant"
+	relayresponse "github.com/TheFloodDragon/APIRelay/internal/relay/response"
 	"github.com/gin-gonic/gin"
 )
 
 func (rc *RelayController) relayStream(reqCtx *RequestContext) {
-	var lastErr error
-	var lastErrMsg string
-	attemptedUpstream := false
-
-	for _, candidate := range reqCtx.Candidates {
-		attempt, err := rc.buildRelayAttempt(reqCtx, candidate, true)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			statusCode := relayAttemptErrorStatus(err, http.StatusBadGateway)
-			if attempt != nil {
-				rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, lastErrMsg)
+	resp, attempt, err := rc.forwardRelayAttempt(
+		reqCtx,
+		true,
+		func(provider model.Channel) (*RelayAttempt, error) {
+			candidate, ok := reqCtx.candidateForProvider(provider.ID)
+			if !ok {
+				return nil, newNonRetryableBuildError(http.StatusNotFound, "provider does not support requested model")
 			}
-			continue
+			candidate.Channel = provider
+			return rc.buildRelayAttempt(reqCtx, candidate, true)
+		},
+		relayStreamPreflight,
+	)
+	if err != nil {
+		statusCode, errMsg := relayFailureDetails(err, attempt)
+		if attempt != nil {
+			rc.logRequest(reqCtx.Gin, attempt.Info, statusCode, errMsg)
 		}
-
-		attemptedUpstream = true
-		resp, err := rc.httpClient.DoStream(
-			reqCtx.Gin.Request.Context(),
-			reqCtx.Method,
-			attempt.URL,
-			attempt.Headers,
-			attempt.ConvertedBody,
-			timeoutForChannel(attempt.Info.Channel),
-		)
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			rc.recordCircuitFailure(attempt.Info, 0, err)
-			rc.logRequest(reqCtx.Gin, attempt.Info, 0, lastErrMsg)
-			continue
-		}
-
-		if !isSuccessfulStatus(resp.StatusCode) {
-			errorBody, readErr := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if readErr != nil {
-				lastErr = readErr
-				lastErrMsg = readErr.Error()
-			} else {
-				lastErr = nil
-				lastErrMsg = attempt.ProtocolAdaptor.ErrorMessage(errorBody)
-				if lastErrMsg == "" {
-					lastErrMsg = string(errorBody)
-				}
-			}
-			rc.recordCircuitFailure(attempt.Info, resp.StatusCode, readErr)
-			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
-			continue
-		}
-
-		preparedBody, err := prepareStreamBody(reqCtx.Gin.Request.Context(), resp.Body, timeoutForChannel(attempt.Info.Channel))
-		if err != nil {
-			lastErr = err
-			lastErrMsg = err.Error()
-			rc.recordCircuitFailure(attempt.Info, resp.StatusCode, err)
-			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
-			continue
-		}
-
-		writeStreamHeaders(reqCtx.Gin, resp.StatusCode)
-		copyErr := copyAttemptStream(reqCtx.Gin, preparedBody, attempt)
-		_ = preparedBody.Close()
-		if copyErr != nil {
-			lastErr = copyErr
-			lastErrMsg = copyErr.Error()
-			rc.recordCircuitFailure(attempt.Info, resp.StatusCode, copyErr)
-			rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, lastErrMsg)
-			return
-		}
-
-		rc.recordCircuitSuccess(attempt.Info)
-		rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, "")
+		writeFinalRelayError(reqCtx.Gin, err, errMsg, attempt != nil)
 		return
 	}
 
-	writeFinalRelayError(reqCtx.Gin, lastErr, lastErrMsg, attemptedUpstream)
+	writeStreamHeaders(reqCtx.Gin, resp.StatusCode, resp.Header)
+	copyErr := copyAttemptStream(reqCtx.Gin, resp.Body, attempt)
+	_ = resp.Body.Close()
+	if copyErr != nil {
+		errMsg := copyErr.Error()
+		if rc.providerRouter != nil {
+			rc.providerRouter.RecordFailure(attempt.Info.Channel.ID, errMsg)
+		}
+		rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, errMsg)
+		return
+	}
+
+	if rc.providerRouter != nil {
+		rc.providerRouter.RecordSuccess(attempt.Info.Channel.ID)
+	}
+	rc.logRequest(reqCtx.Gin, attempt.Info, resp.StatusCode, "")
 }
 
-func writeStreamHeaders(c *gin.Context, statusCode int) {
+func writeStreamHeaders(c *gin.Context, statusCode int, headers http.Header) {
 	writer := c.Writer
-	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.Header().Set("X-Accel-Buffering", "no")
-	writer.WriteHeader(statusCode)
+	relayresponse.WriteStreamHeaders(writer, statusCode, headers)
 	writer.Flush()
 }
 

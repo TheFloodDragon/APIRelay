@@ -72,9 +72,6 @@
         {{ lastCheckText }}
       </span>
       <div class="channel-actions">
-        <el-button size="small" :icon="Connection" :loading="testing" @click="$emit('test', channel)">
-          模型测试
-        </el-button>
         <el-button size="small" :icon="Refresh" @click="$emit('fetch-models', channel)">
           获取模型
         </el-button>
@@ -106,16 +103,13 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Connection, Delete, EditPen, Rank, Refresh, Clock } from '@element-plus/icons-vue'
+import { Delete, EditPen, Rank, Refresh, Clock } from '@element-plus/icons-vue'
 import type { Channel } from '@/api/channels'
 
-const props = withDefaults(defineProps<{ channel: Channel; testing?: boolean }>(), {
-  testing: false
-})
+const props = defineProps<{ channel: Channel }>()
 const modelDialogVisible = ref(false)
 const emit = defineEmits<{
   toggle: [channel: Channel, enabled: boolean]
-  test: [channel: Channel]
   edit: [channel: Channel]
   delete: [channel: Channel]
   'fetch-models': [channel: Channel]

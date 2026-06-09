@@ -135,7 +135,7 @@ func newGeminiNativeRouteTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Channel{}, &model.Model{}, &model.APIKey{}, &model.RequestLog{}, &model.SystemConfig{}, &model.ModelTestLog{}); err != nil {
+	if err := db.AutoMigrate(&model.Channel{}, &model.Model{}, &model.APIKey{}, &model.RequestLog{}, &model.SystemConfig{}); err != nil {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	return db

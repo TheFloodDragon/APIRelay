@@ -62,7 +62,7 @@
 import { computed, ref } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Collection, DataLine, Files, Switch } from '@element-plus/icons-vue'
+import { Collection, Connection, DataLine, Files, Switch } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const adminKey = ref(localStorage.getItem('apirelay_admin_key') || 'change-me-in-production')
@@ -71,6 +71,7 @@ const navItems = [
   { path: '/dashboard', label: '仪表盘', icon: DataLine },
   { path: '/channels', label: '渠道管理', icon: Switch },
   { path: '/models', label: '模型列表', icon: Collection },
+  { path: '/proxy', label: '代理管理', icon: Connection },
   { path: '/logs', label: '请求日志', icon: Files }
 ]
 

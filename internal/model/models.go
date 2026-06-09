@@ -26,26 +26,6 @@ type Channel struct {
 	UpdatedAt    time.Time      `json:"updated_at"`
 }
 
-// ModelTestLog 模型测试日志
-// 记录管理端对渠道执行的真实短请求测试结果，用于后续审计与趋势分析。
-type ModelTestLog struct {
-	ID             uint      `json:"id" gorm:"primaryKey"`
-	ChannelID      uint      `json:"channel_id" gorm:"index"`
-	Channel        *Channel  `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
-	ChannelName    string    `json:"channel_name" gorm:"size:100"`
-	Status         string    `json:"status" gorm:"size:20;index"` // healthy, degraded, unhealthy
-	Success        bool      `json:"success" gorm:"index"`
-	Message        string    `json:"message" gorm:"type:text"`
-	ResponseTimeMS *int      `json:"response_time_ms"`
-	TTFBMS         *int      `json:"ttfb_ms"`
-	HTTPStatus     *int      `json:"http_status"`
-	ModelUsed      string    `json:"model_used" gorm:"size:100;index"`
-	RetryCount     int       `json:"retry_count"`
-	ErrorCategory  string    `json:"error_category" gorm:"size:50;index"`
-	TestedAt       time.Time `json:"tested_at" gorm:"index"`
-	CreatedAt      time.Time `json:"created_at"`
-}
-
 // Model 模型
 type Model struct {
 	ID          uint      `json:"id" gorm:"primaryKey"`
@@ -79,7 +59,6 @@ type RequestLog struct {
 	Channel     *Channel `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
 	ChannelType string   `json:"channel_type" gorm:"size:50;index"`
 	APIType     string   `json:"api_type" gorm:"size:50;index"`
-	RelayApp    string   `json:"relay_app" gorm:"size:50;index"`
 	RelayMode   string   `json:"relay_mode" gorm:"size:50;index"`
 	RelayFormat string   `json:"relay_format" gorm:"size:50"`
 
@@ -103,6 +82,43 @@ type SystemConfig struct {
 	Key       string    `json:"key" gorm:"primaryKey;size:100"`
 	Value     string    `json:"value" gorm:"type:text"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ProxyConfig 全局代理配置。所有协议入口共享同一份配置。
+type ProxyConfig struct {
+	ID                        uint      `json:"id" gorm:"primaryKey"`
+	Enabled                   bool      `json:"enabled"`
+	AutoFailoverEnabled       bool      `json:"auto_failover_enabled"`
+	MaxRetries                int       `json:"max_retries"`
+	NonStreamingTimeoutMS     int       `json:"non_streaming_timeout_ms"`
+	StreamingFirstByteTimeout int       `json:"streaming_first_byte_timeout"`
+	StreamingIdleTimeoutMS    int       `json:"streaming_idle_timeout_ms"`
+	CircuitFailureThreshold   int       `json:"circuit_failure_threshold"`
+	CircuitSuccessThreshold   int       `json:"circuit_success_threshold"`
+	CircuitOpenSeconds        int       `json:"circuit_open_seconds"`
+	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
+}
+
+// FailoverQueueItem 全局故障转移队列项。
+type FailoverQueueItem struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	ChannelID uint      `json:"channel_id" gorm:"uniqueIndex"`
+	Channel   *Channel  `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
+	Position  int       `json:"position" gorm:"index"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ProviderHealth 全局渠道健康状态。
+type ProviderHealth struct {
+	ChannelID           uint       `json:"channel_id" gorm:"primaryKey"`
+	Channel             *Channel   `json:"channel,omitempty" gorm:"foreignKey:ChannelID"`
+	IsHealthy           bool       `json:"is_healthy"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	LastSuccessAt       *time.Time `json:"last_success_at"`
+	LastFailureAt       *time.Time `json:"last_failure_at"`
+	LastError           string     `json:"last_error" gorm:"type:text"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 // JSONStringList 用于存储字符串数组的JSON类型

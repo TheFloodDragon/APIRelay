@@ -13,9 +13,9 @@ import (
 	"github.com/TheFloodDragon/APIRelay/internal/api/middleware"
 	relayclient "github.com/TheFloodDragon/APIRelay/internal/relay/client"
 	relaycontroller "github.com/TheFloodDragon/APIRelay/internal/relay/controller"
+	"github.com/TheFloodDragon/APIRelay/internal/relay/forwarder"
+	providerrouter "github.com/TheFloodDragon/APIRelay/internal/relay/router"
 	"github.com/TheFloodDragon/APIRelay/internal/repository"
-	"github.com/TheFloodDragon/APIRelay/internal/router"
-	"github.com/TheFloodDragon/APIRelay/internal/scheduler"
 	"github.com/TheFloodDragon/APIRelay/internal/service"
 	"github.com/TheFloodDragon/APIRelay/internal/ui"
 	"github.com/TheFloodDragon/APIRelay/pkg/config"
@@ -40,33 +40,46 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	modelRepo := repository.NewModelRepository(db)
 	keyRepo := repository.NewAPIKeyRepository(db)
 	logRepo := repository.NewLogRepository(db)
-	systemConfigRepo := repository.NewSystemConfigRepository(db)
-	modelTestLogRepo := repository.NewModelTestLogRepository(db)
-
+	proxyConfigRepo := repository.NewProxyConfigRepository(db)
+	failoverQueueRepo := repository.NewFailoverQueueRepository(db)
+	providerHealthRepo := repository.NewProviderHealthRepository(db)
 	// 服务层
 	channelService := service.NewChannelService(channelRepo, modelRepo)
-	modelTestService := service.NewModelTestService(channelRepo, systemConfigRepo, modelTestLogRepo)
-	schedulerService := scheduler.NewScheduler(channelRepo, cfg.Scheduler.Strategy)
-
-	// 模型路由器（聚合中转站核心）
-	modelRouter := router.NewModelRouter(modelRepo)
 
 	// 处理器
 	systemHandler := handler.NewSystemHandler()
-	channelHandler := handler.NewChannelHandler(channelService, modelTestService)
+	channelHandler := handler.NewChannelHandler(channelService)
 	modelHandler := handler.NewModelHandler(modelRepo)
-	modelTestHandler := handler.NewModelTestHandler(modelTestService)
 	keyHandler := handler.NewKeyHandler(keyRepo)
 	logHandler := handler.NewLogHandler(logRepo)
 	relayHTTPClient := relayclient.NewHTTPClient()
+	providerRouter := providerrouter.NewDefaultProviderRouter(
+		channelRepo,
+		proxyConfigRepo,
+		failoverQueueRepo,
+		providerHealthRepo,
+	)
+	proxyConfig, _ := providerRouter.GetProxyConfig()
+	maxRetries := 0
+	if proxyConfig != nil {
+		maxRetries = proxyConfig.MaxRetries
+	}
+	relayForwarder := forwarder.NewForwarderWithBuilder(providerRouter, relayHTTPClient.Client(), maxRetries, nil, nil)
 	relayController := relaycontroller.NewRelayController(
-		schedulerService,
-		modelRouter,
+		channelRepo,
 		relayHTTPClient,
 		logRepo,
 		modelRepo,
+		providerRouter,
+		relayForwarder,
 	)
-	routeHandler := handler.NewRouteHandler(modelRouter)
+	proxyHandler := handler.NewProxyHandler(
+		proxyConfigRepo,
+		failoverQueueRepo,
+		channelRepo,
+		providerHealthRepo,
+		providerRouter,
+	)
 
 	// 管理 API 与兼容 API 先注册，最后再注册前端静态资源兜底。
 	// 这样 /api、/v1、/v1beta 的未知路径会稳定返回 JSON 404，
@@ -76,10 +89,9 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 		systemHandler,
 		channelHandler,
 		modelHandler,
-		modelTestHandler,
 		keyHandler,
 		logHandler,
-		routeHandler,
+		proxyHandler,
 	)
 	setupRelayRoutes(r, keyRepo, relayController)
 
@@ -94,10 +106,9 @@ func setupAdminRoutes(
 	systemHandler *handler.SystemHandler,
 	channelHandler *handler.ChannelHandler,
 	modelHandler *handler.ModelHandler,
-	modelTestHandler *handler.ModelTestHandler,
 	keyHandler *handler.KeyHandler,
 	logHandler *handler.LogHandler,
-	routeHandler *handler.RouteHandler,
+	proxyHandler *handler.ProxyHandler,
 ) {
 	apiGroup := r.Group("/api")
 	{
@@ -118,13 +129,6 @@ func setupAdminRoutes(
 		apiGroup.PUT("/channels/:id", channelHandler.UpdateChannel)
 		apiGroup.DELETE("/channels/:id", channelHandler.DeleteChannel)
 		apiGroup.POST("/channels/:id/models", channelHandler.FetchModels)
-		apiGroup.POST("/channels/:id/test", channelHandler.TestChannel)
-		apiGroup.POST("/channels/:id/model-test", channelHandler.ModelTestChannel)
-		apiGroup.GET("/channels/:id/model-test/logs", channelHandler.GetModelTestLogs)
-
-		// 模型测试配置
-		apiGroup.GET("/model-test/config", modelTestHandler.GetConfig)
-		apiGroup.PUT("/model-test/config", modelTestHandler.SaveConfig)
 
 		// 模型管理
 		apiGroup.GET("/models", modelHandler.GetModels)
@@ -140,20 +144,25 @@ func setupAdminRoutes(
 		// 日志查询
 		apiGroup.GET("/logs", logHandler.GetLogs)
 
-		// 模型路由管理（聚合中转站功能）
-		apiGroup.GET("/routes", routeHandler.GetAllRoutes)
-		apiGroup.POST("/routes/aliases", routeHandler.SetAlias)
-		apiGroup.DELETE("/routes/aliases/:alias", routeHandler.DeleteAlias)
-		apiGroup.POST("/routes/redirects", routeHandler.SetRedirect)
-		apiGroup.DELETE("/routes/redirects/:source", routeHandler.DeleteRedirect)
-		apiGroup.POST("/routes/groups", routeHandler.SetGroup)
-		apiGroup.DELETE("/routes/groups/:group", routeHandler.DeleteGroup)
-		apiGroup.POST("/routes/reload", routeHandler.ReloadRoutes)
+		// 全局代理管理
+		if proxyHandler != nil {
+			apiGroup.GET("/proxy/status", proxyHandler.GetStatus)
+			apiGroup.GET("/proxy/config", proxyHandler.GetConfig)
+			apiGroup.PUT("/proxy/config", proxyHandler.UpdateConfig)
+			apiGroup.GET("/proxy/failover-queue", proxyHandler.GetFailoverQueue)
+			apiGroup.PUT("/proxy/failover-queue", proxyHandler.UpdateFailoverQueue)
+			apiGroup.GET("/proxy/circuits", proxyHandler.GetCircuits)
+			apiGroup.POST("/proxy/circuits/:channel_id/reset", proxyHandler.ResetCircuit)
+		}
 	}
 }
 
 func setupRelayRoutes(r *gin.Engine, keyRepo *repository.APIKeyRepository, relayController *relaycontroller.RelayController) {
 	relayAuth := middleware.APIKeyAuthMiddleware(keyRepo)
+
+	// 健康/状态兼容入口，不需要 API Key。
+	r.GET("/health", relayStatus)
+	r.GET("/status", relayStatus)
 
 	// OpenAI / Codex models 兼容入口。
 	r.GET("/models", relayAuth, relayController.GetModels)
@@ -195,9 +204,7 @@ func setupRelayRoutes(r *gin.Engine, keyRepo *repository.APIKeyRepository, relay
 	v1BetaGroup := r.Group("/v1beta")
 	v1BetaGroup.Use(relayAuth)
 	{
-		v1BetaGroup.GET("/models", relayController.GetGeminiModels)
-		v1BetaGroup.GET("/models/*modelPath", relayController.GetGeminiModel)
-		v1BetaGroup.POST("/models/*modelAction", relayController.GeminiGenerateContent)
+		v1BetaGroup.Any("/*path", relayController.GeminiGenerateContent)
 	}
 }
 
@@ -220,14 +227,16 @@ func setupStaticRoutes(r *gin.Engine, cfg *config.Config) {
 	setupStatusRoute(r)
 }
 
-func setupStatusRoute(r *gin.Engine) {
-	r.GET("/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"name":    "APIRelay",
-			"version": "1.0.0",
-			"status":  "running",
-		})
+func relayStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"name":    "APIRelay",
+		"version": "1.0.0",
+		"status":  "running",
 	})
+}
+
+func setupStatusRoute(r *gin.Engine) {
+	r.GET("/", relayStatus)
 
 	r.NoRoute(func(c *gin.Context) {
 		writeRouteNotFound(c)

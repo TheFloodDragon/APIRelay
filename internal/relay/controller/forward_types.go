@@ -55,7 +55,7 @@ func (rc *RelayController) buildRelayAttempt(
 	candidate relayCandidate,
 	isStream bool,
 ) (*RelayAttempt, error) {
-	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.App, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
+	info := buildRelayInfo(reqCtx.Gin, reqCtx.RequestID, reqCtx.StartTime, reqCtx.Mode, reqCtx.Format, reqCtx.Meta, candidate, isStream)
 	protocolAdaptor := adaptor.GetAdaptor(info.APIType)
 	providerAdaptor := adaptor.AsProviderAdapter(protocolAdaptor)
 	attempt := &RelayAttempt{Info: info, ProtocolAdaptor: protocolAdaptor, ProviderAdapter: providerAdaptor}

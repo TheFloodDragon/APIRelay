@@ -24,8 +24,8 @@ type relayCandidate struct {
 	ResolvedModel string
 }
 
-func (rc *RelayController) handleRelay(c *gin.Context, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat) {
-	reqCtx, ok := rc.newRequestContext(c, app, mode, format)
+func (rc *RelayController) handleRelay(c *gin.Context, mode constant.RelayMode, format constant.RelayFormat) {
+	reqCtx, ok := rc.newRequestContext(c, mode, format)
 	if !ok {
 		return
 	}
@@ -77,32 +77,40 @@ func parseGeminiRequestMeta(c *gin.Context, body []byte) (relayRequestMeta, erro
 }
 
 func (rc *RelayController) resolveCandidates(requestedModel string) ([]relayCandidate, error) {
-	resolvedModels, err := rc.modelRouter.ResolveModel(requestedModel)
+	models, err := rc.modelRepo.GetByDisplayName(requestedModel)
 	if err != nil {
 		return nil, err
 	}
+	if len(models) == 0 {
+		models, err = rc.modelRepo.GetByDisplayName(normalizeGeminiModelName(requestedModel))
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	candidates := make([]relayCandidate, 0)
-	for _, resolvedModel := range resolvedModels {
-		channels, err := rc.scheduler.GetAllChannelsForModel(resolvedModel)
-		if err != nil || len(channels) == 0 {
+	seen := make(map[uint]struct{})
+	candidates := make([]relayCandidate, 0, len(models))
+	for _, modelRecord := range models {
+		if modelRecord.Channel == nil || !modelRecord.Channel.Enabled {
 			continue
 		}
-		for _, channel := range channels {
-			candidates = append(candidates, relayCandidate{Channel: channel, ResolvedModel: resolvedModel})
+		if _, exists := seen[modelRecord.Channel.ID]; exists {
+			continue
 		}
+		seen[modelRecord.Channel.ID] = struct{}{}
+		candidates = append(candidates, relayCandidate{Channel: *modelRecord.Channel, ResolvedModel: modelRecord.Name})
 	}
 	return candidates, nil
 }
 
-func (rc *RelayController) filterCircuitOpenCandidates(app constant.RelayApp, candidates []relayCandidate) []relayCandidate {
+func (rc *RelayController) filterCircuitOpenCandidates(candidates []relayCandidate) []relayCandidate {
 	if rc == nil || rc.circuitBreaker == nil || len(candidates) == 0 {
 		return candidates
 	}
 
 	filtered := make([]relayCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if rc.circuitBreaker.Allow(app, candidate.Channel.ID) {
+		if rc.circuitBreaker.Allow(candidate.Channel.ID) {
 			filtered = append(filtered, candidate)
 		}
 	}
@@ -116,7 +124,7 @@ func (rc *RelayController) recordCircuitSuccess(info *relayinfo.RelayInfo) {
 	if rc == nil || rc.circuitBreaker == nil || info == nil || info.Channel == nil {
 		return
 	}
-	rc.circuitBreaker.RecordSuccess(info.RelayApp, info.Channel.ID)
+	rc.circuitBreaker.RecordSuccess(info.Channel.ID)
 }
 
 func (rc *RelayController) recordCircuitFailure(info *relayinfo.RelayInfo, statusCode int, err error) {
@@ -124,17 +132,16 @@ func (rc *RelayController) recordCircuitFailure(info *relayinfo.RelayInfo, statu
 		return
 	}
 	if shouldRecordCircuitFailure(statusCode, err) {
-		rc.circuitBreaker.RecordFailure(info.RelayApp, info.Channel.ID)
+		rc.circuitBreaker.RecordFailure(info.Channel.ID)
 	}
 }
 
-func buildRelayInfo(c *gin.Context, requestID string, startTime time.Time, app constant.RelayApp, mode constant.RelayMode, format constant.RelayFormat, meta relayRequestMeta, candidate relayCandidate, isStream bool) *relayinfo.RelayInfo {
+func buildRelayInfo(c *gin.Context, requestID string, startTime time.Time, mode constant.RelayMode, format constant.RelayFormat, meta relayRequestMeta, candidate relayCandidate, isStream bool) *relayinfo.RelayInfo {
 	channel := candidate.Channel
 	apiType := constant.APITypeFromChannelType(channel.Type)
 	return &relayinfo.RelayInfo{
 		RequestID:      requestID,
 		StartTime:      startTime,
-		RelayApp:       app,
 		RelayMode:      mode,
 		RelayFormat:    format,
 		APIType:        apiType,

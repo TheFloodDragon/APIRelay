@@ -6,5 +6,5 @@ import (
 )
 
 func (rc *RelayController) Completions(c *gin.Context) {
-	rc.handleRelay(c, constant.RelayAppOpenAI, constant.RelayModeCompletions, constant.RelayFormatOpenAI)
+	rc.handleRelay(c, constant.RelayModeCompletions, constant.RelayFormatOpenAI)
 }

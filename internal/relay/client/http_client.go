@@ -31,6 +31,13 @@ func NewHTTPClient() *HTTPClient {
 	}
 }
 
+func (c *HTTPClient) Client() *http.Client {
+	if c == nil || c.client == nil {
+		return http.DefaultClient
+	}
+	return c.client
+}
+
 func (c *HTTPClient) DoJSON(ctx context.Context, method, url string, headers http.Header, body []byte, timeout time.Duration) (int, []byte, error) {
 	statusCode, _, respBody, err := c.DoJSONWithHeaders(ctx, method, url, headers, body, timeout)
 	return statusCode, respBody, err

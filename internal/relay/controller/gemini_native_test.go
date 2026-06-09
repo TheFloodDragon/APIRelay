@@ -103,7 +103,6 @@ func TestBuildRelayAttemptGeminiCountTokens(t *testing.T) {
 		Gin:       ginCtx,
 		RequestID: "test-request",
 		StartTime: time.Now(),
-		App:       constant.RelayAppGemini,
 		Mode:      constant.RelayModeCountTokens,
 		Format:    constant.RelayFormatGemini,
 		Method:    http.MethodPost,

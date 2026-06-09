@@ -10,8 +10,6 @@ import (
 
 	"github.com/TheFloodDragon/APIRelay/internal/api"
 	"github.com/TheFloodDragon/APIRelay/internal/model"
-	"github.com/TheFloodDragon/APIRelay/internal/repository"
-	"github.com/TheFloodDragon/APIRelay/internal/service"
 	"github.com/TheFloodDragon/APIRelay/pkg/config"
 )
 
@@ -34,14 +32,6 @@ func main() {
 		log.Fatalf("初始化数据库失败: %v", err)
 	}
 	defer model.CloseDB()
-
-	// 初始化仓库层
-	channelRepo := repository.NewChannelRepository(model.DB)
-
-	// 启动健康检查服务
-	healthChecker := service.NewHealthChecker(channelRepo, cfg.Scheduler.HealthCheckInterval, cfg.Scheduler.UnhealthyThreshold)
-	healthChecker.Start()
-	defer healthChecker.Stop()
 
 	// 设置路由
 	r := api.SetupRouter(model.DB, cfg)
