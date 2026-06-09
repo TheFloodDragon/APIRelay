@@ -169,6 +169,29 @@ func upstreamRequestSummary(attempt *RelayAttempt) string {
 	if messages, ok := payload["messages"].([]interface{}); ok {
 		summary["messages"] = len(messages)
 	}
+	if tools, ok := payload["tools"].([]interface{}); ok {
+		summary["tools"] = len(tools)
+		names := make([]string, 0, len(tools))
+		for _, value := range tools {
+			tool, ok := value.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if function, ok := tool["function"].(map[string]interface{}); ok {
+				if name, _ := function["name"].(string); name != "" {
+					names = append(names, name)
+				}
+			}
+		}
+		if len(names) > 0 {
+			summary["tool_names"] = names
+		}
+	}
+	for _, key := range []string{"tool_choice", "parallel_tool_calls", "stream_options"} {
+		if _, ok := payload[key]; ok {
+			summary[key] = true
+		}
+	}
 	data, err := json.Marshal(summary)
 	if err != nil {
 		return ""

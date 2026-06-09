@@ -129,6 +129,29 @@ func TestResponsesRequestToChatCompletionsPrunesLegacyGPT5Params(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestToChatCompletionsPrunesGPT5ToolControlsAndStreamOptions(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","input":"hello","stream":true,"parallel_tool_calls":true,"tool_choice":"auto","stream_options":{"include_usage":true},"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]}`)
+	got, _, stream, err := responsesRequestToChatCompletions(body, false)
+	if err != nil {
+		t.Fatalf("responsesRequestToChatCompletions returned error: %v", err)
+	}
+	if !stream {
+		t.Fatalf("stream = false, want true")
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	for _, key := range []string{"parallel_tool_calls", "tool_choice", "stream_options"} {
+		if _, exists := payload[key]; exists {
+			t.Fatalf("%s should be absent for gpt-5 bridge request; body = %s", key, string(got))
+		}
+	}
+	if tools, ok := payload["tools"].([]interface{}); !ok || len(tools) != 1 {
+		t.Fatalf("tools should be preserved; body = %s", string(got))
+	}
+}
+
 func TestResponsesRequestToChatCompletionsAddsStreamUsage(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","input":"hello","stream":true,"stream_options":{"foo":"bar"}}`)
 	got, _, stream, err := responsesRequestToChatCompletions(body, false)

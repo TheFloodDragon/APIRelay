@@ -363,11 +363,11 @@ func responsesRequestToChatCompletions(body []byte, streamRequested bool) ([]byt
 			chatReq["tools"] = chatTools
 		}
 	}
-	if hasChatTools(chatReq) {
+	if hasChatTools(chatReq) && !usesCompletionTokens {
 		copyIfPresent(chatReq, raw, "tool_choice", "tool_choice")
 		copyIfPresent(chatReq, raw, "parallel_tool_calls", "parallel_tool_calls")
 	}
-	if stream {
+	if stream && !usesCompletionTokens {
 		ensureStreamOptionsIncludeUsage(chatReq)
 	}
 
@@ -385,9 +385,9 @@ func responseChatPassthroughFields(modelName string) []string {
 	// 兼容上游经常会因 temperature/top_p/stop/logprobs 等旧 Chat 参数返回 400/openai_error。
 	if usesCompletionTokenLimit(modelName) {
 		// 对 GPT-5 / o 系列使用最小透传集。部分 OpenAI-compatible 上游会把
-		// metadata/n/response_format/seed/service_tier/user 等也视为不支持参数，
+		// metadata/n/response_format/seed/service_tier/user/stream_options 等也视为不支持参数，
 		// 并只返回 bad_response_status_code 这类二次包装错误。
-		return []string{"stream_options"}
+		return nil
 	}
 	return []string{"frequency_penalty", "logit_bias", "logprobs", "metadata", "n", "presence_penalty", "response_format", "seed", "service_tier", "stop", "stream_options", "top_logprobs", "user"}
 }
