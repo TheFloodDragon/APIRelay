@@ -75,6 +75,7 @@
               </button>
             </div>
             <textarea v-model="form.models" class="inp h-20" placeholder="gpt-4o, gpt-4o-mini"></textarea>
+            <p class="text-xs text-gray-400 mt-1">提示：填写 <code>*</code> 表示该渠道支持任意模型（通配）。</p>
             <div v-if="probedModels.length" class="mt-2 flex flex-wrap gap-1">
               <span v-for="m in probedModels" :key="m"
                     class="px-2 py-0.5 text-xs rounded cursor-pointer"

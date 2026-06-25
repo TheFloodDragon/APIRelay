@@ -21,6 +21,13 @@ func main() {
 		model, _ := req["model"].(string)
 		fmt.Printf("[mock] received model=%s stream=%v auth=%s\n", model, stream, r.Header.Get("Authorization"))
 
+		// 测试故障转移：模型名以 "fail-" 开头时返回 503
+		if len(model) >= 5 && model[:5] == "fail-" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":{"message":"mock upstream unavailable","type":"service_unavailable"}}`)
+			return
+		}
+
 		if stream {
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher := w.(http.Flusher)

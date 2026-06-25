@@ -78,33 +78,40 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 }
 
 // relayWithFailover 执行带故障转移的转发主循环。
+//
+// 调度与故障转移策略（阶段4）：
+//   - 优先级分层 + 加权随机选渠道（SelectChannel）；
+//   - 临时性错误（429/503/504）在同渠道有限次重试（带退避）；
+//   - 其它可重试错误冷却当前渠道并切换；高优先级耗尽后自动降级；
+//   - 请求成功后清除该渠道冷却。
 func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, out Outbound) {
 	log := logger.FromContext(c.Request.Context())
-	excluded := make(map[int]struct{})
-	maxRetries := r.cfg.MaxRetries
-	if maxRetries < 1 {
-		maxRetries = 1
+	state := NewFailoverState(r.cfg.CooldownSeconds)
+
+	maxSwitches := r.cfg.MaxRetries
+	if maxSwitches < 1 {
+		maxSwitches = 1
 	}
+	switches := 0
+	// hardCap 防止同渠道重试导致的无限循环（切换预算 + 每渠道重试预算）。
+	hardCap := maxSwitches + (maxSwitches+1)*defaultMaxSameChannelRetries + 2
 
-	var lastStatus int
-	var lastErr string
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for iter := 0; iter < hardCap && switches < maxSwitches; iter++ {
 		nowMs := time.Now().UnixMilli()
-		ch, err := SelectChannel(info.Group, ir.Model, excluded, nowMs)
+		ch, err := SelectChannel(info.Group, ir.Model, state.Excluded(), nowMs)
 		if err != nil {
 			out.WriteError(c, http.StatusInternalServerError, "select channel failed")
 			r.logError(info, http.StatusInternalServerError, err.Error())
 			return
 		}
 		if ch == nil {
-			if attempt == 0 {
+			if switches == 0 && iter == 0 {
 				out.WriteError(c, http.StatusServiceUnavailable,
 					fmt.Sprintf("no available channel for model %q in group %q", ir.Model, info.Group))
 				r.logError(info, http.StatusServiceUnavailable, "no available channel")
 				return
 			}
-			break
+			break // 所有渠道均已排除/冷却
 		}
 
 		info.Channel = ch
@@ -113,8 +120,9 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 		ad := GetAdaptor(info.ApiType)
 		if ad == nil {
-			excluded[ch.Id] = struct{}{}
-			lastStatus, lastErr = http.StatusNotImplemented, "no adaptor for api type"
+			state.FailedChannels[ch.Id] = struct{}{}
+			state.LastStatus, state.LastErr = http.StatusNotImplemented, "no adaptor for api type"
+			switches++
 			log.Warn("relay.no_adaptor", zap.Int("channel_id", ch.Id), zap.Int("api_type", int(info.ApiType)))
 			continue
 		}
@@ -122,7 +130,8 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 		log.Info("relay.attempt",
 			zap.String("request_id", info.RequestID),
-			zap.Int("attempt", attempt),
+			zap.Int("iter", iter),
+			zap.Int("switches", switches),
 			zap.Int("channel_id", ch.Id),
 			zap.String("channel", ch.Name),
 			zap.String("api_type", ad.ChannelTypeName()),
@@ -133,31 +142,38 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 		status, retryable, err := r.doOnce(c, info, ir, ad, out)
 		if err == nil {
-			return // 成功
+			model.ClearChannelCooldown(ch.Id) // 成功后清除冷却
+			return
 		}
 
-		lastStatus, lastErr = status, err.Error()
+		decision := state.OnFailure(ch.Id, status, retryable, err.Error())
 		log.Warn("relay.attempt_failed",
 			zap.Int("channel_id", ch.Id),
 			zap.Int("status", status),
 			zap.Bool("retryable", retryable),
+			zap.Int("decision", int(decision)),
 			zap.Error(err),
 		)
 
-		if !retryable {
+		switch decision {
+		case DecisionFatal:
 			r.logError(info, status, err.Error())
 			return
+		case DecisionRetrySameChannel:
+			if !state.SameChannelDelay(c.Request.Context()) {
+				return // 客户端取消
+			}
+			// 同渠道重试不消耗切换预算
+		case DecisionSwitchChannel:
+			switches++ // 已在 OnFailure 中冷却并排除
 		}
-		// 冷却该渠道并切换
-		excluded[ch.Id] = struct{}{}
-		model.SetChannelCooldown(ch.Id, time.Now().Add(time.Duration(r.cfg.CooldownSeconds)*time.Second).UnixMilli())
 	}
 
 	// 重试耗尽
 	if !c.Writer.Written() {
-		out.WriteError(c, statusOrDefault(lastStatus), "all channels failed: "+lastErr)
+		out.WriteError(c, statusOrDefault(state.LastStatus), "all channels failed: "+state.LastErr)
 	}
-	r.logError(info, statusOrDefault(lastStatus), "all channels failed: "+lastErr)
+	r.logError(info, statusOrDefault(state.LastStatus), "all channels failed: "+state.LastErr)
 }
 
 // doOnce 对单个渠道执行一次完整转发。

@@ -1,7 +1,5 @@
 package model
 
-import "github.com/apirelay/apirelay/common/logger"
-
 // Ability 是 (group, model) -> channel 的倒排索引，用于按模型快速选渠道。
 type Ability struct {
 	Id        int    `json:"id" gorm:"primaryKey"`
@@ -12,6 +10,9 @@ type Ability struct {
 	Priority  int    `json:"priority" gorm:"default:0;index"`
 	Weight    int    `json:"weight" gorm:"default:1"`
 }
+
+// WildcardModel 通配符模型名，渠道支持该模型时可服务任意模型请求。
+const WildcardModel = "*"
 
 // SyncChannelAbilities 重建某渠道的 Ability 索引（每个 model 一行）。
 func SyncChannelAbilities(c *Channel) error {
@@ -36,12 +37,19 @@ func SyncChannelAbilities(c *Channel) error {
 	return DB.Create(&abilities).Error
 }
 
-// GetChannelsForModel 返回某 group+model 下、最高优先级层的可用渠道（已按 weight 排序）。
-// excluded 中的渠道会被跳过（用于 failover）。
-func GetChannelsForModel(group, model string, excluded map[int]struct{}) ([]*Channel, error) {
+// ChannelCandidate 是一个候选渠道及其调度元数据。
+type ChannelCandidate struct {
+	Channel  *Channel
+	Priority int
+	Weight   int
+}
+
+// GetChannelCandidates 返回某 group+model 下全部可用候选渠道（含优先级与权重）。
+// 同时匹配精确模型名与通配符模型 "*"。结果未排序，由调度层处理分层与加权。
+func GetChannelCandidates(group, model string) ([]ChannelCandidate, error) {
 	var abilities []Ability
-	err := DB.Where("`group` = ? AND model = ? AND enabled = ?", group, model, true).
-		Order("priority desc, weight desc").
+	err := DB.Where("`group` = ? AND model IN ? AND enabled = ?",
+		group, []string{model, WildcardModel}, true).
 		Find(&abilities).Error
 	if err != nil {
 		return nil, err
@@ -50,28 +58,35 @@ func GetChannelsForModel(group, model string, excluded map[int]struct{}) ([]*Cha
 		return nil, nil
 	}
 
-	// 仅取最高优先级层
-	topPriority := abilities[0].Priority
-	channelIDs := make([]int, 0, len(abilities))
+	// 同一渠道可能因精确+通配两条记录重复，去重并取较高优先级
+	best := make(map[int]Ability, len(abilities))
+	ids := make([]int, 0, len(abilities))
 	for _, a := range abilities {
-		if a.Priority != topPriority {
-			break
-		}
-		if excluded != nil {
-			if _, skip := excluded[a.ChannelId]; skip {
-				continue
+		if cur, ok := best[a.ChannelId]; !ok || a.Priority > cur.Priority {
+			if !ok {
+				ids = append(ids, a.ChannelId)
 			}
+			best[a.ChannelId] = a
 		}
-		channelIDs = append(channelIDs, a.ChannelId)
-	}
-	if len(channelIDs) == 0 {
-		return nil, nil
 	}
 
 	var channels []*Channel
-	if err := DB.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+	if err := DB.Where("id IN ?", ids).Find(&channels).Error; err != nil {
 		return nil, err
 	}
-	logger.L().Debug("ability lookup done")
-	return channels, nil
+	chMap := make(map[int]*Channel, len(channels))
+	for _, c := range channels {
+		chMap[c.Id] = c
+	}
+
+	out := make([]ChannelCandidate, 0, len(ids))
+	for _, id := range ids {
+		c, ok := chMap[id]
+		if !ok {
+			continue
+		}
+		a := best[id]
+		out = append(out, ChannelCandidate{Channel: c, Priority: a.Priority, Weight: a.Weight})
+	}
+	return out, nil
 }
