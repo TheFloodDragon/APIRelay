@@ -38,9 +38,8 @@ func registerRelayRoutes(r *gin.Engine, cfg *config.Config) {
 	v1.Use(middleware.TokenAuth())
 	{
 		v1.POST("/chat/completions", relayer.HandleOpenAIChat)
-		// 阶段3 接入：
-		// v1.POST("/messages", relayer.HandleAnthropicMessages)
-		// v1.POST("/responses", relayer.HandleResponses)
+		v1.POST("/messages", relayer.HandleAnthropicMessages)
+		v1.POST("/responses", relayer.HandleResponses)
 	}
 }
 

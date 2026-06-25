@@ -33,17 +33,33 @@ func NewRelayer(cfg *config.RelayConfig) *Relayer {
 
 // HandleOpenAIChat 处理对外的 OpenAI /v1/chat/completions 请求。
 func (r *Relayer) HandleOpenAIChat(c *gin.Context) {
-	info := r.buildRelayInfo(c, constant.EndpointOpenAI)
+	r.handle(c, constant.EndpointOpenAI, apicompat.ParseOpenAIRequest)
+}
+
+// HandleAnthropicMessages 处理对外的 Anthropic /v1/messages 请求。
+func (r *Relayer) HandleAnthropicMessages(c *gin.Context) {
+	r.handle(c, constant.EndpointAnthropic, apicompat.ParseAnthropicRequest)
+}
+
+// HandleResponses 处理对外的 OpenAI /v1/responses 请求。
+func (r *Relayer) HandleResponses(c *gin.Context) {
+	r.handle(c, constant.EndpointResponses, apicompat.ParseResponsesRequest)
+}
+
+// handle 是协议无关的入口：解析对外协议为 IR，再交给故障转移主循环。
+func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]byte) (*dto.UnifiedRequest, error)) {
+	info := r.buildRelayInfo(c, ep)
+	out := GetOutbound(ep)
 
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		writeOpenAIError(c, http.StatusBadRequest, "read body failed", "invalid_request_error")
+		out.WriteError(c, http.StatusBadRequest, "read body failed")
 		return
 	}
 
-	ir, err := apicompat.ParseOpenAIRequest(body)
+	ir, err := parse(body)
 	if err != nil {
-		writeOpenAIError(c, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		out.WriteError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	info.OriginModel = ir.Model
@@ -52,17 +68,17 @@ func (r *Relayer) HandleOpenAIChat(c *gin.Context) {
 	// 模型白名单校验
 	if tok, ok := c.Get("token"); ok {
 		if t, _ := tok.(*model.Token); t != nil && !t.AllowModel(ir.Model) {
-			writeOpenAIError(c, http.StatusForbidden, "model not allowed for this token: "+ir.Model, "permission_error")
+			out.WriteError(c, http.StatusForbidden, "model not allowed for this token: "+ir.Model)
 			r.logError(info, http.StatusForbidden, "model not allowed")
 			return
 		}
 	}
 
-	r.relayWithFailover(c, info, ir)
+	r.relayWithFailover(c, info, ir, out)
 }
 
 // relayWithFailover 执行带故障转移的转发主循环。
-func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest) {
+func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, out Outbound) {
 	log := logger.FromContext(c.Request.Context())
 	excluded := make(map[int]struct{})
 	maxRetries := r.cfg.MaxRetries
@@ -77,15 +93,14 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		nowMs := time.Now().UnixMilli()
 		ch, err := SelectChannel(info.Group, ir.Model, excluded, nowMs)
 		if err != nil {
-			writeOpenAIError(c, http.StatusInternalServerError, "select channel failed", "internal_error")
+			out.WriteError(c, http.StatusInternalServerError, "select channel failed")
 			r.logError(info, http.StatusInternalServerError, err.Error())
 			return
 		}
 		if ch == nil {
 			if attempt == 0 {
-				writeOpenAIError(c, http.StatusServiceUnavailable,
-					fmt.Sprintf("no available channel for model %q in group %q", ir.Model, info.Group),
-					"service_unavailable")
+				out.WriteError(c, http.StatusServiceUnavailable,
+					fmt.Sprintf("no available channel for model %q in group %q", ir.Model, info.Group))
 				r.logError(info, http.StatusServiceUnavailable, "no available channel")
 				return
 			}
@@ -116,7 +131,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 			zap.Bool("stream", info.IsStream),
 		)
 
-		status, retryable, err := r.doOnce(c, info, ir, ad)
+		status, retryable, err := r.doOnce(c, info, ir, ad, out)
 		if err == nil {
 			return // 成功
 		}
@@ -140,14 +155,14 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 	// 重试耗尽
 	if !c.Writer.Written() {
-		writeOpenAIError(c, statusOrDefault(lastStatus), "all channels failed: "+lastErr, "service_unavailable")
+		out.WriteError(c, statusOrDefault(lastStatus), "all channels failed: "+lastErr)
 	}
 	r.logError(info, statusOrDefault(lastStatus), "all channels failed: "+lastErr)
 }
 
 // doOnce 对单个渠道执行一次完整转发。
 // 返回 (上游状态码, 是否可重试, error)；err==nil 表示成功。
-func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor) (int, bool, error) {
+func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, out Outbound) (int, bool, error) {
 	upstreamReq, err := adp.ConvertRequest(info, ir)
 	if err != nil {
 		return http.StatusInternalServerError, false, fmt.Errorf("convert request: %w", err)
@@ -170,12 +185,12 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 	}
 
 	if info.IsStream {
-		return r.handleStream(c, info, ir, adp, resp)
+		return r.handleStream(c, info, adp, resp, out)
 	}
-	return r.handleNonStream(c, info, adp, resp)
+	return r.handleNonStream(c, info, adp, resp, out)
 }
 
-func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response) (int, bool, error) {
+func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound) (int, bool, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return http.StatusBadGateway, true, fmt.Errorf("read upstream body: %w", err)
@@ -185,18 +200,15 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.A
 		return http.StatusBadGateway, false, fmt.Errorf("convert response: %w", err)
 	}
 
-	// 按对外协议序列化（当前对外 OpenAI）
-	out := apicompat.IRToOpenAIResponse(uniResp, info.OriginModel)
-	c.JSON(http.StatusOK, out)
+	// 按对外协议序列化
+	out.WriteResponse(c, uniResp, info.OriginModel)
 
 	r.logConsume(info, &uniResp.Usage)
 	return http.StatusOK, false, nil
 }
 
-func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, resp *http.Response) (int, bool, error) {
-	setSSEHeaders(c)
-	state := apicompat.NewOpenAIStreamState(info.RequestID, info.OriginModel)
-	flusher, _ := c.Writer.(http.Flusher)
+func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound) (int, bool, error) {
+	writer := out.NewStream(c, info.RequestID, info.OriginModel)
 	firstByte := false
 
 	usage, err := adp.StreamHandler(info, resp, func(chunk *dto.UnifiedStreamChunk) error {
@@ -204,36 +216,15 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 			info.FirstByteMs = int(time.Now().UnixMilli() - info.StartAtMs)
 			firstByte = true
 		}
-		data := state.Chunk(chunk)
-		if data != nil {
-			if _, werr := c.Writer.Write([]byte("data: ")); werr != nil {
-				return werr
-			}
-			if _, werr := c.Writer.Write(data); werr != nil {
-				return werr
-			}
-			if _, werr := c.Writer.Write([]byte("\n\n")); werr != nil {
-				return werr
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		return nil
+		return writer.WriteChunk(c, chunk)
 	})
 	if err != nil {
 		// 已经开始写流，无法切换渠道
-		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
+		_ = writer.Finish(c)
 		return http.StatusOK, false, fmt.Errorf("stream: %w", err)
 	}
 
-	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
-	if flusher != nil {
-		flusher.Flush()
-	}
+	_ = writer.Finish(c)
 
 	u := dto.Usage{}
 	if usage != nil {
@@ -322,10 +313,6 @@ func channelTypeOf(info *RelayInfo) int {
 		return info.Channel.Type
 	}
 	return 0
-}
-
-func writeOpenAIError(c *gin.Context, status int, msg, typ string) {
-	c.JSON(status, dto.OpenAIErrorResponse{Error: dto.OpenAIError{Message: msg, Type: typ}})
 }
 
 func setSSEHeaders(c *gin.Context) {
