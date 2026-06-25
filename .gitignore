@@ -1,0 +1,22 @@
+# 构建产物
+/apirelay
+/apirelay.exe
+/dist/
+*.exe
+
+# 前端
+web/node_modules/
+web/dist/*
+!web/dist/index.html
+
+# 工具与临时
+.narrafork/
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Go
+/vendor/
+*.test
+*.out
