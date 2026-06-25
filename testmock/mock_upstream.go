@@ -74,6 +74,12 @@ func main() {
 		fmt.Fprintf(w, `{"id":"msg_mock","type":"message","role":"assistant","model":%q,"content":[{"type":"text","text":"Hello from Claude mock"}],"stop_reason":"end_turn","usage":{"input_tokens":6,"output_tokens":4}}`, model)
 	})
 
+	// OpenAI 风格模型列表
+	http.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-4o","object":"model"},{"id":"gpt-4o-mini","object":"model"},{"id":"o3-mini","object":"model"}]}`)
+	})
+
 	fmt.Println("[mock] listening on :9999")
 	_ = http.ListenAndServe(":9999", nil)
 }

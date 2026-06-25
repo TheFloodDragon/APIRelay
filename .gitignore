@@ -11,7 +11,11 @@ web/dist/*
 
 # 工具与临时
 .narrafork/
+.mocktmp/
 *.log
+*.db
+*.db-shm
+*.db-wal
 .DS_Store
 .idea/
 .vscode/

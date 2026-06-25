@@ -5,6 +5,7 @@ import (
 	"github.com/apirelay/apirelay/controller"
 	"github.com/apirelay/apirelay/middleware"
 	"github.com/apirelay/apirelay/relay"
+	"github.com/apirelay/apirelay/web"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,6 +28,9 @@ func Setup(cfg *config.Config) *gin.Engine {
 	registerRelayRoutes(r, cfg)
 	registerAdminRoutes(r)
 
+	// 内嵌前端（SPA fallback）
+	web.Register(r)
+
 	return r
 }
 
@@ -43,16 +47,27 @@ func registerRelayRoutes(r *gin.Engine, cfg *config.Config) {
 	}
 }
 
-// registerAdminRoutes 注册管理后台 API（MVP 暂未加管理鉴权，阶段5补充）。
+// registerAdminRoutes 注册管理后台 API。
 func registerAdminRoutes(r *gin.Engine) {
+	// 公开：登录
+	r.POST("/api/auth/login", controller.AdminLogin)
+
+	// 受保护：需会话鉴权
 	api := r.Group("/api")
+	api.Use(controller.AdminAuth())
 	{
+		api.POST("/auth/logout", controller.AdminLogout)
+		api.GET("/auth/me", controller.CurrentUser)
+
 		api.GET("/dashboard", controller.Dashboard)
 
+		api.GET("/channel-types", controller.ChannelTypes)
 		api.GET("/channels", controller.ListChannels)
 		api.POST("/channels", controller.CreateChannel)
 		api.PUT("/channels/:id", controller.UpdateChannel)
 		api.DELETE("/channels/:id", controller.DeleteChannel)
+		api.GET("/channels/:id/models", controller.ProbeChannelModels)
+		api.POST("/channels/probe-models", controller.ProbeModelsByConfig)
 
 		api.GET("/tokens", controller.ListTokens)
 		api.POST("/tokens", controller.CreateToken)
