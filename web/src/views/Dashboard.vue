@@ -4,8 +4,7 @@ import api from '../api'
 
 const data = ref({ channel_count: 0, stat: {} })
 onMounted(async () => {
-  const res = await api.get('/api/dashboard')
-  data.value = res.data.data
+  data.value = await api.get('/dashboard')
 })
 </script>
 

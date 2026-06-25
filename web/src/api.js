@@ -1,18 +1,20 @@
 import axios from 'axios'
 import router from './router'
 
+const TOKEN_KEY = 'apirelay_session'
+
 const api = axios.create({ baseURL: '/api' })
 
 // 请求拦截：注入会话令牌
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('session_token')
+  const token = localStorage.getItem(TOKEN_KEY)
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
   return config
 })
 
-// 响应拦截：401 跳登录；统一解包 {success,data,message}
+// 响应拦截：401 跳登录；统一解包 {success,data,message}，直接返回 data 字段
 api.interceptors.response.use(
   (resp) => {
     const body = resp.data
@@ -23,7 +25,7 @@ api.interceptors.response.use(
   },
   (err) => {
     if (err.response && err.response.status === 401) {
-      localStorage.removeItem('session_token')
+      localStorage.removeItem(TOKEN_KEY)
       if (router.currentRoute.value.name !== 'login') {
         router.push({ name: 'login' })
       }
@@ -33,4 +35,5 @@ api.interceptors.response.use(
   }
 )
 
+export { TOKEN_KEY }
 export default api

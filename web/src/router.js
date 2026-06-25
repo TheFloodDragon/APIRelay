@@ -20,7 +20,7 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  const authed = !!localStorage.getItem('session_token')
+  const authed = !!localStorage.getItem('apirelay_session')
   if (!to.meta.public && !authed) {
     return { name: 'login' }
   }

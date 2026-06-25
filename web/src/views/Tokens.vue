@@ -76,8 +76,7 @@ function copy(k) {
 }
 
 async function load() {
-  const { data } = await api.get('/tokens')
-  tokens.value = data.data || []
+  tokens.value = (await api.get('/tokens')) || []
 }
 function openCreate() {
   form.value = { name: '', group: 'default', allowed_models: '' }
@@ -87,11 +86,14 @@ function openCreate() {
 async function save() {
   err.value = ''
   try {
-    await api.post('/tokens', form.value)
+    const res = await api.post('/tokens', form.value)
     showModal.value = false
+    if (res && res.key) {
+      alert('令牌创建成功，请妥善保存（仅显示一次）：\n' + res.key)
+    }
     await load()
   } catch (e) {
-    err.value = e.response?.data?.message || '保存失败'
+    err.value = e.message || '保存失败'
   }
 }
 async function remove(t) {

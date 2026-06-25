@@ -13,14 +13,14 @@ async function login() {
   error.value = ''
   loading.value = true
   try {
-    const { data } = await api.post('/api/auth/login', {
+    const data = await api.post('/auth/login', {
       username: username.value,
       password: password.value,
     })
-    localStorage.setItem('apirelay_session', data.data.token)
+    localStorage.setItem('apirelay_session', data.token)
     router.push('/')
   } catch (e) {
-    error.value = e?.response?.data?.message || '登录失败'
+    error.value = e?.message || '登录失败'
   } finally {
     loading.value = false
   }

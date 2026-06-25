@@ -130,12 +130,10 @@ function typeName(t) {
 }
 
 async function load() {
-  const { data } = await api.get('/channels')
-  channels.value = data.data || []
+  channels.value = (await api.get('/channels')) || []
 }
 async function loadTypes() {
-  const { data } = await api.get('/channel-types')
-  channelTypes.value = data.data || []
+  channelTypes.value = (await api.get('/channel-types')) || []
 }
 
 function openCreate() {
@@ -164,15 +162,15 @@ async function fetchModels() {
   err.value = ''
   probing.value = true
   try {
-    const { data } = await api.post('/channels/probe-models', {
+    const data = await api.post('/channels/probe-models', {
       type: form.value.type,
       base_url: form.value.base_url,
       key: form.value.key,
     })
-    probedModels.value = data.data.models || []
+    probedModels.value = data.models || []
     if (!probedModels.value.length) err.value = '上游未返回模型'
   } catch (e) {
-    err.value = e.response?.data?.message || '拉取失败'
+    err.value = e.message || '拉取失败'
   } finally {
     probing.value = false
   }
@@ -202,7 +200,7 @@ async function save() {
     showModal.value = false
     await load()
   } catch (e) {
-    err.value = e.response?.data?.message || '保存失败'
+    err.value = e.message || '保存失败'
   } finally {
     saving.value = false
   }

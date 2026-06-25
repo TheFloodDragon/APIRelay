@@ -72,9 +72,9 @@ function typeClass(t) {
 }
 
 async function load() {
-  const { data } = await api.get('/logs', { params: { page: page.value, page_size: pageSize } })
-  logs.value = data.data?.items || []
-  total.value = data.data?.total || 0
+  const data = await api.get('/logs', { params: { page: page.value, page_size: pageSize } })
+  logs.value = data.items || []
+  total.value = data.total || 0
 }
 onMounted(load)
 </script>
