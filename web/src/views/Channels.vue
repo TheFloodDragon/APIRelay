@@ -93,10 +93,12 @@
 
         <div class="space-y-5">
           <!-- 基本信息 -->
-          <div class="grid grid-cols-2 gap-4">
+          <!-- 阻止浏览器把 API Key 当作登录密码弹出"保存账号密码"：
+               不使用 type=password，改用可切换显隐的文本框 + autocomplete=off。 -->
+          <div class="grid grid-cols-2 gap-4" autocomplete="off">
             <div class="col-span-2">
               <label class="label">供应商名称 <span class="text-red-500">*</span></label>
-              <input v-model="form.name" class="input" placeholder="例：OpenAI 主账号" />
+              <input v-model="form.name" class="input" placeholder="例：OpenAI 主账号" autocomplete="off" />
             </div>
             <div>
               <label class="label">默认协议 <span class="text-red-500">*</span></label>
@@ -106,15 +108,41 @@
             </div>
             <div>
               <label class="label">分组</label>
-              <input v-model="form.group" class="input" placeholder="default" />
+              <input v-model="form.group" class="input" placeholder="default" autocomplete="off" />
             </div>
             <div class="col-span-2">
               <label class="label">Base URL <span class="text-red-500">*</span></label>
-              <input v-model="form.base_url" class="input" placeholder="https://api.openai.com" />
+              <input v-model="form.base_url" class="input" placeholder="https://api.openai.com" autocomplete="off" />
             </div>
             <div class="col-span-2">
               <label class="label">API Key <span class="text-red-500">*</span></label>
-              <input v-model="form.key" class="input" type="password" placeholder="上游密钥" />
+              <div class="relative">
+                <input
+                  v-model="form.key"
+                  type="text"
+                  class="input pr-10"
+                  :class="{ 'key-mask': !showKey }"
+                  placeholder="上游密钥"
+                  name="apirelay-upstream-key"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  spellcheck="false"
+                  data-1p-ignore
+                  data-lpignore="true"
+                  data-form-type="other"
+                />
+                <button
+                  type="button"
+                  class="absolute right-2 top-1/2 -translate-y-1/2 text-ink-400 hover:text-ink-600 dark:hover:text-ink-300 p-1"
+                  :title="showKey ? '隐藏' : '显示'"
+                  @click="showKey = !showKey"
+                >
+                  <svg v-if="showKey" viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M12 6c3.79 0 7.17 2.13 8.82 5.5C19.17 14.87 15.79 17 12 17s-7.17-2.13-8.82-5.5C4.83 8.13 8.21 6 12 6zm0 2a3.5 3.5 0 100 7 3.5 3.5 0 000-7zm0 1.5a2 2 0 110 4 2 2 0 010-4z"/></svg>
+                  <svg v-else viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M2 5.27L3.28 4 20 20.72 18.73 22l-3.08-3.08A11 11 0 0112 19c-5 0-9.27-3.11-11-7.5a11.8 11.8 0 014.17-5.06L2 5.27zM12 9a3 3 0 012.83 4L12 9zm0-3c5 0 9.27 3.11 11 7.5a11.8 11.8 0 01-2.18 3.36l-1.42-1.42A9.8 9.8 0 0020.82 13C19.17 9.63 15.79 7.5 12 7.5c-.74 0-1.46.09-2.16.26L8.36 6.28A11 11 0 0112 6z"/></svg>
+                </button>
+              </div>
+              <p class="hint" v-if="form.id">留空表示不修改现有密钥。</p>
             </div>
           </div>
 
@@ -237,6 +265,7 @@ const showModal = ref(false)
 const probing = ref(false)
 const saving = ref(false)
 const err = ref('')
+const showKey = ref(false)
 
 const models = ref([])   // [{name,enabled,protocol,upstream}]
 const rules = ref([])    // [{pattern,protocol}]
@@ -254,7 +283,13 @@ const blank = () => ({
 const form = ref(blank())
 
 const enabledCount = computed(() => models.value.filter(m => m.enabled && m.name.trim()).length)
-const canSave = computed(() => form.value.name && form.value.base_url && form.value.key && enabledCount.value > 0)
+// 编辑时密钥可留空（表示不修改）；新建时必填
+const canSave = computed(() =>
+  form.value.name &&
+  form.value.base_url &&
+  (form.value.id ? true : form.value.key) &&
+  enabledCount.value > 0
+)
 
 function typeName(t) {
   const f = channelTypes.value.find(x => x.value === t)
@@ -308,15 +343,19 @@ function openCreate() {
   models.value = []
   rules.value = []
   err.value = ''
+  showKey.value = false
   const t = channelTypes.value.find(x => x.value === form.value.type)
   if (t) form.value.base_url = t.default_base_url
   showModal.value = true
 }
 function openEdit(ch) {
   form.value = { ...blank(), ...ch }
+  // 出于安全，编辑时不回填密钥；留空表示不修改
+  form.value.key = ''
   models.value = parseModels(ch)
   rules.value = parseRules(ch)
   err.value = ''
+  showKey.value = false
   showModal.value = true
 }
 function onTypeChange() {
@@ -385,6 +424,10 @@ async function save() {
     model_configs: JSON.stringify(cleanModels),
     protocol_rules: JSON.stringify(cleanRules),
     models: cleanModels.filter(m => m.enabled).map(m => m.name).join(','),
+  }
+  // 编辑时密钥留空表示不修改，删除该字段避免覆盖为空
+  if (form.value.id && !form.value.key) {
+    delete payload.key
   }
   try {
     if (form.value.id) {
@@ -459,3 +502,12 @@ onMounted(async () => {
   await load()
 })
 </script>
+
+<style scoped>
+/* 用文本框模拟密码遮罩，避免浏览器把 API Key 当登录密码弹出保存提示 */
+.key-mask {
+  -webkit-text-security: disc;
+  text-security: disc;
+  font-family: text-security-disc, ui-monospace, monospace;
+}
+</style>

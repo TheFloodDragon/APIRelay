@@ -59,6 +59,10 @@ func UpdateChannel(c *gin.Context) {
 	}
 	in.Id = existing.Id
 	in.CreatedAt = existing.CreatedAt
+	// 密钥留空表示不修改，保留原有密钥
+	if in.Key == "" {
+		in.Key = existing.Key
+	}
 	if err := model.UpdateChannel(&in); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return

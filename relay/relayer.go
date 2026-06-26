@@ -207,11 +207,19 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		decision := state.OnFailure(ch.Id, status, retryable, err.Error())
 		log.Warn("relay.attempt_failed",
 			zap.Int("channel_id", ch.Id),
+			zap.String("channel", ch.Name),
+			zap.String("api_type", ad.ChannelTypeName()),
 			zap.Int("status", status),
 			zap.Bool("retryable", retryable),
 			zap.Int("decision", int(decision)),
 			zap.Error(err),
 		)
+
+		// 切换渠道时记录该供应商的失败日志（便于在后台逐供应商排查）。
+		// 同渠道重试不落库，避免噪声；致命错误由下方统一记录。
+		if decision == DecisionSwitchChannel {
+			r.logAttemptFailure(info, ch, status, err.Error())
+		}
 
 		switch decision {
 		case DecisionFatal:
@@ -416,9 +424,36 @@ func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
 		Status:       status,
 		Error:        errMsg,
 	}
+	// 记录实际尝试的上游协议（便于排查协议互转问题）
 	if info.Channel != nil {
 		l.ChannelId = info.Channel.Id
 		l.ChannelName = info.Channel.Name
+		l.ApiType = apiTypeLabel(info)
+	}
+	model.AsyncLog(l)
+}
+
+// logAttemptFailure 记录单个供应商的转发失败（切换渠道前），明确标注是哪个供应商。
+func (r *Relayer) logAttemptFailure(info *RelayInfo, ch *model.Channel, status int, errMsg string) {
+	l := &model.Log{
+		RequestId:    info.RequestID,
+		Type:         model.LogTypeError,
+		UserId:       info.UserId,
+		TokenId:      info.TokenId,
+		TokenName:    info.TokenName,
+		Group:        info.Group,
+		EndpointType: string(info.EndpointType),
+		ApiType:      apiTypeLabel(info),
+		SrcModel:     info.OriginModel,
+		MappedModel:  info.UpstreamModel,
+		IsStream:     info.IsStream,
+		UseTimeMs:    int(time.Now().UnixMilli() - info.StartAtMs),
+		Status:       status,
+		Error:        "供应商[" + ch.Name + "]转发失败，已切换：" + errMsg,
+	}
+	if ch != nil {
+		l.ChannelId = ch.Id
+		l.ChannelName = ch.Name
 	}
 	model.AsyncLog(l)
 }
