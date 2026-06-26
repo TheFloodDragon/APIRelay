@@ -87,17 +87,33 @@ func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response
 
 	var usage *dto.Usage
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !strings.HasPrefix(line, "data:") {
+		line := scanner.Text() // 保留原始行（不 TrimSpace），包括可能的心跳空行
+		
+		// 空行：SSE 心跳，透传
+		if strings.TrimSpace(line) == "" {
+			// 空行对维持长连接很重要，但无需处理，继续扫描
 			continue
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		
+		// 非 data: 行（如注释、event: 等）：透传原样
+		if !strings.HasPrefix(strings.TrimSpace(line), "data:") {
+			// 可能是 event: xxx 或其他 SSE 控制行，目前跳过
+			// 如果需要严格透传，后续可改为写回客户端
+			continue
+		}
+		
+		data := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
 		if data == "[DONE]" {
+			// [DONE] 标记由 Finish() 统一发送，这里直接跳出
 			break
 		}
+		
 		chunk, err := apicompat.ParseOpenAIStreamChunk([]byte(data))
 		if err != nil {
-			continue // 跳过无法解析的行
+			// 无法解析的 chunk：可能是特殊事件（工具调用等）
+			// 创建一个空 chunk 让下游能收到信号，避免完全丢弃
+			// TODO: 引入 RawChunk 模式后，这里应透传原始 line
+			chunk = &dto.UnifiedStreamChunk{} // 空 chunk，避免 nil
 		}
 		if chunk.Usage != nil {
 			usage = chunk.Usage
