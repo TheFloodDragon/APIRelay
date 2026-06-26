@@ -246,6 +246,9 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.A
 	if err != nil {
 		return http.StatusBadGateway, true, fmt.Errorf("read upstream body: %w", err)
 	}
+	if len(body) == 0 {
+		return http.StatusBadGateway, true, fmt.Errorf("provider returned an empty response. This often indicates an API configuration error (base URL, model, or credentials)")
+	}
 	uniResp, err := adp.ConvertResponse(info, body)
 	if err != nil {
 		return http.StatusBadGateway, false, fmt.Errorf("convert response: %w", err)
@@ -261,18 +264,27 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.A
 func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound) (int, bool, error) {
 	writer := out.NewStream(c, info.RequestID, info.OriginModel)
 	firstByte := false
+	chunkCount := 0
 
 	usage, err := adp.StreamHandler(info, resp, func(chunk *dto.UnifiedStreamChunk) error {
 		if !firstByte {
 			info.FirstByteMs = int(time.Now().UnixMilli() - info.StartAtMs)
 			firstByte = true
 		}
+		chunkCount++
 		return writer.WriteChunk(c, chunk)
 	})
+	
 	if err != nil {
 		// 已经开始写流，无法切换渠道
 		_ = writer.Finish(c)
 		return http.StatusOK, false, fmt.Errorf("stream: %w", err)
+	}
+	
+	// 检测空流（没有收到任何 chunk）
+	if chunkCount == 0 {
+		_ = writer.Finish(c)
+		return http.StatusBadGateway, true, fmt.Errorf("provider returned an empty response. This often indicates an API configuration error (base URL, model, or credentials)")
 	}
 
 	_ = writer.Finish(c)
