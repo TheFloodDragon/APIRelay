@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/apirelay/apirelay/model"
 )
 
 func TestExtractUpstreamErrorMessage(t *testing.T) {
@@ -108,5 +110,38 @@ func TestErrEmptyUpstreamResponseIsSentinel(t *testing.T) {
 	wrapped := fmt.Errorf("ctx: %w", errEmptyUpstreamResponse)
 	if !errors.Is(wrapped, errEmptyUpstreamResponse) {
 		t.Error("errors.Is should match wrapped sentinel")
+	}
+}
+
+func TestCleanErrorMessage(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// 去除内部前缀 + 提取上游 message
+		{`upstream status 502: {"error":{"message":"bad gateway"}}`, "bad gateway"},
+		{"do request: dial tcp timeout", "dial tcp timeout"},
+		{"stream: connection reset", "connection reset"},
+		{errEmptyUpstreamResponse.Error(), "上游返回空响应"},
+	}
+	for _, c := range cases {
+		if got := cleanErrorMessage(c.in); got != c.want {
+			t.Errorf("cleanErrorMessage(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestFriendlyError_IncludesProviderName(t *testing.T) {
+	info := &RelayInfo{OriginModel: "gpt-4o", Channel: &model.Channel{Name: "OpenAI-Main"}}
+	// 致命错误应带供应商名
+	msg := friendlyUpstreamError(info, http.StatusUnauthorized,
+		fmt.Errorf("upstream status 401: %s", `{"error":{"message":"bad key"}}`))
+	if !strings.Contains(msg, "OpenAI-Main") {
+		t.Errorf("client error should include provider name: %q", msg)
+	}
+	// 耗尽错误应带最后供应商名
+	ex := friendlyExhaustedError(info, http.StatusServiceUnavailable, "upstream status 503: overloaded")
+	if !strings.Contains(ex, "OpenAI-Main") {
+		t.Errorf("exhausted error should include provider name: %q", ex)
 	}
 }

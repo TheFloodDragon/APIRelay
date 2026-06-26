@@ -245,7 +245,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		out.WriteError(c, statusOrDefault(state.LastStatus),
 			friendlyExhaustedError(info, state.LastStatus, state.LastErr))
 	}
-	r.logError(info, statusOrDefault(state.LastStatus), "all channels failed: "+state.LastErr)
+	r.logError(info, statusOrDefault(state.LastStatus), state.LastErr)
 }
 
 // doOnce 对单个渠道执行一次完整转发。
@@ -422,7 +422,7 @@ func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
 		IsStream:     info.IsStream,
 		UseTimeMs:    int(time.Now().UnixMilli() - info.StartAtMs),
 		Status:       status,
-		Error:        errMsg,
+		Error:        cleanErrorMessage(errMsg),
 	}
 	// 记录实际尝试的上游协议（便于排查协议互转问题）
 	if info.Channel != nil {
@@ -433,7 +433,8 @@ func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
 	model.AsyncLog(l)
 }
 
-// logAttemptFailure 记录单个供应商的转发失败（切换渠道前），明确标注是哪个供应商。
+// logAttemptFailure 记录单个供应商的转发失败（切换渠道前）。
+// 错误信息保持干净（不加供应商前缀，供应商已在 channel 列体现），便于查看完整原因。
 func (r *Relayer) logAttemptFailure(info *RelayInfo, ch *model.Channel, status int, errMsg string) {
 	l := &model.Log{
 		RequestId:    info.RequestID,
@@ -449,7 +450,7 @@ func (r *Relayer) logAttemptFailure(info *RelayInfo, ch *model.Channel, status i
 		IsStream:     info.IsStream,
 		UseTimeMs:    int(time.Now().UnixMilli() - info.StartAtMs),
 		Status:       status,
-		Error:        "供应商[" + ch.Name + "]转发失败，已切换：" + errMsg,
+		Error:        cleanErrorMessage(errMsg),
 	}
 	if ch != nil {
 		l.ChannelId = ch.Id

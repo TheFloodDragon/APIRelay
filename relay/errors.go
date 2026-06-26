@@ -106,34 +106,50 @@ func messageFromErrorField(raw json.RawMessage) string {
 	return ""
 }
 
-// friendlyUpstreamError 为单渠道致命错误生成面向客户端的友好提示。
+// friendlyUpstreamError 为单渠道致命错误生成面向客户端的友好提示（含供应商名）。
 func friendlyUpstreamError(info *RelayInfo, status int, err error) string {
 	if errors.Is(err, errEmptyUpstreamResponse) {
-		return emptyResponseHint(info)
+		return providerPrefix(info) + emptyResponseHint(info)
 	}
 	detail := extractUpstreamErrorMessage([]byte(stripInternalPrefix(err.Error())))
 	base := statusHint(status)
 	if detail != "" {
-		return fmt.Sprintf("%s（上游返回：%s）", base, truncateMessage(detail, 300))
+		return fmt.Sprintf("%s%s（上游返回：%s）", providerPrefix(info), base, truncateMessage(detail, 300))
 	}
-	return base
+	return providerPrefix(info) + base
 }
 
-// friendlyExhaustedError 为「所有渠道均失败」生成友好提示。
+// friendlyExhaustedError 为「所有渠道均失败」生成友好提示（含最后尝试的供应商名）。
 func friendlyExhaustedError(info *RelayInfo, status int, lastErr string) string {
 	if status == 0 {
 		status = http.StatusServiceUnavailable
 	}
 	model := info.OriginModel
 	if strings.Contains(lastErr, errEmptyUpstreamResponse.Error()) {
-		return emptyResponseHint(info)
+		return providerPrefix(info) + emptyResponseHint(info)
 	}
 	detail := extractUpstreamErrorMessage([]byte(stripInternalPrefix(lastErr)))
 	base := fmt.Sprintf("模型 %q 的所有可用渠道均请求失败（%s）", model, statusHint(status))
 	if detail != "" {
-		return fmt.Sprintf("%s。最后一次错误：%s", base, truncateMessage(detail, 300))
+		return fmt.Sprintf("%s。最后一次错误来自供应商[%s]：%s", base, providerName(info), truncateMessage(detail, 300))
 	}
 	return base + "，请稍后重试或检查供应商配置。"
+}
+
+// providerName 返回当前（最后尝试）供应商名，未知时返回占位。
+func providerName(info *RelayInfo) string {
+	if info != nil && info.Channel != nil && info.Channel.Name != "" {
+		return info.Channel.Name
+	}
+	return "未知"
+}
+
+// providerPrefix 返回 "供应商[名称] " 前缀（仅用于客户端响应）。
+func providerPrefix(info *RelayInfo) string {
+	if info != nil && info.Channel != nil && info.Channel.Name != "" {
+		return "供应商[" + info.Channel.Name + "] "
+	}
+	return ""
 }
 
 // emptyResponseHint 针对空响应给出可操作的排障提示。
@@ -185,6 +201,24 @@ func stripInternalPrefix(s string) string {
 		s = strings.TrimPrefix(s, p)
 	}
 	return strings.TrimSpace(s)
+}
+
+// cleanErrorMessage 生成用于【日志存储】的干净错误信息：
+// 去除内部包装前缀，并尽量提取上游返回的可读消息（不附加供应商名，供应商在日志列体现）。
+func cleanErrorMessage(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, errEmptyUpstreamResponse.Error()) {
+		return "上游返回空响应"
+	}
+	stripped := stripInternalPrefix(s)
+	// 若剩余内容是 JSON 错误体，提取其中的 message
+	if msg := extractUpstreamErrorMessage([]byte(stripped)); msg != "" {
+		return truncateMessage(msg, 500)
+	}
+	return truncateMessage(stripped, 500)
 }
 
 // truncateMessage 截断过长消息。
