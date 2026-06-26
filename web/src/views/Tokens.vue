@@ -1,67 +1,9 @@
-<template>
-  <div>
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-semibold">令牌管理</h2>
-      <button class="btn-primary" @click="openCreate">+ 新建令牌</button>
-    </div>
-
-    <table class="w-full text-sm bg-white rounded-lg shadow overflow-hidden">
-      <thead class="bg-gray-100 text-gray-600 text-left">
-        <tr>
-          <th class="p-3">ID</th>
-          <th class="p-3">名称</th>
-          <th class="p-3">Key</th>
-          <th class="p-3">分组</th>
-          <th class="p-3">允许模型</th>
-          <th class="p-3">状态</th>
-          <th class="p-3">操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="t in tokens" :key="t.id" class="border-t">
-          <td class="p-3">{{ t.id }}</td>
-          <td class="p-3">{{ t.name }}</td>
-          <td class="p-3 font-mono text-xs">
-            <span>{{ mask(t.key) }}</span>
-            <button class="ml-2 text-blue-600" @click="copy(t.key)">复制</button>
-          </td>
-          <td class="p-3">{{ t.group }}</td>
-          <td class="p-3 text-gray-500 max-w-[200px] truncate">{{ t.allowed_models || '全部' }}</td>
-          <td class="p-3">
-            <span :class="t.status === 1 ? 'text-green-600' : 'text-red-500'">
-              {{ t.status === 1 ? '启用' : '禁用' }}
-            </span>
-          </td>
-          <td class="p-3">
-            <button class="text-red-500" @click="remove(t)">删除</button>
-          </td>
-        </tr>
-        <tr v-if="!tokens.length"><td colspan="7" class="p-6 text-center text-gray-400">暂无令牌</td></tr>
-      </tbody>
-    </table>
-
-    <div v-if="showModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showModal=false">
-      <div class="bg-white rounded-lg shadow-lg w-[440px] p-6">
-        <h3 class="text-base font-semibold mb-4">新建令牌</h3>
-        <div class="space-y-3">
-          <div><label class="lbl">名称</label><input v-model="form.name" class="inp" /></div>
-          <div><label class="lbl">分组</label><input v-model="form.group" class="inp" placeholder="default" /></div>
-          <div><label class="lbl">允许模型（逗号分隔，留空=全部）</label><input v-model="form.allowed_models" class="inp" /></div>
-        </div>
-        <div v-if="err" class="text-red-500 text-sm mt-3">{{ err }}</div>
-        <div class="flex justify-end gap-2 mt-5">
-          <button class="px-4 py-2 text-sm rounded border" @click="showModal=false">取消</button>
-          <button class="btn-primary" @click="save">保存</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useToast } from '../composables/useToast'
 import api from '../api'
 
+const toast = useToast()
 const tokens = ref([])
 const showModal = ref(false)
 const err = ref('')
@@ -71,35 +13,141 @@ function mask(k) {
   if (!k) return ''
   return k.slice(0, 7) + '...' + k.slice(-4)
 }
-function copy(k) {
-  navigator.clipboard?.writeText(k)
+
+async function copy(k) {
+  try {
+    await navigator.clipboard.writeText(k)
+    toast.success('已复制到剪贴板')
+  } catch {
+    toast.error('复制失败')
+  }
 }
 
 async function load() {
   tokens.value = (await api.get('/tokens')) || []
 }
+
 function openCreate() {
   form.value = { name: '', group: 'default', allowed_models: '' }
   err.value = ''
   showModal.value = true
 }
+
 async function save() {
   err.value = ''
   try {
     const res = await api.post('/tokens', form.value)
     showModal.value = false
     if (res && res.key) {
-      alert('令牌创建成功，请妥善保存（仅显示一次）：\n' + res.key)
+      // 显示完整 key（仅此一次）
+      const el = document.createElement('textarea')
+      el.value = res.key
+      document.body.appendChild(el)
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
+      toast.success(`令牌已创建并复制：${res.key}`, 8000)
     }
     await load()
   } catch (e) {
     err.value = e.message || '保存失败'
   }
 }
+
 async function remove(t) {
   if (!confirm(`确认删除令牌「${t.name}」？`)) return
-  await api.delete(`/tokens/${t.id}`)
-  await load()
+  try {
+    await api.delete(`/tokens/${t.id}`)
+    toast.success('令牌已删除')
+    await load()
+  } catch (e) {
+    toast.error(e.message || '删除失败')
+  }
 }
+
 onMounted(load)
 </script>
+
+<template>
+  <div>
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-2xl font-bold text-gray-900">令牌管理</h2>
+        <p class="text-sm text-gray-500 mt-1">管理对外暴露的 API Key</p>
+      </div>
+      <button class="btn-primary" @click="openCreate">
+        <span>➕</span>
+        <span>新建令牌</span>
+      </button>
+    </div>
+
+    <div class="table-wrapper">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>名称</th>
+            <th>Key</th>
+            <th>分组</th>
+            <th>允许模型</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="t in tokens" :key="t.id">
+            <td class="font-mono text-xs">#{{ t.id }}</td>
+            <td class="font-medium">{{ t.name }}</td>
+            <td class="font-mono text-xs">
+              <span class="text-gray-500">{{ mask(t.key_prefix) }}</span>
+              <button @click="copy(t.key_prefix)" class="ml-2 text-brand-600 hover:text-brand-700 font-medium">
+                📋 复制
+              </button>
+            </td>
+            <td><span class="badge-neutral">{{ t.group }}</span></td>
+            <td class="text-gray-600 text-xs max-w-[180px] truncate">{{ t.models || '全部' }}</td>
+            <td>
+              <span v-if="t.status === 1" class="badge-success">启用</span>
+              <span v-else class="badge-error">禁用</span>
+            </td>
+            <td>
+              <button @click="remove(t)" class="text-red-600 hover:text-red-700 font-medium text-sm">删除</button>
+            </td>
+          </tr>
+          <tr v-if="!tokens.length">
+            <td colspan="7" class="empty-state">
+              <div class="text-4xl mb-2">🔑</div>
+              <div>暂无令牌，点击右上角新建</div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 创建模态 -->
+    <div v-if="showModal" class="modal-backdrop" @click.self="showModal=false">
+      <div class="modal">
+        <h3 class="modal-header">新建令牌</h3>
+        <div class="space-y-4">
+          <div>
+            <label class="label">令牌名称</label>
+            <input v-model="form.name" class="input" placeholder="例：测试环境" />
+          </div>
+          <div>
+            <label class="label">分组</label>
+            <input v-model="form.group" class="input" placeholder="default" />
+          </div>
+          <div>
+            <label class="label">允许模型（逗号分隔，留空=全部）</label>
+            <input v-model="form.allowed_models" class="input" placeholder="gpt-4o,claude-3-5-sonnet" />
+          </div>
+          <div v-if="err" class="text-red-500 text-sm">{{ err }}</div>
+        </div>
+        <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+          <button @click="showModal=false" class="btn-secondary">取消</button>
+          <button @click="save" class="btn-primary">创建</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>

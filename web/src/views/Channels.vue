@@ -1,44 +1,58 @@
 <template>
   <div>
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-semibold">渠道管理</h2>
-      <button class="btn-primary" @click="openCreate">+ 新建渠道</button>
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-2xl font-bold text-gray-900">渠道管理</h2>
+        <p class="text-sm text-gray-500 mt-1">配置上游 AI API 服务渠道</p>
+      </div>
+      <button class="btn-primary" @click="openCreate">
+        <span>➕</span>
+        <span>新建渠道</span>
+      </button>
     </div>
 
-    <table class="w-full text-sm bg-white rounded-lg shadow overflow-hidden">
-      <thead class="bg-gray-100 text-gray-600 text-left">
-        <tr>
-          <th class="p-3">ID</th>
-          <th class="p-3">名称</th>
-          <th class="p-3">协议</th>
-          <th class="p-3">Base URL</th>
-          <th class="p-3">分组</th>
-          <th class="p-3">模型</th>
-          <th class="p-3">状态</th>
-          <th class="p-3">操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="ch in channels" :key="ch.id" class="border-t">
-          <td class="p-3">{{ ch.id }}</td>
-          <td class="p-3">{{ ch.name }}</td>
-          <td class="p-3">{{ typeName(ch.type) }}</td>
-          <td class="p-3 text-gray-500 max-w-[180px] truncate">{{ ch.base_url }}</td>
-          <td class="p-3">{{ ch.group }}</td>
-          <td class="p-3 text-gray-500 max-w-[220px] truncate">{{ ch.models }}</td>
-          <td class="p-3">
-            <span :class="ch.status === 1 ? 'text-green-600' : 'text-red-500'">
-              {{ ch.status === 1 ? '启用' : '禁用' }}
-            </span>
-          </td>
-          <td class="p-3 space-x-2">
-            <button class="text-blue-600" @click="openEdit(ch)">编辑</button>
-            <button class="text-red-500" @click="remove(ch)">删除</button>
-          </td>
-        </tr>
-        <tr v-if="!channels.length"><td colspan="8" class="p-6 text-center text-gray-400">暂无渠道</td></tr>
-      </tbody>
-    </table>
+    <div class="table-wrapper">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>名称</th>
+            <th>协议</th>
+            <th>分组</th>
+            <th>模型</th>
+            <th>优先级</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="ch in channels" :key="ch.id">
+            <td class="font-mono text-xs">#{{ ch.id }}</td>
+            <td class="font-medium">{{ ch.name }}</td>
+            <td><span class="badge-info">{{ typeName(ch.type) }}</span></td>
+            <td><span class="badge-neutral">{{ ch.group }}</span></td>
+            <td class="max-w-[200px] truncate text-gray-600 text-xs font-mono">{{ ch.models || '全部' }}</td>
+            <td class="text-gray-600">{{ ch.priority }}</td>
+            <td>
+              <span v-if="ch.status === 1" class="badge-success">启用</span>
+              <span v-else class="badge-error">禁用</span>
+            </td>
+            <td>
+              <div class="flex gap-2">
+                <button @click="openEdit(ch)" class="text-brand-600 hover:text-brand-700 font-medium text-sm">编辑</button>
+                <button @click="remove(ch)" class="text-red-600 hover:text-red-700 font-medium text-sm">删除</button>
+              </div>
+            </td>
+          </tr>
+          <tr v-if="!channels.length">
+            <td colspan="8" class="empty-state">
+              <div class="text-4xl mb-2">🔗</div>
+              <div>暂无渠道，点击右上角新建</div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <!-- 编辑/创建弹窗 -->
     <div v-if="showModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showModal=false">

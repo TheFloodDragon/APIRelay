@@ -1,16 +1,20 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useToast } from '../composables/useToast'
 import api from '../api'
 
 const router = useRouter()
+const toast = useToast()
 const username = ref('admin')
 const password = ref('')
-const error = ref('')
 const loading = ref(false)
 
 async function login() {
-  error.value = ''
+  if (!username.value || !password.value) {
+    toast.warning('请输入用户名和密码')
+    return
+  }
   loading.value = true
   try {
     const data = await api.post('/auth/login', {
@@ -18,9 +22,10 @@ async function login() {
       password: password.value,
     })
     localStorage.setItem('apirelay_session', data.token)
+    toast.success('登录成功')
     router.push('/')
   } catch (e) {
-    error.value = e?.message || '登录失败'
+    toast.error(e?.message || '登录失败')
   } finally {
     loading.value = false
   }
@@ -28,20 +33,40 @@ async function login() {
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center bg-slate-100">
-    <div class="bg-white rounded-xl shadow-lg p-8 w-80">
-      <h1 class="text-xl font-semibold text-center mb-6">APIRelay 管理后台</h1>
-      <form @submit.prevent="login" class="space-y-4">
-        <input v-model="username" placeholder="用户名"
-          class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-        <input v-model="password" type="password" placeholder="密码"
-          class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-        <p v-if="error" class="text-red-500 text-xs">{{ error }}</p>
-        <button :disabled="loading"
-          class="w-full bg-indigo-600 text-white rounded py-2 text-sm hover:bg-indigo-700 disabled:opacity-50">
-          {{ loading ? '登录中...' : '登录' }}
-        </button>
-      </form>
+  <div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-brand-50 via-white to-purple-50 p-4">
+    <div class="w-full max-w-md">
+      <!-- 品牌 -->
+      <div class="text-center mb-8">
+        <div class="inline-flex items-center justify-center w-16 h-16 bg-brand-600 rounded-2xl shadow-lg mb-4">
+          <span class="text-3xl">⚡</span>
+        </div>
+        <h1 class="text-3xl font-bold text-gray-900 mb-2">APIRelay</h1>
+        <p class="text-sm text-gray-500">AI API 中转聚合平台</p>
+      </div>
+
+      <!-- 登录卡片 -->
+      <div class="card animate-fade-in">
+        <h2 class="text-lg font-semibold text-gray-900 mb-6">管理后台登录</h2>
+        <form @submit.prevent="login" class="space-y-4">
+          <div>
+            <label class="label">用户名</label>
+            <input v-model="username" class="input" placeholder="请输入用户名" autocomplete="username" />
+          </div>
+          <div>
+            <label class="label">密码</label>
+            <input v-model="password" type="password" class="input" placeholder="请输入密码" autocomplete="current-password" />
+          </div>
+          <button type="submit" :disabled="loading" class="btn-primary w-full mt-6">
+            <span v-if="loading">登录中...</span>
+            <span v-else>登录</span>
+          </button>
+        </form>
+      </div>
+
+      <!-- 提示 -->
+      <div class="text-center mt-6 text-xs text-gray-400">
+        默认账号: admin / admin123
+      </div>
     </div>
   </div>
 </template>
