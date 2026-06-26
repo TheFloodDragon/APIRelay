@@ -75,10 +75,17 @@ curl -X POST http://127.0.0.1:3000/v1/chat/completions \
 ## 路线图
 
 - [x] 阶段1-2：骨架 + OpenAI 转发 MVP（含 SSE、调用日志、故障转移）
-- [ ] 阶段3：Anthropic / OpenAI Responses 适配器 + 跨协议互转
+- [x] 阶段3：Anthropic / OpenAI Responses 适配器 + RawChunk 零改写优化
 - [ ] 阶段4：模型聚合增强 + 故障转移精细化
 - [ ] 阶段5：额度预扣/结算 + 异步用量 + 管理后台鉴权
 - [ ] 阶段6：Vue3 前端（embed）
+
+### 最近更新 (v0.2.0)
+
+- ✅ **RawChunk 零改写透传模式** - 同协议直接透传原始 SSE，避免序列化损耗
+- ✅ **Anthropic/Responses 完整支持** - 三种协议全部支持零改写优化
+- ✅ **工具调用修复** - tool_calls 完整保留，对话连续性恢复
+- ✅ **UI 美化** - Toast 通知、精美卡片、brand 主题、响应式布局
 
 ## License
 
