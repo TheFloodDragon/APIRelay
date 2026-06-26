@@ -41,8 +41,14 @@ func registerRelayRoutes(r *gin.Engine, cfg *config.Config) {
 	v1 := r.Group("/v1")
 	v1.Use(middleware.TokenAuth())
 	{
+		// OpenAI 兼容端点
+		v1.GET("/models", relayer.HandleListModels)
 		v1.POST("/chat/completions", relayer.HandleOpenAIChat)
+		
+		// Anthropic 端点
 		v1.POST("/messages", relayer.HandleAnthropicMessages)
+		
+		// OpenAI Responses 端点
 		v1.POST("/responses", relayer.HandleResponses)
 	}
 }

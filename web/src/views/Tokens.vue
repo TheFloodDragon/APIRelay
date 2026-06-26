@@ -39,14 +39,14 @@ async function save() {
     const res = await api.post('/tokens', form.value)
     showModal.value = false
     if (res && res.key) {
-      // 显示完整 key（仅此一次）
-      const el = document.createElement('textarea')
-      el.value = res.key
-      document.body.appendChild(el)
-      el.select()
-      document.execCommand('copy')
-      document.body.removeChild(el)
-      toast.success(`令牌已创建并复制：${res.key}`, 8000)
+      // 显示完整 key（仅此一次）并自动复制
+      try {
+        await navigator.clipboard.writeText(res.key)
+        toast.success(`✅ 令牌已创建并复制到剪贴板\n\n🔑 ${res.key}\n\n⚠️ 请妥善保存，此密钥仅显示一次`, 10000)
+      } catch {
+        // 复制失败，显示 key 让用户手动复制
+        toast.success(`✅ 令牌已创建\n\n🔑 ${res.key}\n\n⚠️ 请立即复制保存，此密钥仅显示一次`, 15000)
+      }
     }
     await load()
   } catch (e) {
@@ -99,10 +99,10 @@ onMounted(load)
             <td class="font-mono text-xs">#{{ t.id }}</td>
             <td class="font-medium">{{ t.name }}</td>
             <td class="font-mono text-xs">
-              <span class="text-gray-500">{{ mask(t.key_prefix) }}</span>
-              <button @click="copy(t.key_prefix)" class="ml-2 text-brand-600 hover:text-brand-700 font-medium">
-                📋 复制
-              </button>
+              <span class="text-gray-500" :title="`完整 key 仅创建时可见\n前缀: ${t.key_prefix}`">
+                {{ mask(t.key_prefix) }}
+              </span>
+              <span class="ml-2 text-gray-400 text-[10px]">（仅创建时可见）</span>
             </td>
             <td><span class="badge-neutral">{{ t.group }}</span></td>
             <td class="text-gray-600 text-xs max-w-[180px] truncate">{{ t.models || '全部' }}</td>

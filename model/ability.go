@@ -90,3 +90,22 @@ func GetChannelCandidates(group, model string) ([]ChannelCandidate, error) {
 	}
 	return out, nil
 }
+
+// GetAvailableModels 返回某分组下所有启用渠道支持的模型列表（去重）。
+func GetAvailableModels(group string) ([]string, error) {
+	var abilities []Ability
+	err := DB.Where("`group` = ? AND enabled = ? AND model != ?",
+		group, true, WildcardModel).
+		Distinct("model").
+		Order("model").
+		Find(&abilities).Error
+	if err != nil {
+		return nil, err
+	}
+
+	models := make([]string, 0, len(abilities))
+	for _, a := range abilities {
+		models = append(models, a.Model)
+	}
+	return models, nil
+}

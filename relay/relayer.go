@@ -46,6 +46,41 @@ func (r *Relayer) HandleResponses(c *gin.Context) {
 	r.handle(c, constant.EndpointResponses, apicompat.ParseResponsesRequest)
 }
 
+// HandleListModels 处理 GET /v1/models - 返回全局可用模型列表。
+func (r *Relayer) HandleListModels(c *gin.Context) {
+	// 获取当前 token 的分组
+	group := r.cfg.DefaultGroup
+	if tok, ok := c.Get("token"); ok {
+		if t, _ := tok.(*model.Token); t != nil && t.Group != "" {
+			group = t.Group
+		}
+	}
+
+	// 查询该分组下所有启用渠道的模型
+	models, err := model.GetAvailableModels(group)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 构造 OpenAI /v1/models 格式响应
+	data := make([]gin.H, 0, len(models))
+	now := time.Now().Unix()
+	for _, m := range models {
+		data = append(data, gin.H{
+			"id":       m,
+			"object":   "model",
+			"created":  now,
+			"owned_by": "apirelay",
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"object": "list",
+		"data":   data,
+	})
+}
+
 // handle 是协议无关的入口：解析对外协议为 IR，再交给故障转移主循环。
 func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]byte) (*dto.UnifiedRequest, error)) {
 	info := r.buildRelayInfo(c, ep)
