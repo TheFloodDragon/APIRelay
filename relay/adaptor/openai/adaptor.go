@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,6 +67,8 @@ func (a *Adaptor) DoRequest(info *relaycommon.RelayInfo, body io.Reader) (*http.
 	if err != nil {
 		return nil, err
 	}
+	// 解压上游响应（gzip/deflate）
+	adaptor.DecompressResponse(resp)
 	if id := resp.Header.Get("X-Request-Id"); id != "" {
 		info.UpstreamRequestId = id
 	}
@@ -83,71 +84,39 @@ func (a *Adaptor) ConvertResponse(info *relaycommon.RelayInfo, body []byte) (*dt
 }
 
 func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
-	// 检测是否可以零改写透传（对外也是 OpenAI 协议）
+	// 同协议（对外也是 OpenAI Chat）：逐行原样透传，保留 data:/空行/[DONE]。
 	canRaw := info.EndpointType == constant.EndpointOpenAI
 
 	var usage *dto.Usage
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		
-		// 空行：SSE 心跳
-		if trimmed == "" {
-			if canRaw {
-				if err := onChunk(&dto.UnifiedStreamChunk{Raw: line}); err != nil {
-					return usage, err
+	lineCount := 0
+	err := adaptor.StreamRawLines(resp.Body, func(line string) error {
+		lineCount++
+		data, isData := adaptor.ParseSSEData(line)
+
+		// 旁路解析 data 行提取 usage（[DONE] 与空 data 跳过）
+		if isData && data != "" && data != "[DONE]" {
+			if chunk, perr := apicompat.ParseOpenAIStreamChunk([]byte(data)); perr == nil && chunk != nil {
+				if chunk.Usage != nil {
+					usage = chunk.Usage
 				}
-			}
-			continue
-		}
-		
-		// 非 data: 行（event: 等）
-		if !strings.HasPrefix(trimmed, "data:") {
-			if canRaw {
-				if err := onChunk(&dto.UnifiedStreamChunk{Raw: line}); err != nil {
-					return usage, err
+				// 跨协议：转换为 IR 下发
+				if !canRaw {
+					return onChunk(chunk)
 				}
+			} else if !canRaw {
+				// 跨协议解析失败：跳过该行（可能是无法映射的特殊字段）
+				return nil
 			}
-			continue
+		} else if !canRaw {
+			// 跨协议时，非 data 行（event:/空行/[DONE]）无需下发
+			return nil
 		}
-		
-		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-		if data == "[DONE]" {
-			break
-		}
-		
-		// 解析以提取 usage
-		chunk, err := apicompat.ParseOpenAIStreamChunk([]byte(data))
-		if err != nil {
-			// 解析失败：零改写透传（同协议）或跳过（跨协议）
-			if canRaw {
-				if err := onChunk(&dto.UnifiedStreamChunk{Raw: line}); err != nil {
-					return usage, err
-				}
-			}
-			continue
-		}
-		
-		if chunk.Usage != nil {
-			usage = chunk.Usage
-		}
-		
-		// 同协议零改写，跨协议走 IR
-		if canRaw {
-			if err := onChunk(&dto.UnifiedStreamChunk{Raw: line}); err != nil {
-				return usage, err
-			}
-		} else {
-			if err := onChunk(chunk); err != nil {
-				return usage, err
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return usage, err
+
+		// 同协议：原样转发每一行
+		return onChunk(&dto.UnifiedStreamChunk{Raw: line, IsRaw: true})
+	})
+	if err != nil {
+		return usage, fmt.Errorf("stream after %d lines: %w", lineCount, err)
 	}
 	return usage, nil
 }

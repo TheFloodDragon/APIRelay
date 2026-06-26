@@ -262,6 +262,10 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.A
 }
 
 func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound) (int, bool, error) {
+	// 透传上游 request-id，便于排障（需在写出响应头之前设置）
+	if info.UpstreamRequestId != "" {
+		c.Writer.Header().Set("X-Request-Id", info.UpstreamRequestId)
+	}
 	writer := out.NewStream(c, info.RequestID, info.OriginModel)
 	firstByte := false
 	chunkCount := 0

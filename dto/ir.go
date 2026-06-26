@@ -99,6 +99,10 @@ type UnifiedStreamChunk struct {
 	// Done 标记流结束
 	Done bool `json:"-"`
 	// Raw 原始 SSE 行（用于零改写透传模式）
-	// 当 Raw 非空时，DeltaText/ToolCalls 等字段会被忽略，直接写出原始行
+	// 当 IsRaw 为 true 时，DeltaText/ToolCalls 等字段会被忽略，直接写出原始行。
+	// Raw 可以为空字符串（表示 SSE 的空行/事件边界），因此必须配合 IsRaw 判断。
 	Raw string `json:"-"`
+	// IsRaw 标记该 chunk 为零改写透传的原始 SSE 行。
+	// 即使 Raw == ""（空行）也应原样写出，以保留 SSE 事件边界。
+	IsRaw bool `json:"-"`
 }

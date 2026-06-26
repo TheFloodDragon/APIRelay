@@ -60,11 +60,13 @@ func (openaiOutbound) NewStream(c *gin.Context, requestID, model string) StreamW
 
 type openaiStreamWriter struct {
 	state *apicompat.OpenAIStreamState
+	raw   bool
 }
 
 func (w *openaiStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
-	// RawChunk 模式：零改写透传
-	if chunk.Raw != "" {
+	// RawChunk 模式：逐行零改写透传（含 event:/空行/data:/[DONE]）
+	if chunk.IsRaw {
+		w.raw = true
 		return writeSSERaw(c, chunk.Raw+"\n")
 	}
 	// IR 模式：序列化
@@ -76,6 +78,10 @@ func (w *openaiStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStream
 }
 
 func (w *openaiStreamWriter) Finish(c *gin.Context) error {
+	// 原样透传模式下，上游已发送 [DONE]，不再补发，避免重复终止标记。
+	if w.raw {
+		return nil
+	}
 	return writeSSERaw(c, "data: [DONE]\n\n")
 }
 
@@ -103,11 +109,13 @@ func (anthropicOutbound) NewStream(c *gin.Context, requestID, model string) Stre
 
 type anthropicStreamWriter struct {
 	state *apicompat.AnthropicStreamState
+	raw   bool
 }
 
 func (w *anthropicStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
-	// RawChunk 零改写透传
-	if chunk.Raw != "" {
+	// RawChunk 逐行零改写透传（含 event: 行与空行边界）
+	if chunk.IsRaw {
+		w.raw = true
 		return writeSSERaw(c, chunk.Raw+"\n")
 	}
 	// IR 模式
@@ -120,6 +128,10 @@ func (w *anthropicStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStr
 }
 
 func (w *anthropicStreamWriter) Finish(c *gin.Context) error {
+	// 原样透传时，上游已发送 message_stop 等终止事件，无需补发。
+	if w.raw {
+		return nil
+	}
 	for _, ev := range w.state.End() {
 		if err := writeSSE(c, ev.Event, ev.Data); err != nil {
 			return err
@@ -149,11 +161,13 @@ func (responsesOutbound) NewStream(c *gin.Context, requestID, model string) Stre
 
 type responsesStreamWriter struct {
 	state *apicompat.ResponsesStreamState
+	raw   bool
 }
 
 func (w *responsesStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
-	// RawChunk 零改写透传
-	if chunk.Raw != "" {
+	// RawChunk 逐行零改写透传（含 event: 行与空行边界）
+	if chunk.IsRaw {
+		w.raw = true
 		return writeSSERaw(c, chunk.Raw+"\n")
 	}
 	// IR 模式
@@ -166,6 +180,10 @@ func (w *responsesStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStr
 }
 
 func (w *responsesStreamWriter) Finish(c *gin.Context) error {
+	// 原样透传时，上游已发送 response.completed 等终止事件，无需补发。
+	if w.raw {
+		return nil
+	}
 	for _, ev := range w.state.End() {
 		if err := writeSSE(c, ev.Event, ev.Data); err != nil {
 			return err

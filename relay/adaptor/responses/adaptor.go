@@ -67,6 +67,8 @@ func (a *Adaptor) DoRequest(info *relaycommon.RelayInfo, body io.Reader) (*http.
 	if err != nil {
 		return nil, err
 	}
+	// 解压上游响应（gzip/deflate）
+	adaptor.DecompressResponse(resp)
 	if id := resp.Header.Get("X-Request-Id"); id != "" {
 		info.UpstreamRequestId = id
 	}
@@ -82,16 +84,34 @@ func (a *Adaptor) ConvertResponse(info *relaycommon.RelayInfo, body []byte) (*dt
 }
 
 func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
-	canRaw := info.EndpointType == constant.EndpointResponses
-	
+	// 同协议（对外也是 Responses）：逐行原样透传，保留 event: 行（如
+	// response.output_text.delta）与空行边界，避免客户端无法解析。
+	if info.EndpointType == constant.EndpointResponses {
+		return a.streamRaw(resp, onChunk)
+	}
+	return a.streamIR(resp, onChunk)
+}
+
+// streamRaw 逐行原样转发，同时旁路解析 data 行以提取 usage。
+func (a *Adaptor) streamRaw(resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
+	var usage *dto.Usage
+	err := adaptor.StreamRawLines(resp.Body, func(line string) error {
+		if data, ok := adaptor.ParseSSEData(line); ok && data != "" && data != "[DONE]" {
+			if chunk, perr := apicompat.ParseResponsesStreamEvent([]byte(data)); perr == nil && chunk != nil && chunk.Usage != nil {
+				usage = chunk.Usage
+			}
+		}
+		return onChunk(&dto.UnifiedStreamChunk{Raw: line, IsRaw: true})
+	})
+	return usage, err
+}
+
+// streamIR 跨协议解析路径。
+func (a *Adaptor) streamIR(resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	var usage *dto.Usage
 
 	err := adaptor.ScanSSE(scanner, func(data string) error {
-		if canRaw {
-			return onChunk(&dto.UnifiedStreamChunk{Raw: "data: " + data})
-		}
-		
 		chunk, perr := apicompat.ParseResponsesStreamEvent([]byte(data))
 		if perr != nil || chunk == nil {
 			return nil

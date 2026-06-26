@@ -69,6 +69,8 @@ func (a *Adaptor) DoRequest(info *relaycommon.RelayInfo, body io.Reader) (*http.
 	if err != nil {
 		return nil, err
 	}
+	// 解压上游响应（gzip/deflate），避免压缩流导致解析与透传乱码
+	adaptor.DecompressResponse(resp)
 	if id := resp.Header.Get("request-id"); id != "" {
 		info.UpstreamRequestId = id
 	}
@@ -84,21 +86,40 @@ func (a *Adaptor) ConvertResponse(info *relaycommon.RelayInfo, body []byte) (*dt
 }
 
 func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
-	// 检测是否可零改写透传
-	canRaw := info.EndpointType == constant.EndpointAnthropic
-	
+	// 同协议（对外也是 Anthropic）：逐行原样透传，完整保留 event: 行、空行、
+	// data: 行等 SSE 结构，避免客户端（如 Claude Code）无法解析事件类型。
+	if info.EndpointType == constant.EndpointAnthropic {
+		return a.streamRaw(resp, onChunk)
+	}
+	// 跨协议：解析为 IR，由出站侧重新序列化。
+	return a.streamIR(resp, onChunk)
+}
+
+// streamRaw 逐行原样转发，同时旁路解析 data 行以提取 usage。
+func (a *Adaptor) streamRaw(resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
+	parser := apicompat.NewAnthropicStreamParser()
+	var usage *dto.Usage
+
+	err := adaptor.StreamRawLines(resp.Body, func(line string) error {
+		// 旁路解析：仅读取 data 行提取 usage，不影响转发
+		if data, ok := adaptor.ParseSSEData(line); ok && data != "" && data != "[DONE]" {
+			if chunk, perr := parser.Parse([]byte(data)); perr == nil && chunk != nil && chunk.Usage != nil {
+				usage = chunk.Usage
+			}
+		}
+		// 原样转发每一行（含 event:/空行/data:/[DONE]）
+		return onChunk(&dto.UnifiedStreamChunk{Raw: line, IsRaw: true})
+	})
+	return usage, err
+}
+
+// streamIR 跨协议解析路径：只读 data 行，转换为统一增量。
+func (a *Adaptor) streamIR(resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
 	parser := apicompat.NewAnthropicStreamParser()
 	scanner := bufio.NewScanner(resp.Body)
 	var usage *dto.Usage
 
 	err := adaptor.ScanSSE(scanner, func(data string) error {
-		// 同协议：零改写透传原始数据
-		if canRaw {
-			// 构造完整 SSE 格式（ScanSSE 已去掉前缀）
-			return onChunk(&dto.UnifiedStreamChunk{Raw: "data: " + data})
-		}
-		
-		// 跨协议：解析并走 IR
 		chunk, perr := parser.Parse([]byte(data))
 		if perr != nil || chunk == nil {
 			return nil
