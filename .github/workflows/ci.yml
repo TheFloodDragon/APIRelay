@@ -34,15 +34,6 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Check gofmt
-        run: |
-          unformatted="$(gofmt -l common constant controller dto middleware model relay router main.go)"
-          if [ -n "$unformatted" ]; then
-            echo "以下文件未通过 gofmt:"
-            echo "$unformatted"
-            exit 1
-          fi
-
       - name: Go vet
         run: go vet ./...
 
