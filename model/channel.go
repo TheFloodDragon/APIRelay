@@ -46,6 +46,9 @@ type ChannelModel struct {
 	Protocol string `json:"protocol"`
 	// Upstream 上游真实模型名，"" 表示与 Name 相同。
 	Upstream string `json:"upstream"`
+	// Input/Output 价格（USD / 1M tokens）。0 表示继承（走全局价格表/默认）。
+	Input  float64 `json:"input,omitempty"`
+	Output float64 `json:"output,omitempty"`
 }
 
 // ProtocolRule 是「正则匹配显示名 -> 协议」的规则。

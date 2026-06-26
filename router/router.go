@@ -80,6 +80,8 @@ func registerAdminRoutes(r *gin.Engine) {
 
 		api.GET("/settings/protocol-rules", controller.GetProtocolRules)
 		api.PUT("/settings/protocol-rules", controller.UpdateProtocolRules)
+		api.GET("/settings/model-prices", controller.GetModelPrices)
+		api.PUT("/settings/model-prices", controller.UpdateModelPrices)
 
 		api.GET("/tokens", controller.ListTokens)
 		api.POST("/tokens", controller.CreateToken)

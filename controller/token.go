@@ -23,17 +23,41 @@ func ListTokens(c *gin.Context) {
 
 // CreateToken POST /api/tokens
 func CreateToken(c *gin.Context) {
-	var in model.Token
-	if err := c.ShouldBindJSON(&in); err != nil {
+	var req struct {
+		Name      string  `json:"name"`
+		Group     string  `json:"group"`
+		Models    string  `json:"models"`
+		Unlimited bool    `json:"unlimited"`
+		QuotaUSD  float64 `json:"quota_usd"` // 额度（美元），unlimited=false 时生效
+		ExpiredAt int64   `json:"expired_at"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	in.UserId = currentUserID(c)
-	if in.Status == 0 {
-		in.Status = model.TokenStatusEnabled
+	if req.Name == "" {
+		fail(c, http.StatusBadRequest, "令牌名称不能为空")
+		return
 	}
-	if in.Group == "" {
-		in.Group = "default"
+	group := req.Group
+	if group == "" {
+		group = "default"
+	}
+	in := model.Token{
+		UserId:    currentUserID(c),
+		Name:      req.Name,
+		Group:     group,
+		Models:    req.Models,
+		Status:    model.TokenStatusEnabled,
+		Unlimited: req.Unlimited,
+		ExpiredAt: req.ExpiredAt,
+	}
+	if !req.Unlimited {
+		// 美元 -> 微美元
+		in.Quota = int64(req.QuotaUSD * 1_000_000)
+		if in.Quota < 0 {
+			in.Quota = 0
+		}
 	}
 	plain := common.NewToken("sk-")
 	if err := model.CreateToken(&in, plain); err != nil {

@@ -30,6 +30,11 @@ type RelayInfo struct {
 	// 上游请求相关
 	UpstreamRequestId string
 
+	// 计费：预扣的额度（微美元），用于结算时调整差额
+	ReservedQuota int64
+	// Settled 标记本次请求是否已完成额度结算（成功路径置 true）
+	Settled bool
+
 	// 计时
 	StartAtMs   int64
 	FirstByteMs int

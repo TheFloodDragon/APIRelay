@@ -58,3 +58,43 @@ func ListProtocols(c *gin.Context) {
 		{"value": constant.APINameResponses, "name": "OpenAI-Responses"},
 	})
 }
+
+// GetModelPrices GET /api/settings/model-prices
+// 返回全局模型价格表（USD / 1M tokens）。
+func GetModelPrices(c *gin.Context) {
+	prices := model.GetGlobalModelPrices()
+	if prices == nil {
+		prices = []model.ModelPrice{}
+	}
+	ok(c, prices)
+}
+
+// UpdateModelPrices PUT /api/settings/model-prices
+// 保存全局模型价格表。
+func UpdateModelPrices(c *gin.Context) {
+	var prices []model.ModelPrice
+	if err := c.ShouldBindJSON(&prices); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	for i := range prices {
+		if prices[i].Model == "" {
+			fail(c, http.StatusBadRequest, "价格条目缺少模型名（可用 default 作为兜底）")
+			return
+		}
+		if prices[i].Input < 0 || prices[i].Output < 0 {
+			fail(c, http.StatusBadRequest, "价格不能为负数")
+			return
+		}
+	}
+	data, err := json.Marshal(prices)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := model.SetSetting(model.SettingKeyModelPrices, string(data)); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, prices)
+}

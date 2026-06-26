@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/apirelay/apirelay/common/config"
@@ -105,17 +106,34 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 		return
 	}
 
-	// 模型白名单校验
+	// 模型白名单校验 + 额度预扣
 	if tok, ok := c.Get("token"); ok {
-		if t, _ := tok.(*model.Token); t != nil && !t.AllowModel(ir.Model) {
-			msg := fmt.Sprintf("当前令牌无权使用模型 %q，请检查令牌的模型白名单设置", ir.Model)
-			out.WriteError(c, http.StatusForbidden, msg)
-			r.logError(info, http.StatusForbidden, "model not allowed: "+ir.Model)
-			return
+		if t, _ := tok.(*model.Token); t != nil {
+			if !t.AllowModel(ir.Model) {
+				msg := fmt.Sprintf("当前令牌无权使用模型 %q，请检查令牌的模型白名单设置", ir.Model)
+				out.WriteError(c, http.StatusForbidden, msg)
+				r.logError(info, http.StatusForbidden, "model not allowed: "+ir.Model)
+				return
+			}
+			// 预扣额度（基于全局价格表估算；未配置价格则为 0，不扣费）
+			reserved := EstimateQuota(ir)
+			if reserved > 0 {
+				if err := model.PreConsumeQuota(t.Id, reserved); err != nil {
+					out.WriteError(c, http.StatusForbidden, "令牌额度不足，请充值或调整额度后重试")
+					r.logError(info, http.StatusForbidden, "quota insufficient: need "+strconv.FormatInt(reserved, 10))
+					return
+				}
+				info.ReservedQuota = reserved
+			}
 		}
 	}
 
 	r.relayWithFailover(c, info, ir, out)
+
+	// 兜底退款：若已预扣额度但未发生结算（请求失败/未选到渠道等），全额退还。
+	if info.ReservedQuota > 0 && !info.Settled {
+		model.RefundQuota(info.TokenId, info.ReservedQuota)
+	}
 }
 
 // relayWithFailover 执行带故障转移的转发主循环。
@@ -340,6 +358,14 @@ func (r *Relayer) buildRelayInfo(c *gin.Context, ep constant.EndpointType) *Rela
 
 func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage) {
 	useTime := int(time.Now().UnixMilli() - info.StartAtMs)
+
+	// 按实际渠道价格计算消耗额度（微美元）
+	var quota int64
+	if info.Channel != nil {
+		in, out := ResolvePrice(info.Channel, info.OriginModel)
+		quota = CalcQuota(usage.PromptTokens, usage.CompletionTokens, in, out)
+	}
+
 	l := &model.Log{
 		RequestId:         info.RequestID,
 		UpstreamRequestId: info.UpstreamRequestId,
@@ -356,6 +382,7 @@ func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage) {
 		PromptTokens:      usage.PromptTokens,
 		CompletionTokens:  usage.CompletionTokens,
 		TotalTokens:       usage.TotalTokens,
+		Quota:             quota,
 		UseTimeMs:         useTime,
 		FirstByteMs:       info.FirstByteMs,
 		Status:            http.StatusOK,
@@ -364,7 +391,14 @@ func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage) {
 		l.ChannelId = info.Channel.Id
 		l.ChannelName = info.Channel.Name
 	}
-	_ = model.CreateLog(l)
+
+	// 结算额度（预扣 -> 实际）并异步落库，避免阻塞响应。
+	info.Settled = true
+	if info.TokenId > 0 {
+		model.AsyncLogAndSettle(l, info.TokenId, info.ReservedQuota, quota)
+	} else {
+		model.AsyncLog(l)
+	}
 }
 
 func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
@@ -387,7 +421,7 @@ func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
 		l.ChannelId = info.Channel.Id
 		l.ChannelName = info.Channel.Name
 	}
-	_ = model.CreateLog(l)
+	model.AsyncLog(l)
 }
 
 // apiTypeLabel 返回本次请求实际使用的上游协议可读名（基于解析后的 ApiType）。

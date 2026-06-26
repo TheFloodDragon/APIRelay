@@ -25,6 +25,7 @@ const stats = [
   { label: '总请求数', key: 'total_requests', icon: '📊', tint: 'blue', isStat: true },
   { label: 'Prompt Tokens', key: 'total_prompt_tokens', icon: '📝', tint: 'green', isStat: true },
   { label: 'Completion Tokens', key: 'total_completion_tokens', icon: '✨', tint: 'amber', isStat: true },
+  { label: '总消费 (近7天)', key: 'total_quota', icon: '💲', tint: 'green', isStat: true, isCost: true },
 ]
 
 const tintMap = {
@@ -37,7 +38,9 @@ const tintMap = {
 
 function valueOf(s) {
   if (s.key === '_models') return modelCount.value
-  return s.isStat ? data.value.stat?.[s.key] : data.value[s.key]
+  const raw = s.isStat ? data.value.stat?.[s.key] : data.value[s.key]
+  if (s.isCost) return '$' + ((raw || 0) / 1_000_000).toFixed(4)
+  return formatNumber(raw)
 }
 const formatNumber = (n) => (n || 0).toLocaleString()
 </script>
@@ -50,14 +53,14 @@ const formatNumber = (n) => (n || 0).toLocaleString()
     </div>
 
     <!-- 统计卡片 -->
-    <div v-if="loading" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
-      <div v-for="i in 5" :key="i" class="card-flat">
+    <div v-if="loading" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+      <div v-for="i in 6" :key="i" class="card-flat">
         <div class="skeleton h-4 w-20 mb-3"></div>
         <div class="skeleton h-8 w-24"></div>
       </div>
     </div>
 
-    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+    <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
       <div v-for="s in stats" :key="s.key" class="card group cursor-default !p-5">
         <div class="flex items-center justify-between mb-3">
           <div :class="['w-10 h-10 rounded-xl flex items-center justify-center text-lg transition-transform group-hover:scale-110', tintMap[s.tint]]">
@@ -65,7 +68,7 @@ const formatNumber = (n) => (n || 0).toLocaleString()
           </div>
         </div>
         <div class="text-xs text-ink-500 mb-1">{{ s.label }}</div>
-        <div class="text-2xl font-bold text-ink-900 dark:text-ink-50">{{ formatNumber(valueOf(s)) }}</div>
+        <div class="text-2xl font-bold text-ink-900 dark:text-ink-50">{{ valueOf(s) }}</div>
       </div>
     </div>
 

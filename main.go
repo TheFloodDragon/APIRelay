@@ -37,6 +37,10 @@ func main() {
 		logger.L().Fatal("init db failed", zap.Error(err))
 	}
 
+	// 启动异步 worker（日志落库 + 配额结算），退出前优雅 flush
+	model.StartAsyncWorker()
+	defer model.StopAsyncWorker()
+
 	bootstrap(cfg)
 
 	r := router.Setup(cfg)

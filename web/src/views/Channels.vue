@@ -119,20 +119,23 @@
             <div v-if="models.length" class="rounded-xl border border-ink-200 dark:border-ink-700 overflow-hidden">
               <div class="max-h-64 overflow-y-auto divide-y divide-ink-100 dark:divide-ink-800">
                 <div v-for="(m, i) in models" :key="i"
-                  class="flex items-center gap-2 px-3 py-2 bg-white dark:bg-ink-900/40 hover:bg-ink-50 dark:hover:bg-ink-800/40 transition-colors">
+                  class="flex flex-wrap items-center gap-2 px-3 py-2 bg-white dark:bg-ink-900/40 hover:bg-ink-50 dark:hover:bg-ink-800/40 transition-colors">
                   <!-- 启用开关 -->
                   <button type="button" class="toggle shrink-0" :class="{ 'toggle-on': m.enabled }" @click="m.enabled = !m.enabled">
                     <span class="toggle-knob"></span>
                   </button>
                   <!-- 模型名 -->
-                  <input v-model="m.name" class="input !py-1.5 !rounded-lg font-mono text-xs flex-1" placeholder="模型显示名" />
+                  <input v-model="m.name" class="input !py-1.5 !rounded-lg font-mono text-xs flex-1 min-w-[120px]" placeholder="模型显示名" />
                   <!-- 协议覆盖 -->
-                  <select v-model="m.protocol" class="input !py-1.5 !rounded-lg text-xs w-32 shrink-0">
+                  <select v-model="m.protocol" class="input !py-1.5 !rounded-lg text-xs w-28 shrink-0">
                     <option value="">继承</option>
                     <option v-for="p in protocols" :key="p.value" :value="p.value">{{ p.name }}</option>
                   </select>
                   <!-- 上游名 -->
-                  <input v-model="m.upstream" class="input !py-1.5 !rounded-lg font-mono text-xs w-36 shrink-0" placeholder="上游名(可选)" />
+                  <input v-model="m.upstream" class="input !py-1.5 !rounded-lg font-mono text-xs w-32 shrink-0" placeholder="上游名(可选)" />
+                  <!-- 价格 input/output（$/1M，留空=继承） -->
+                  <input v-model.number="m.input" type="number" step="0.01" min="0" class="input !py-1.5 !rounded-lg text-xs w-20 shrink-0 text-right" placeholder="入价" title="输入价 $/1M（0=继承）" />
+                  <input v-model.number="m.output" type="number" step="0.01" min="0" class="input !py-1.5 !rounded-lg text-xs w-20 shrink-0 text-right" placeholder="出价" title="输出价 $/1M（0=继承）" />
                   <button class="text-ink-300 hover:text-red-500 shrink-0 px-1" @click="models.splice(i, 1)">✕</button>
                 </div>
               </div>
@@ -140,7 +143,7 @@
             <div v-else class="text-center py-6 text-ink-400 text-sm">
               暂无模型，拉取或手动添加
             </div>
-            <p class="hint mt-2">已启用 {{ enabledCount }} 个 · 协议「继承」表示走规则或供应商默认协议</p>
+            <p class="hint mt-2">已启用 {{ enabledCount }} 个 · 协议「继承」走规则/供应商默认 · 价格留空（0）走全局价格表</p>
           </div>
 
           <!-- 协议规则 -->
@@ -261,11 +264,11 @@ function parseModels(ch) {
   if (ch.model_configs) {
     try {
       const arr = JSON.parse(ch.model_configs)
-      if (Array.isArray(arr)) return arr.map(m => ({ name: m.name || '', enabled: m.enabled !== false, protocol: m.protocol || '', upstream: m.upstream || '' }))
+      if (Array.isArray(arr)) return arr.map(m => ({ name: m.name || '', enabled: m.enabled !== false, protocol: m.protocol || '', upstream: m.upstream || '', input: m.input || 0, output: m.output || 0 }))
     } catch {}
   }
   return (ch.models || '').split(',').map(s => s.trim()).filter(Boolean)
-    .map(n => ({ name: n, enabled: true, protocol: '', upstream: '' }))
+    .map(n => ({ name: n, enabled: true, protocol: '', upstream: '', input: 0, output: 0 }))
 }
 function parseRules(ch) {
   if (ch.protocol_rules) {
@@ -305,7 +308,7 @@ function addModel() {
     toast.warning('模型已存在')
     return
   }
-  models.value.unshift({ name: n, enabled: true, protocol: '', upstream: '' })
+  models.value.unshift({ name: n, enabled: true, protocol: '', upstream: '', input: 0, output: 0 })
   newModelName.value = ''
 }
 
@@ -325,7 +328,7 @@ async function fetchModels() {
     let added = 0
     for (const name of fetched) {
       if (!existing.has(name)) {
-        models.value.push({ name, enabled: true, protocol: '', upstream: '' })
+        models.value.push({ name, enabled: true, protocol: '', upstream: '', input: 0, output: 0 })
         added++
       }
     }
@@ -345,7 +348,14 @@ async function save() {
   }
   err.value = ''
   saving.value = true
-  const cleanModels = models.value.filter(m => m.name.trim())
+  const cleanModels = models.value.filter(m => m.name.trim()).map(m => ({
+    name: m.name.trim(),
+    enabled: !!m.enabled,
+    protocol: m.protocol || '',
+    upstream: m.upstream || '',
+    input: Number(m.input) || 0,
+    output: Number(m.output) || 0,
+  }))
   const cleanRules = rules.value.filter(r => r.pattern.trim() && r.protocol)
   const payload = {
     ...form.value,

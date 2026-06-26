@@ -7,11 +7,21 @@ const toast = useToast()
 const tokens = ref([])
 const showModal = ref(false)
 const err = ref('')
-const form = ref({ name: '', group: 'default', allowed_models: '' })
+const form = ref({ name: '', group: 'default', models: '', unlimited: true, quota_usd: 0 })
 
 function mask(k) {
   if (!k) return ''
   return k.slice(0, 7) + '...' + k.slice(-4)
+}
+
+// 微美元 -> 美元显示
+function usd(micro) {
+  return '$' + ((micro || 0) / 1_000_000).toFixed(4)
+}
+
+function quotaDisplay(t) {
+  if (t.unlimited) return `${usd(t.used_quota)} / 不限`
+  return `${usd(t.used_quota)} / ${usd(t.quota)}`
 }
 
 async function copy(k) {
@@ -28,15 +38,26 @@ async function load() {
 }
 
 function openCreate() {
-  form.value = { name: '', group: 'default', allowed_models: '' }
+  form.value = { name: '', group: 'default', models: '', unlimited: true, quota_usd: 0 }
   err.value = ''
   showModal.value = true
 }
 
 async function save() {
   err.value = ''
+  if (!form.value.name.trim()) {
+    err.value = '请填写令牌名称'
+    return
+  }
   try {
-    const res = await api.post('/tokens', form.value)
+    const payload = {
+      name: form.value.name.trim(),
+      group: form.value.group || 'default',
+      models: form.value.models || '',
+      unlimited: form.value.unlimited,
+      quota_usd: form.value.unlimited ? 0 : (Number(form.value.quota_usd) || 0),
+    }
+    const res = await api.post('/tokens', payload)
     showModal.value = false
     if (res && res.key) {
       // 显示完整 key（仅此一次）并自动复制
@@ -44,7 +65,6 @@ async function save() {
         await navigator.clipboard.writeText(res.key)
         toast.success(`✅ 令牌已创建并复制到剪贴板\n\n🔑 ${res.key}\n\n⚠️ 请妥善保存，此密钥仅显示一次`, 10000)
       } catch {
-        // 复制失败，显示 key 让用户手动复制
         toast.success(`✅ 令牌已创建\n\n🔑 ${res.key}\n\n⚠️ 请立即复制保存，此密钥仅显示一次`, 15000)
       }
     }
@@ -90,6 +110,7 @@ onMounted(load)
             <th>Key</th>
             <th>分组</th>
             <th>允许模型</th>
+            <th>额度(已用/总)</th>
             <th>状态</th>
             <th class="text-right">操作</th>
           </tr>
@@ -106,6 +127,7 @@ onMounted(load)
             </td>
             <td><span class="badge-neutral">{{ t.group }}</span></td>
             <td class="text-ink-500 text-xs max-w-[180px] truncate">{{ t.models || '全部' }}</td>
+            <td class="text-xs font-mono text-ink-600 dark:text-ink-300">{{ quotaDisplay(t) }}</td>
             <td>
               <span v-if="t.status === 1" class="badge-success"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>启用</span>
               <span v-else class="badge-error">禁用</span>
@@ -117,7 +139,7 @@ onMounted(load)
             </td>
           </tr>
           <tr v-if="!tokens.length">
-            <td colspan="7" class="empty-state">
+            <td colspan="8" class="empty-state">
               <div class="text-5xl mb-3 opacity-60">🔑</div>
               <div>暂无令牌，点击右上角新建</div>
             </td>
@@ -141,7 +163,21 @@ onMounted(load)
           </div>
           <div>
             <label class="label">允许模型（逗号分隔，留空=全部）</label>
-            <input v-model="form.allowed_models" class="input" placeholder="gpt-4o,claude-3-5-sonnet" />
+            <input v-model="form.models" class="input" placeholder="gpt-4o,claude-3-5-sonnet" />
+          </div>
+          <div>
+            <label class="label">额度</label>
+            <div class="flex items-center gap-3">
+              <button type="button" class="toggle shrink-0" :class="{ 'toggle-on': form.unlimited }" @click="form.unlimited = !form.unlimited">
+                <span class="toggle-knob"></span>
+              </button>
+              <span class="text-sm text-ink-600 dark:text-ink-300">{{ form.unlimited ? '不限额度' : '限制额度' }}</span>
+              <div v-if="!form.unlimited" class="flex items-center gap-1 ml-auto">
+                <span class="text-ink-400 text-sm">$</span>
+                <input v-model.number="form.quota_usd" type="number" step="0.01" min="0" class="input !py-1.5 w-32 text-right" placeholder="0.00" />
+              </div>
+            </div>
+            <p class="hint">额度按模型价格（美元）扣减；不限额度仅统计用量不拦截。</p>
           </div>
           <div v-if="err" class="text-red-500 text-sm">{{ err }}</div>
         </div>

@@ -13,6 +13,12 @@ function fmt(ms) {
   return new Date(ms).toLocaleString()
 }
 
+// 微美元 -> 美元（费用列）
+function cost(micro) {
+  if (!micro) return '-'
+  return '$' + (micro / 1_000_000).toFixed(4)
+}
+
 function typeName(t) {
   return { 1: '消费', 2: '错误', 3: '管理', 4: '系统' }[t] || '其他'
 }
@@ -67,6 +73,7 @@ onMounted(load)
             <th>模型</th>
             <th>流</th>
             <th>Tokens</th>
+            <th>费用</th>
             <th>耗时</th>
             <th>首字</th>
             <th>状态</th>
@@ -92,6 +99,7 @@ onMounted(load)
             </td>
             <td class="text-center">{{ l.is_stream ? '✓' : '' }}</td>
             <td class="whitespace-nowrap text-xs text-ink-500">{{ l.prompt_tokens }}/{{ l.completion_tokens }}</td>
+            <td class="whitespace-nowrap text-xs font-mono text-ink-600 dark:text-ink-300">{{ cost(l.quota) }}</td>
             <td class="text-ink-500">{{ l.use_time_ms }}ms</td>
             <td class="text-ink-500">{{ l.first_byte_ms ? l.first_byte_ms + 'ms' : '-' }}</td>
             <td>
@@ -101,7 +109,7 @@ onMounted(load)
             <td class="text-red-500 text-xs max-w-[160px] truncate" :title="l.error">{{ l.error }}</td>
           </tr>
           <tr v-if="!logs.length">
-            <td colspan="11" class="empty-state">
+            <td colspan="12" class="empty-state">
               <div class="text-5xl mb-3 opacity-60">📝</div>
               <div>暂无日志</div>
             </td>
