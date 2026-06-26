@@ -170,26 +170,46 @@
             </div>
 
             <div v-if="models.length" class="rounded-xl border border-ink-200 dark:border-ink-700 overflow-hidden">
-              <div class="max-h-64 overflow-y-auto divide-y divide-ink-100 dark:divide-ink-800">
+              <div class="max-h-72 overflow-y-auto divide-y divide-ink-100 dark:divide-ink-800">
                 <div v-for="(m, i) in models" :key="i"
-                  class="flex flex-wrap items-center gap-2 px-3 py-2 bg-white dark:bg-ink-900/40 hover:bg-ink-50 dark:hover:bg-ink-800/40 transition-colors">
-                  <!-- 启用开关 -->
-                  <button type="button" class="toggle shrink-0" :class="{ 'toggle-on': m.enabled }" @click="m.enabled = !m.enabled">
-                    <span class="toggle-knob"></span>
-                  </button>
-                  <!-- 模型名 -->
-                  <input v-model="m.name" class="input !py-1.5 !rounded-lg font-mono text-xs flex-1 min-w-[120px]" placeholder="模型显示名" />
-                  <!-- 协议覆盖 -->
-                  <select v-model="m.protocol" class="input !py-1.5 !rounded-lg text-xs w-28 shrink-0">
-                    <option value="">继承</option>
-                    <option v-for="p in protocols" :key="p.value" :value="p.value">{{ p.name }}</option>
-                  </select>
-                  <!-- 上游名 -->
-                  <input v-model="m.upstream" class="input !py-1.5 !rounded-lg font-mono text-xs w-32 shrink-0" placeholder="上游名(可选)" />
-                  <!-- 价格 input/output（$/1M，留空=继承） -->
-                  <input v-model.number="m.input" type="number" step="0.01" min="0" class="input !py-1.5 !rounded-lg text-xs w-20 shrink-0 text-right" placeholder="入价" title="输入价 $/1M（0=继承）" />
-                  <input v-model.number="m.output" type="number" step="0.01" min="0" class="input !py-1.5 !rounded-lg text-xs w-20 shrink-0 text-right" placeholder="出价" title="输出价 $/1M（0=继承）" />
-                  <button class="text-ink-300 hover:text-red-500 shrink-0 px-1" @click="models.splice(i, 1)">✕</button>
+                  class="px-3 py-2 bg-white dark:bg-ink-900/40 hover:bg-ink-50 dark:hover:bg-ink-800/40 transition-colors">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <!-- 启用开关 -->
+                    <button type="button" class="toggle shrink-0" :class="{ 'toggle-on': m.enabled }" @click="m.enabled = !m.enabled">
+                      <span class="toggle-knob"></span>
+                    </button>
+                    <!-- 模型名 -->
+                    <input v-model="m.name" class="input !py-1.5 !rounded-lg font-mono text-xs flex-1 min-w-[120px]" placeholder="模型显示名" />
+                    <!-- 协议覆盖 -->
+                    <select v-model="m.protocol" class="input !py-1.5 !rounded-lg text-xs w-28 shrink-0">
+                      <option value="">继承</option>
+                      <option v-for="p in protocols" :key="p.value" :value="p.value">{{ p.name }}</option>
+                    </select>
+                    <!-- 上游名 -->
+                    <input v-model="m.upstream" class="input !py-1.5 !rounded-lg font-mono text-xs w-32 shrink-0" placeholder="上游名(可选)" />
+                    <!-- 价格 input/output（$/1M，留空=继承） -->
+                    <input v-model.number="m.input" type="number" step="0.01" min="0" class="input !py-1.5 !rounded-lg text-xs w-20 shrink-0 text-right" placeholder="入价" title="输入价 $/1M（0=继承）" />
+                    <input v-model.number="m.output" type="number" step="0.01" min="0" class="input !py-1.5 !rounded-lg text-xs w-20 shrink-0 text-right" placeholder="出价" title="输出价 $/1M（0=继承）" />
+                    <!-- 测试按钮 -->
+                    <button type="button" class="btn-secondary btn-sm shrink-0 !px-2" :disabled="testing[m.name] || !m.name.trim()" @click="testModel(m)" title="发送一次测试对话">
+                      <span v-if="testing[m.name]">⏳</span>
+                      <span v-else>🧪 测试</span>
+                    </button>
+                    <button class="text-ink-300 hover:text-red-500 shrink-0 px-1" @click="removeModel(i, m)">✕</button>
+                  </div>
+                  <!-- 测试结果 -->
+                  <div v-if="testResults[m.name]" class="mt-1.5 ml-12 text-xs rounded-lg px-2.5 py-1.5"
+                    :class="testResults[m.name].success
+                      ? 'bg-green-50 dark:bg-green-500/10 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-500/30'
+                      : 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/30'">
+                    <template v-if="testResults[m.name].success">
+                      ✓ 连通正常 · {{ testResults[m.name].latency_ms }}ms · 协议 {{ testResults[m.name].protocol }}
+                      <span v-if="testResults[m.name].reply" class="text-ink-500 dark:text-ink-400">· 回复：{{ testResults[m.name].reply }}</span>
+                    </template>
+                    <template v-else>
+                      ✕ {{ testResults[m.name].error }}
+                    </template>
+                  </div>
                 </div>
               </div>
             </div>
@@ -271,6 +291,10 @@ const models = ref([])   // [{name,enabled,protocol,upstream}]
 const rules = ref([])    // [{pattern,protocol}]
 const newModelName = ref('')
 
+// 模型连通性测试状态（按模型名索引）
+const testing = ref({})
+const testResults = ref({})
+
 // 拖动排序状态
 const dragIndex = ref(null)
 const dropIndex = ref(null)
@@ -344,6 +368,8 @@ function openCreate() {
   rules.value = []
   err.value = ''
   showKey.value = false
+  testing.value = {}
+  testResults.value = {}
   const t = channelTypes.value.find(x => x.value === form.value.type)
   if (t) form.value.base_url = t.default_base_url
   showModal.value = true
@@ -356,6 +382,8 @@ function openEdit(ch) {
   rules.value = parseRules(ch)
   err.value = ''
   showKey.value = false
+  testing.value = {}
+  testResults.value = {}
   showModal.value = true
 }
 function onTypeChange() {
@@ -372,6 +400,52 @@ function addModel() {
   }
   models.value.unshift({ name: n, enabled: true, protocol: '', upstream: '', input: 0, output: 0 })
   newModelName.value = ''
+}
+
+function removeModel(i, m) {
+  models.value.splice(i, 1)
+  if (m && m.name) {
+    delete testResults.value[m.name]
+    delete testing.value[m.name]
+  }
+}
+
+async function testModel(m) {
+  const name = m.name.trim()
+  if (!name) return
+  if (!form.value.base_url) {
+    toast.warning('请先填写 Base URL')
+    return
+  }
+  // 编辑且未改密钥时，用已保存渠道的测试接口（后端会用原密钥）
+  testing.value = { ...testing.value, [name]: true }
+  try {
+    let res
+    if (form.value.id && !form.value.key) {
+      res = await api.post(`/channels/${form.value.id}/test`, { model: name })
+    } else {
+      res = await api.post('/channels/test', {
+        type: form.value.type,
+        base_url: form.value.base_url,
+        key: form.value.key,
+        group: form.value.group || 'default',
+        model_configs: JSON.stringify([{
+          name, enabled: true, protocol: m.protocol || '', upstream: m.upstream || '',
+        }]),
+        protocol_rules: JSON.stringify(rules.value.filter(r => r.pattern.trim() && r.protocol)),
+        header_override: form.value.header_override || '',
+        model: name,
+      })
+    }
+    testResults.value = { ...testResults.value, [name]: res }
+    if (res.success) toast.success(`模型 ${name} 连通正常`)
+    else toast.error(`模型 ${name} 测试失败`)
+  } catch (e) {
+    testResults.value = { ...testResults.value, [name]: { success: false, error: e.message || '请求失败' } }
+    toast.error('测试失败: ' + e.message)
+  } finally {
+    testing.value = { ...testing.value, [name]: false }
+  }
 }
 
 async function fetchModels() {

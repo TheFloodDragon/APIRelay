@@ -76,6 +76,8 @@ func registerAdminRoutes(r *gin.Engine) {
 		api.DELETE("/channels/:id", controller.DeleteChannel)
 		api.GET("/channels/:id/models", controller.ProbeChannelModels)
 		api.POST("/channels/probe-models", controller.ProbeModelsByConfig)
+		api.POST("/channels/:id/test", controller.TestChannelModel)
+		api.POST("/channels/test", controller.TestChannelByConfig)
 
 		api.GET("/models", controller.ListAggregatedModels)
 

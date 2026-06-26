@@ -143,3 +143,45 @@ func ChannelTypes(c *gin.Context) {
 	}
 	ok(c, types)
 }
+
+// TestChannelModel POST /api/channels/:id/test  body: {"model":"..."}
+// 对已保存渠道的指定模型发起连通性测试。
+func TestChannelModel(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	ch, err := model.GetChannelByID(id)
+	if err != nil {
+		fail(c, http.StatusNotFound, "供应商不存在")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Model == "" {
+		fail(c, http.StatusBadRequest, "缺少 model")
+		return
+	}
+	ok(c, relay.TestModel(ch, req.Model))
+}
+
+// TestChannelByConfig POST /api/channels/test
+// 用临时配置（未保存）测试模型连通性。body 为渠道配置 + model 字段。
+func TestChannelByConfig(c *gin.Context) {
+	var req struct {
+		model.Channel
+		Model string `json:"model"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Model == "" {
+		fail(c, http.StatusBadRequest, "缺少 model")
+		return
+	}
+	ch := req.Channel
+	ok(c, relay.TestModel(&ch, req.Model))
+}
