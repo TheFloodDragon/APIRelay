@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/dto"
 	"github.com/apirelay/apirelay/relay/adaptor"
 	"github.com/apirelay/apirelay/relay/apicompat"
@@ -83,11 +84,21 @@ func (a *Adaptor) ConvertResponse(info *relaycommon.RelayInfo, body []byte) (*dt
 }
 
 func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
+	// 检测是否可零改写透传
+	canRaw := info.EndpointType == constant.EndpointAnthropic
+	
 	parser := apicompat.NewAnthropicStreamParser()
 	scanner := bufio.NewScanner(resp.Body)
 	var usage *dto.Usage
 
 	err := adaptor.ScanSSE(scanner, func(data string) error {
+		// 同协议：零改写透传原始数据
+		if canRaw {
+			// 构造完整 SSE 格式（ScanSSE 已去掉前缀）
+			return onChunk(&dto.UnifiedStreamChunk{Raw: "data: " + data})
+		}
+		
+		// 跨协议：解析并走 IR
 		chunk, perr := parser.Parse([]byte(data))
 		if perr != nil || chunk == nil {
 			return nil

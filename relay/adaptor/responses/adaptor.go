@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/dto"
 	"github.com/apirelay/apirelay/relay/adaptor"
 	"github.com/apirelay/apirelay/relay/apicompat"
@@ -81,10 +82,16 @@ func (a *Adaptor) ConvertResponse(info *relaycommon.RelayInfo, body []byte) (*dt
 }
 
 func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
+	canRaw := info.EndpointType == constant.EndpointResponses
+	
 	scanner := bufio.NewScanner(resp.Body)
 	var usage *dto.Usage
 
 	err := adaptor.ScanSSE(scanner, func(data string) error {
+		if canRaw {
+			return onChunk(&dto.UnifiedStreamChunk{Raw: "data: " + data})
+		}
+		
 		chunk, perr := apicompat.ParseResponsesStreamEvent([]byte(data))
 		if perr != nil || chunk == nil {
 			return nil

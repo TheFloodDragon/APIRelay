@@ -106,11 +106,11 @@ type anthropicStreamWriter struct {
 }
 
 func (w *anthropicStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
-	// Raw 模式只用于同协议透传，跨协议必须走 IR
+	// RawChunk 零改写透传
 	if chunk.Raw != "" {
-		// 不应该到这里（Anthropic 出站 + OpenAI 上游的 Raw）
-		// 但为了健壮性，忽略 Raw 并尝试走 IR
+		return writeSSERaw(c, chunk.Raw+"\n")
 	}
+	// IR 模式
 	for _, ev := range w.state.Delta(chunk) {
 		if err := writeSSE(c, ev.Event, ev.Data); err != nil {
 			return err
@@ -152,10 +152,11 @@ type responsesStreamWriter struct {
 }
 
 func (w *responsesStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
-	// Raw 模式只用于同协议透传，跨协议必须走 IR
+	// RawChunk 零改写透传
 	if chunk.Raw != "" {
-		// Responses 出站接收 OpenAI Raw，忽略走 IR
+		return writeSSERaw(c, chunk.Raw+"\n")
 	}
+	// IR 模式
 	for _, ev := range w.state.Delta(chunk) {
 		if err := writeSSE(c, ev.Event, ev.Data); err != nil {
 			return err
