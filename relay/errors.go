@@ -6,10 +6,51 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/apirelay/apirelay/model"
 )
 
 // errEmptyUpstreamResponse 表示上游返回了空响应（常见于 base_url/模型/密钥配置错误）。
 var errEmptyUpstreamResponse = errors.New("empty upstream response")
+
+// noChannelError 生成「没有可用渠道」时的诊断性错误提示，尽可能指出原因与可用供应商。
+func noChannelError(group, modelName string) string {
+	diag := model.DiagnoseModel(group, modelName)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "没有可用的渠道来服务模型 %q（分组 %q）。", modelName, group)
+
+	switch {
+	case len(diag.DisabledProviders) > 0:
+		// 配置了但被禁用
+		fmt.Fprintf(&b, "已配置该模型的供应商当前被禁用：%s。请在供应商管理中启用。",
+			strings.Join(diag.DisabledProviders, "、"))
+	case len(diag.OtherGroupProviders) > 0:
+		// 分组不匹配
+		fmt.Fprintf(&b, "该模型在其它分组下由供应商 %s 提供，但当前令牌分组为 %q，二者不匹配。请将供应商分组改为 %q，或改用对应分组的令牌。",
+			strings.Join(diag.OtherGroupProviders, "、"), group, group)
+	default:
+		b.WriteString("请确认已配置启用该模型的供应商，且模型名拼写正确（区分大小写）。")
+	}
+
+	// 附：当前分组下可用的供应商与模型，便于排查
+	if models, err := model.GetAvailableModels(group); err == nil && len(models) > 0 {
+		shown := models
+		const maxShow = 20
+		suffix := ""
+		if len(shown) > maxShow {
+			shown = shown[:maxShow]
+			suffix = fmt.Sprintf(" 等 %d 个", len(models))
+		}
+		fmt.Fprintf(&b, " 当前分组可用模型：%s%s。", strings.Join(shown, "、"), suffix)
+	} else if diag.HasWildcard {
+		b.WriteString(" 当前分组存在通配（*）供应商。")
+	} else {
+		fmt.Fprintf(&b, " 当前分组 %q 下暂无任何已启用的模型。", group)
+	}
+
+	return b.String()
+}
 
 // extractUpstreamErrorMessage 从上游错误响应体中提取人类可读的错误信息。
 // 兼容 OpenAI / Anthropic / 通用 {error:{message}} / {message} / {error:"..."} 等结构；

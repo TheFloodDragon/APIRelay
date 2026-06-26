@@ -3,6 +3,7 @@
 /apirelay.exe
 /dist/
 *.exe
+*.exe~
 
 # 前端
 web/node_modules/

@@ -42,6 +42,11 @@ func InitDB(cfg *config.DatabaseConfig) error {
 	if err := migrate(); err != nil {
 		return err
 	}
+	// 重建所有渠道的 Ability 索引，自愈历史 bool 默认值 bug 导致的脏数据
+	// （旧版 Ability.Enabled 带 default:true，禁用渠道的 ability 曾被错误写为 enabled）。
+	if err := ResyncAllAbilities(); err != nil {
+		logger.L().Warn("resync abilities failed", zap.Error(err))
+	}
 	logger.L().Info("database initialized", zap.String("driver", cfg.Driver))
 	return nil
 }

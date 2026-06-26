@@ -165,9 +165,8 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		}
 		if ch == nil {
 			if switches == 0 && iter == 0 {
-				msg := fmt.Sprintf("没有可用的渠道来服务模型 %q（分组 %q）。请确认已配置启用该模型的供应商，且模型名拼写正确。", ir.Model, info.Group)
-				out.WriteError(c, http.StatusServiceUnavailable, msg)
-				r.logError(info, http.StatusServiceUnavailable, "no available channel for model "+ir.Model)
+				out.WriteError(c, http.StatusServiceUnavailable, noChannelError(info.Group, ir.Model))
+				r.logError(info, http.StatusServiceUnavailable, "no available channel for model "+ir.Model+" in group "+info.Group)
 				return
 			}
 			break // 所有渠道均已排除/冷却
