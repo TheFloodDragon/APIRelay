@@ -71,6 +71,7 @@ func registerAdminRoutes(r *gin.Engine) {
 		api.GET("/protocols", controller.ListProtocols)
 		api.GET("/channels", controller.ListChannels)
 		api.POST("/channels", controller.CreateChannel)
+		api.POST("/channels/reorder", controller.ReorderChannels)
 		api.PUT("/channels/:id", controller.UpdateChannel)
 		api.DELETE("/channels/:id", controller.DeleteChannel)
 		api.GET("/channels/:id/models", controller.ProbeChannelModels)

@@ -76,6 +76,27 @@ func DeleteChannel(c *gin.Context) {
 	ok(c, gin.H{"deleted": id})
 }
 
+// ReorderChannels POST /api/channels/reorder
+// 按给定 ID 顺序重排供应商优先级（首位最高）。
+func ReorderChannels(c *gin.Context) {
+	var req struct {
+		IDs []int `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.IDs) == 0 {
+		fail(c, http.StatusBadRequest, "ids 不能为空")
+		return
+	}
+	if err := model.ReorderChannels(req.IDs); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, gin.H{"reordered": len(req.IDs)})
+}
+
 // ProbeChannelModels GET /api/channels/:id/models
 // 按已保存渠道的协议调用上游标准模型列表接口，返回模型 ID 列表。
 func ProbeChannelModels(c *gin.Context) {

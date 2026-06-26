@@ -97,7 +97,10 @@ onMounted(load)
                 → {{ l.mapped_model }}
               </span>
             </td>
-            <td class="text-center">{{ l.is_stream ? '✓' : '' }}</td>
+            <td class="text-center">
+              <span v-if="l.is_stream" class="badge-info text-[10px] !px-1.5 !py-0.5">流</span>
+              <span v-else class="text-ink-300 dark:text-ink-600">—</span>
+            </td>
             <td class="whitespace-nowrap text-xs text-ink-500">{{ l.prompt_tokens }}/{{ l.completion_tokens }}</td>
             <td class="whitespace-nowrap text-xs font-mono text-ink-600 dark:text-ink-300">{{ cost(l.quota) }}</td>
             <td class="text-ink-500">{{ l.use_time_ms }}ms</td>
@@ -121,7 +124,7 @@ onMounted(load)
     <!-- 分页 -->
     <div class="pagination mt-6">
       <button class="page-btn" :disabled="page<=1" @click="page--;load()">上一页</button>
-      <span class="text-gray-600">第 {{ page }} 页 / 共 {{ total }} 条</span>
+      <span class="text-ink-500 dark:text-ink-400">第 {{ page }} 页 / 共 {{ total }} 条</span>
       <button class="page-btn" :disabled="page*pageSize>=total" @click="page++;load()">下一页</button>
     </div>
   </div>

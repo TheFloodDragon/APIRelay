@@ -3,7 +3,7 @@
     <div class="flex items-center justify-between mb-6">
       <div>
         <h2 class="page-title">供应商</h2>
-        <p class="page-subtitle">配置上游 AI 服务、模型与协议</p>
+        <p class="page-subtitle">配置上游 AI 服务、模型与协议 · 拖动卡片调整优先级</p>
       </div>
       <button class="btn-primary" @click="openCreate">
         <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg>
@@ -11,51 +11,76 @@
       </button>
     </div>
 
-    <div class="table-wrapper">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>名称</th>
-            <th>默认协议</th>
-            <th>分组</th>
-            <th>模型</th>
-            <th>优先级</th>
-            <th>权重</th>
-            <th>状态</th>
-            <th class="text-right">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="ch in channels" :key="ch.id">
-            <td class="font-mono text-xs text-ink-400">#{{ ch.id }}</td>
-            <td class="font-medium">{{ ch.name }}</td>
-            <td><span class="badge-brand">{{ typeName(ch.type) }}</span></td>
-            <td><span class="badge-neutral">{{ ch.group }}</span></td>
-            <td>
-              <span class="badge-info">{{ modelCount(ch) }} 个</span>
-            </td>
-            <td class="text-center text-ink-500">{{ ch.priority }}</td>
-            <td class="text-center text-ink-500">{{ ch.weight }}</td>
-            <td>
-              <span v-if="ch.status === 1" class="badge-success"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>启用</span>
-              <span v-else class="badge-error">禁用</span>
-            </td>
-            <td>
-              <div class="flex gap-2 justify-end">
-                <button @click="openEdit(ch)" class="btn-ghost btn-sm">编辑</button>
-                <button @click="remove(ch)" class="btn-danger btn-sm">删除</button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="!channels.length">
-            <td colspan="9" class="empty-state">
-              <div class="text-5xl mb-3 opacity-60">🔗</div>
-              <div>暂无供应商，点击右上角新建</div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <!-- 提示条 -->
+    <div v-if="channels.length > 1" class="flex items-center gap-2 mb-4 text-xs text-ink-500 dark:text-ink-400">
+      <svg viewBox="0 0 24 24" class="w-4 h-4 shrink-0" fill="currentColor"><path d="M11 18a2 2 0 11-4 0 2 2 0 014 0zm0-6a2 2 0 11-4 0 2 2 0 014 0zm0-6a2 2 0 11-4 0 2 2 0 014 0zm6 12a2 2 0 11-4 0 2 2 0 014 0zm0-6a2 2 0 11-4 0 2 2 0 014 0zm0-6a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+      <span>排在越上方优先级越高，请求会优先路由到靠前的供应商；同优先级按权重分配。</span>
+      <span v-if="reordering" class="badge-brand ml-1">保存中…</span>
+    </div>
+
+    <!-- 供应商卡片列表（可拖动排序） -->
+    <div class="space-y-3">
+      <div
+        v-for="(ch, idx) in channels" :key="ch.id"
+        class="group card-flat flex items-center gap-4 !py-3.5 transition-all"
+        :class="[
+          dragIndex === idx ? 'opacity-40' : '',
+          dropIndex === idx && dragIndex !== null && dragIndex !== idx ? 'ring-2 ring-brand-400 ring-offset-2 ring-offset-ink-50 dark:ring-offset-ink-950' : '',
+          ch.status !== 1 ? 'opacity-70' : '',
+        ]"
+        draggable="true"
+        @dragstart="onDragStart(idx, $event)"
+        @dragover.prevent="onDragOver(idx)"
+        @drop="onDrop(idx)"
+        @dragend="onDragEnd"
+      >
+        <!-- 拖动手柄 -->
+        <div class="cursor-grab active:cursor-grabbing text-ink-300 dark:text-ink-600 hover:text-ink-500 dark:hover:text-ink-400 shrink-0 select-none" title="拖动排序">
+          <svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor"><path d="M9 5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 7a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 7a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm9-14a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 7a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 7a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z"/></svg>
+        </div>
+
+        <!-- 排名徽标 -->
+        <div class="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold"
+          :class="idx === 0 ? 'bg-brand-gradient text-white shadow-glow' : 'bg-ink-100 dark:bg-ink-800 text-ink-500 dark:text-ink-400'">
+          {{ idx + 1 }}
+        </div>
+
+        <!-- 主信息 -->
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-semibold text-ink-900 dark:text-ink-100 truncate">{{ ch.name }}</span>
+            <span class="badge-brand">{{ typeName(ch.type) }}</span>
+            <span class="badge-neutral">{{ ch.group }}</span>
+            <span v-if="ch.status === 1" class="badge-success"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>启用</span>
+            <span v-else class="badge-error">禁用</span>
+          </div>
+          <div class="flex items-center gap-3 mt-1.5 text-xs text-ink-400 dark:text-ink-500">
+            <span class="font-mono">#{{ ch.id }}</span>
+            <span class="truncate max-w-[260px]" :title="ch.base_url">{{ ch.base_url || '默认地址' }}</span>
+            <span class="inline-flex items-center gap-1">
+              <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="currentColor"><path d="M12 2l9 5v10l-9 5-9-5V7l9-5zm0 2.3L5 8v8l7 3.9 7-3.9V8l-7-3.7z"/></svg>
+              {{ modelCount(ch) }} 模型
+            </span>
+          </div>
+        </div>
+
+        <!-- 权重 -->
+        <div class="shrink-0 text-center hidden sm:block">
+          <div class="text-xs text-ink-400">权重</div>
+          <div class="text-sm font-semibold text-ink-700 dark:text-ink-300">{{ ch.weight }}</div>
+        </div>
+
+        <!-- 操作 -->
+        <div class="shrink-0 flex gap-2">
+          <button @click="openEdit(ch)" class="btn-ghost btn-sm">编辑</button>
+          <button @click="remove(ch)" class="btn-danger btn-sm">删除</button>
+        </div>
+      </div>
+
+      <div v-if="!channels.length" class="empty-state card-flat">
+        <div class="text-5xl mb-3 opacity-60">🔗</div>
+        <div>暂无供应商，点击右上角新建</div>
+      </div>
     </div>
 
     <!-- 编辑/创建弹窗 -->
@@ -170,17 +195,10 @@
               ⚙️ 高级配置
             </summary>
             <div class="px-4 pb-4 space-y-4">
-              <div class="grid grid-cols-2 gap-4">
-                <div>
-                  <label class="label">优先级</label>
-                  <input v-model.number="form.priority" type="number" class="input" placeholder="0" />
-                  <p class="hint">数字越大越优先</p>
-                </div>
-                <div>
-                  <label class="label">权重</label>
-                  <input v-model.number="form.weight" type="number" class="input" placeholder="1" />
-                  <p class="hint">同优先级下的负载比例</p>
-                </div>
+              <div>
+                <label class="label">权重</label>
+                <input v-model.number="form.weight" type="number" min="1" class="input" placeholder="1" />
+                <p class="hint">同优先级下的负载分配比例。优先级请在列表中拖动调整。</p>
               </div>
               <div>
                 <label class="label">请求头覆盖（JSON）</label>
@@ -223,6 +241,11 @@ const err = ref('')
 const models = ref([])   // [{name,enabled,protocol,upstream}]
 const rules = ref([])    // [{pattern,protocol}]
 const newModelName = ref('')
+
+// 拖动排序状态
+const dragIndex = ref(null)
+const dropIndex = ref(null)
+const reordering = ref(false)
 
 const blank = () => ({
   id: 0, name: '', type: 1, base_url: '', key: '', group: 'default',
@@ -389,6 +412,45 @@ async function remove(ch) {
     await load()
   } catch (e) {
     toast.error('删除失败: ' + e.message)
+  }
+}
+
+// ---- 拖动排序 ----
+function onDragStart(idx, e) {
+  dragIndex.value = idx
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(idx)) // Firefox 需要
+  }
+}
+function onDragOver(idx) {
+  dropIndex.value = idx
+}
+function onDrop(idx) {
+  const from = dragIndex.value
+  if (from === null || from === idx) return
+  const list = channels.value.slice()
+  const [moved] = list.splice(from, 1)
+  list.splice(idx, 0, moved)
+  channels.value = list
+  persistOrder()
+}
+function onDragEnd() {
+  dragIndex.value = null
+  dropIndex.value = null
+}
+
+async function persistOrder() {
+  reordering.value = true
+  try {
+    await api.post('/channels/reorder', { ids: channels.value.map(c => c.id) })
+    toast.success('优先级已更新')
+    await load() // 重新拉取以同步后端计算的 priority 值
+  } catch (e) {
+    toast.error('排序保存失败: ' + e.message)
+    await load() // 回滚到服务端状态
+  } finally {
+    reordering.value = false
   }
 }
 

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/apirelay/apirelay/constant"
+
+	"gorm.io/gorm"
 )
 
 // Channel 表示一个上游渠道（一个 base_url + key + 一组模型）。
@@ -226,6 +228,29 @@ func ListChannels() ([]*Channel, error) {
 	var list []*Channel
 	err := DB.Order("priority desc, id asc").Find(&list).Error
 	return list, err
+}
+
+// ReorderChannels 按给定 ID 顺序重排优先级（首位最高）。
+// 优先级按降序分配（n-1, n-2, ... 0），并同步更新对应 Ability 索引的优先级。
+func ReorderChannels(orderedIDs []int) error {
+	n := len(orderedIDs)
+	if n == 0 {
+		return nil
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		for i, id := range orderedIDs {
+			priority := n - 1 - i // 首位优先级最高
+			if err := tx.Model(&Channel{}).Where("id = ?", id).
+				Updates(map[string]any{"priority": priority, "updated_at": nowMilli()}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&Ability{}).Where("channel_id = ?", id).
+				Update("priority", priority).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SetChannelCooldown 设置渠道冷却截止时间。
