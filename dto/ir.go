@@ -98,4 +98,7 @@ type UnifiedStreamChunk struct {
 	Usage        *Usage            `json:"usage,omitempty"`
 	// Done 标记流结束
 	Done bool `json:"-"`
+	// Raw 原始 SSE 行（用于零改写透传模式）
+	// 当 Raw 非空时，DeltaText/ToolCalls 等字段会被忽略，直接写出原始行
+	Raw string `json:"-"`
 }
