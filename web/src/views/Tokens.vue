@@ -72,11 +72,11 @@ onMounted(load)
   <div>
     <div class="flex items-center justify-between mb-6">
       <div>
-        <h2 class="text-2xl font-bold text-gray-900">令牌管理</h2>
-        <p class="text-sm text-gray-500 mt-1">管理对外暴露的 API Key</p>
+        <h2 class="page-title">令牌管理</h2>
+        <p class="page-subtitle">管理对外暴露的 API Key</p>
       </div>
       <button class="btn-primary" @click="openCreate">
-        <span>➕</span>
+        <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg>
         <span>新建令牌</span>
       </button>
     </div>
@@ -91,32 +91,34 @@ onMounted(load)
             <th>分组</th>
             <th>允许模型</th>
             <th>状态</th>
-            <th>操作</th>
+            <th class="text-right">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="t in tokens" :key="t.id">
-            <td class="font-mono text-xs">#{{ t.id }}</td>
+            <td class="font-mono text-xs text-ink-400">#{{ t.id }}</td>
             <td class="font-medium">{{ t.name }}</td>
             <td class="font-mono text-xs">
-              <span class="text-gray-500" :title="`完整 key 仅创建时可见\n前缀: ${t.key_prefix}`">
+              <span class="text-ink-500" :title="`完整 key 仅创建时可见\n前缀: ${t.key_prefix}`">
                 {{ mask(t.key_prefix) }}
               </span>
-              <span class="ml-2 text-gray-400 text-[10px]">（仅创建时可见）</span>
+              <span class="ml-2 text-ink-400 text-[10px]">（仅创建时可见）</span>
             </td>
             <td><span class="badge-neutral">{{ t.group }}</span></td>
-            <td class="text-gray-600 text-xs max-w-[180px] truncate">{{ t.models || '全部' }}</td>
+            <td class="text-ink-500 text-xs max-w-[180px] truncate">{{ t.models || '全部' }}</td>
             <td>
-              <span v-if="t.status === 1" class="badge-success">启用</span>
+              <span v-if="t.status === 1" class="badge-success"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>启用</span>
               <span v-else class="badge-error">禁用</span>
             </td>
             <td>
-              <button @click="remove(t)" class="text-red-600 hover:text-red-700 font-medium text-sm">删除</button>
+              <div class="flex justify-end">
+                <button @click="remove(t)" class="btn-danger btn-sm">删除</button>
+              </div>
             </td>
           </tr>
           <tr v-if="!tokens.length">
             <td colspan="7" class="empty-state">
-              <div class="text-4xl mb-2">🔑</div>
+              <div class="text-5xl mb-3 opacity-60">🔑</div>
               <div>暂无令牌，点击右上角新建</div>
             </td>
           </tr>
@@ -126,7 +128,7 @@ onMounted(load)
 
     <!-- 创建模态 -->
     <div v-if="showModal" class="modal-backdrop" @click.self="showModal=false">
-      <div class="modal">
+      <div class="modal max-w-lg">
         <h3 class="modal-header">新建令牌</h3>
         <div class="space-y-4">
           <div>
@@ -143,7 +145,7 @@ onMounted(load)
           </div>
           <div v-if="err" class="text-red-500 text-sm">{{ err }}</div>
         </div>
-        <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+        <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-ink-100 dark:border-ink-800">
           <button @click="showModal=false" class="btn-secondary">取消</button>
           <button @click="save" class="btn-primary">创建</button>
         </div>

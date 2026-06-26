@@ -49,7 +49,7 @@ func UpdateChannel(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	existing, err := model.GetChannelByID(id)
 	if err != nil {
-		fail(c, http.StatusNotFound, "channel not found")
+		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
 	var in model.Channel
@@ -82,7 +82,7 @@ func ProbeChannelModels(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	ch, err := model.GetChannelByID(id)
 	if err != nil {
-		fail(c, http.StatusNotFound, "channel not found")
+		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
 	models, err := relay.ProbeModels(ch)

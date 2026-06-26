@@ -34,10 +34,10 @@ const iconMap = {
 }
 
 const colorMap = {
-  success: 'bg-green-50 text-green-800 border-green-200',
-  error: 'bg-red-50 text-red-800 border-red-200',
-  warning: 'bg-yellow-50 text-yellow-800 border-yellow-200',
-  info: 'bg-blue-50 text-blue-800 border-blue-200',
+  success: 'bg-green-50 text-green-800 border-green-200 dark:bg-green-500/15 dark:text-green-300 dark:border-green-500/30',
+  error: 'bg-red-50 text-red-800 border-red-200 dark:bg-red-500/15 dark:text-red-300 dark:border-red-500/30',
+  warning: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30',
+  info: 'bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/30',
 }
 
 defineExpose({ add, remove })
@@ -48,14 +48,14 @@ defineExpose({ add, remove })
     <div
       v-for="t in toasts" :key="t.id"
       :class="[
-        'flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border pointer-events-auto transition-all duration-200',
+        'flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg border pointer-events-auto transition-all duration-200 backdrop-blur whitespace-pre-line max-w-md',
         colorMap[t.type],
         t.show ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-8'
       ]"
     >
-      <span class="font-semibold text-base">{{ iconMap[t.type] }}</span>
+      <span class="font-semibold text-base shrink-0">{{ iconMap[t.type] }}</span>
       <span class="text-sm font-medium">{{ t.msg }}</span>
-      <button @click="remove(t.id)" class="ml-2 text-current opacity-60 hover:opacity-100">✕</button>
+      <button @click="remove(t.id)" class="ml-2 text-current opacity-60 hover:opacity-100 shrink-0">✕</button>
     </div>
   </div>
 </template>

@@ -94,17 +94,23 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 
 	ir, err := parse(body)
 	if err != nil {
-		out.WriteError(c, http.StatusBadRequest, err.Error())
+		out.WriteError(c, http.StatusBadRequest, "请求体解析失败："+err.Error())
 		return
 	}
 	info.OriginModel = ir.Model
 	info.IsStream = ir.Stream
 
+	if ir.Model == "" {
+		out.WriteError(c, http.StatusBadRequest, "请求缺少 model 字段")
+		return
+	}
+
 	// 模型白名单校验
 	if tok, ok := c.Get("token"); ok {
 		if t, _ := tok.(*model.Token); t != nil && !t.AllowModel(ir.Model) {
-			out.WriteError(c, http.StatusForbidden, "model not allowed for this token: "+ir.Model)
-			r.logError(info, http.StatusForbidden, "model not allowed")
+			msg := fmt.Sprintf("当前令牌无权使用模型 %q，请检查令牌的模型白名单设置", ir.Model)
+			out.WriteError(c, http.StatusForbidden, msg)
+			r.logError(info, http.StatusForbidden, "model not allowed: "+ir.Model)
 			return
 		}
 	}
@@ -141,17 +147,17 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		}
 		if ch == nil {
 			if switches == 0 && iter == 0 {
-				out.WriteError(c, http.StatusServiceUnavailable,
-					fmt.Sprintf("no available channel for model %q in group %q", ir.Model, info.Group))
-				r.logError(info, http.StatusServiceUnavailable, "no available channel")
+				msg := fmt.Sprintf("没有可用的渠道来服务模型 %q（分组 %q）。请确认已配置启用该模型的供应商，且模型名拼写正确。", ir.Model, info.Group)
+				out.WriteError(c, http.StatusServiceUnavailable, msg)
+				r.logError(info, http.StatusServiceUnavailable, "no available channel for model "+ir.Model)
 				return
 			}
 			break // 所有渠道均已排除/冷却
 		}
 
 		info.Channel = ch
-		info.ApiType = ch.APIType()
-		info.UpstreamModel = ch.MappedModel(ir.Model)
+		info.ApiType = ResolveAPIType(ch, info.OriginModel)
+		info.UpstreamModel = ch.MappedModel(info.OriginModel)
 
 		ad := GetAdaptor(info.ApiType)
 		if ad == nil {
@@ -192,6 +198,11 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 		switch decision {
 		case DecisionFatal:
+			// 致命错误：若尚未向客户端写出任何内容，返回友好错误响应。
+			// （此前缺失，导致非流式致命错误时客户端收到空响应。）
+			if !c.Writer.Written() {
+				out.WriteError(c, statusOrDefault(status), friendlyUpstreamError(info, status, err))
+			}
 			r.logError(info, status, err.Error())
 			return
 		case DecisionRetrySameChannel:
@@ -206,7 +217,8 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 	// 重试耗尽
 	if !c.Writer.Written() {
-		out.WriteError(c, statusOrDefault(state.LastStatus), "all channels failed: "+state.LastErr)
+		out.WriteError(c, statusOrDefault(state.LastStatus),
+			friendlyExhaustedError(info, state.LastStatus, state.LastErr))
 	}
 	r.logError(info, statusOrDefault(state.LastStatus), "all channels failed: "+state.LastErr)
 }
@@ -232,7 +244,10 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		retryable := isRetryableStatus(resp.StatusCode)
-		return resp.StatusCode, retryable, fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(respBody))
+		// 记录详细错误（含上游响应体）用于日志与故障转移决策；
+		// 对客户端的友好提示在 friendlyUpstreamError 中生成。
+		detail := extractUpstreamErrorMessage(respBody)
+		return resp.StatusCode, retryable, fmt.Errorf("upstream status %d: %s", resp.StatusCode, detail)
 	}
 
 	if info.IsStream {
@@ -247,7 +262,7 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.A
 		return http.StatusBadGateway, true, fmt.Errorf("read upstream body: %w", err)
 	}
 	if len(body) == 0 {
-		return http.StatusBadGateway, true, fmt.Errorf("provider returned an empty response. This often indicates an API configuration error (base URL, model, or credentials)")
+		return http.StatusBadGateway, true, errEmptyUpstreamResponse
 	}
 	uniResp, err := adp.ConvertResponse(info, body)
 	if err != nil {
@@ -288,7 +303,7 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adap
 	// 检测空流（没有收到任何 chunk）
 	if chunkCount == 0 {
 		_ = writer.Finish(c)
-		return http.StatusBadGateway, true, fmt.Errorf("provider returned an empty response. This often indicates an API configuration error (base URL, model, or credentials)")
+		return http.StatusBadGateway, true, errEmptyUpstreamResponse
 	}
 
 	_ = writer.Finish(c)
@@ -334,7 +349,7 @@ func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage) {
 		TokenName:         info.TokenName,
 		Group:             info.Group,
 		EndpointType:      string(info.EndpointType),
-		ApiType:           constant.ChannelTypeName(channelTypeOf(info)),
+		ApiType:           apiTypeLabel(info),
 		SrcModel:          info.OriginModel,
 		MappedModel:       info.UpstreamModel,
 		IsStream:          info.IsStream,
@@ -375,11 +390,16 @@ func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
 	_ = model.CreateLog(l)
 }
 
-func channelTypeOf(info *RelayInfo) int {
-	if info.Channel != nil {
-		return info.Channel.Type
+// apiTypeLabel 返回本次请求实际使用的上游协议可读名（基于解析后的 ApiType）。
+func apiTypeLabel(info *RelayInfo) string {
+	switch info.ApiType {
+	case constant.APITypeAnthropic:
+		return "Anthropic"
+	case constant.APITypeResponses:
+		return "OpenAI-Responses"
+	default:
+		return "OpenAI"
 	}
-	return 0
 }
 
 func setSSEHeaders(c *gin.Context) {

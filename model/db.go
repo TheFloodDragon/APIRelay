@@ -54,6 +54,7 @@ func migrate() error {
 		&Ability{},
 		&Token{},
 		&Log{},
+		&Setting{},
 	)
 }
 

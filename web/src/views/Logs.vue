@@ -50,13 +50,10 @@ onMounted(load)
   <div>
     <div class="flex items-center justify-between mb-6">
       <div>
-        <h2 class="text-2xl font-bold text-gray-900">调用日志</h2>
-        <p class="text-sm text-gray-500 mt-1">查看 API 调用历史与统计</p>
+        <h2 class="page-title">调用日志</h2>
+        <p class="page-subtitle">查看 API 调用历史与统计</p>
       </div>
-      <button @click="load" class="btn-secondary">
-        <span>🔄</span>
-        <span>刷新</span>
-      </button>
+      <button @click="load" class="btn-secondary">🔄 刷新</button>
     </div>
 
     <div class="table-wrapper">
@@ -80,32 +77,32 @@ onMounted(load)
           <tr v-for="l in logs" :key="l.id">
             <td class="whitespace-nowrap text-xs">{{ fmt(l.created_at) }}</td>
             <td><span :class="typeClass(l.type)">{{ typeName(l.type) }}</span></td>
-            <td class="text-gray-700">{{ l.channel_name || l.channel_id || '-' }}</td>
+            <td class="text-ink-600 dark:text-ink-300">{{ l.channel_name || l.channel_id || '-' }}</td>
             <td>
               <div class="flex gap-1">
                 <span :class="protocolBadge(l.endpoint_type)">{{ l.endpoint_type }}</span>
                 <span v-if="l.api_type" :class="protocolBadge(l.api_type)">{{ l.api_type }}</span>
               </div>
             </td>
-            <td class="whitespace-nowrap text-xs font-mono text-gray-700">
+            <td class="whitespace-nowrap text-xs font-mono text-ink-600 dark:text-ink-300">
               {{ l.src_model }}
-              <span v-if="l.mapped_model && l.mapped_model !== l.src_model" class="text-gray-400">
+              <span v-if="l.mapped_model && l.mapped_model !== l.src_model" class="text-ink-400">
                 → {{ l.mapped_model }}
               </span>
             </td>
             <td class="text-center">{{ l.is_stream ? '✓' : '' }}</td>
-            <td class="whitespace-nowrap text-xs text-gray-600">{{ l.prompt_tokens }}/{{ l.completion_tokens }}</td>
-            <td class="text-gray-600">{{ l.use_time_ms }}ms</td>
-            <td class="text-gray-600">{{ l.first_byte_ms ? l.first_byte_ms + 'ms' : '-' }}</td>
+            <td class="whitespace-nowrap text-xs text-ink-500">{{ l.prompt_tokens }}/{{ l.completion_tokens }}</td>
+            <td class="text-ink-500">{{ l.use_time_ms }}ms</td>
+            <td class="text-ink-500">{{ l.first_byte_ms ? l.first_byte_ms + 'ms' : '-' }}</td>
             <td>
               <span v-if="l.status >= 400" class="badge-error">{{ l.status }}</span>
               <span v-else class="badge-success">{{ l.status }}</span>
             </td>
-            <td class="text-red-600 text-xs max-w-[160px] truncate" :title="l.error">{{ l.error }}</td>
+            <td class="text-red-500 text-xs max-w-[160px] truncate" :title="l.error">{{ l.error }}</td>
           </tr>
           <tr v-if="!logs.length">
             <td colspan="11" class="empty-state">
-              <div class="text-4xl mb-2">📝</div>
+              <div class="text-5xl mb-3 opacity-60">📝</div>
               <div>暂无日志</div>
             </td>
           </tr>

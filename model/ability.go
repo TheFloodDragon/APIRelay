@@ -21,7 +21,7 @@ func SyncChannelAbilities(c *Channel) error {
 	}
 	enabled := c.Status == ChannelStatusEnabled
 	var abilities []Ability
-	for _, m := range c.ModelList() {
+	for _, m := range c.EnabledModelNames() {
 		abilities = append(abilities, Ability{
 			Group:     c.Group,
 			Model:     m,

@@ -45,3 +45,43 @@ func ChannelTypeName(channelType int) string {
 		return "Unknown"
 	}
 }
+
+// 协议标识名（与前端下拉、模型/规则的 protocol 字段对应）。
+const (
+	APINameOpenAI    = "openai"
+	APINameAnthropic = "anthropic"
+	APINameResponses = "responses"
+)
+
+// APITypeFromName 将协议标识名解析为 APIType。
+// 第二个返回值表示是否命中（未命中默认按 OpenAI）。
+func APITypeFromName(name string) (APIType, bool) {
+	switch name {
+	case APINameOpenAI:
+		return APITypeOpenAI, true
+	case APINameAnthropic:
+		return APITypeAnthropic, true
+	case APINameResponses:
+		return APITypeResponses, true
+	default:
+		return APITypeOpenAI, false
+	}
+}
+
+// APITypeName 返回 APIType 的协议标识名。
+func APITypeName(t APIType) string {
+	switch t {
+	case APITypeAnthropic:
+		return APINameAnthropic
+	case APITypeResponses:
+		return APINameResponses
+	default:
+		return APINameOpenAI
+	}
+}
+
+// APITypeFromChannelType 将渠道类型映射为协议标识名（供应商默认协议）。
+func APITypeNameFromChannelType(channelType int) string {
+	t, _ := ChannelType2APIType(channelType)
+	return APITypeName(t)
+}
