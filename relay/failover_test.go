@@ -8,7 +8,7 @@ import (
 )
 
 func TestFailoverState_FatalOnNonRetryable(t *testing.T) {
-	s := NewFailoverState(60)
+	s := NewFailoverState(60, 2)
 	d := s.OnFailure(1, http.StatusBadRequest, false, "bad request")
 	if d != DecisionFatal {
 		t.Fatalf("expected fatal, got %d", d)
@@ -16,7 +16,7 @@ func TestFailoverState_FatalOnNonRetryable(t *testing.T) {
 }
 
 func TestFailoverState_SameChannelThenSwitch(t *testing.T) {
-	s := NewFailoverState(60)
+	s := NewFailoverState(60, 2)
 	// 429 是瞬时错误，前 maxSameChannelRetries 次应同渠道重试
 	for i := 0; i < defaultMaxSameChannelRetries; i++ {
 		d := s.OnFailure(7, http.StatusTooManyRequests, true, "rate limited")
@@ -35,7 +35,7 @@ func TestFailoverState_SameChannelThenSwitch(t *testing.T) {
 }
 
 func TestFailoverState_NonTransientRetryableSwitches(t *testing.T) {
-	s := NewFailoverState(60)
+	s := NewFailoverState(60, 2)
 	// 502 可重试但非"瞬时"类别，应直接切换渠道而非同渠道重试
 	d := s.OnFailure(3, http.StatusBadGateway, true, "bad gateway")
 	if d != DecisionSwitchChannel {
