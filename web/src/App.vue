@@ -42,82 +42,67 @@ function logout() {
       <router-view />
     </div>
 
-    <div v-else class="min-h-screen flex bg-surface">
-      <!-- ===== 左侧紧凑导航 ===== -->
-      <aside class="w-[212px] shrink-0 flex flex-col border-r border-line bg-panel">
-        <!-- 品牌 -->
-        <div class="px-4 h-14 flex items-center gap-2.5 border-b border-line">
-          <div class="w-7 h-7 rounded-md flex items-center justify-center text-surface" style="background-color: rgb(var(--c-signal))">
-            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M13 2L4.5 13.5h6L9 22l9.5-12h-6z"/></svg>
+    <div v-else class="min-h-screen flex">
+      <!-- 侧边栏 -->
+      <aside class="w-64 shrink-0 flex flex-col bg-surface border-r border-border">
+        <!-- Logo -->
+        <div class="h-16 px-6 flex items-center gap-3 border-b border-border">
+          <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-primary to-accent flex items-center justify-center">
+            <svg viewBox="0 0 24 24" class="w-6 h-6 text-white" fill="currentColor">
+              <path d="M13 2L4.5 13.5h6L9 22l9.5-12h-6z"/>
+            </svg>
           </div>
-          <div class="leading-none">
-            <div class="font-mono text-sm font-semibold text-t1 tracking-tight">APIRelay</div>
-            <div class="tick mt-0.5">SIGNAL ROUTER</div>
+          <div>
+            <div class="text-base font-semibold text-text">APIRelay</div>
+            <div class="text-xs text-text-muted">信号路由</div>
           </div>
         </div>
 
-        <!-- 导航：图标 + 标签，active 信号色左条 + 等宽序号 -->
-        <nav class="flex-1 p-2 space-y-0.5 overflow-y-auto">
+        <!-- 导航 -->
+        <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
           <router-link
-            v-for="(n, i) in nav" :key="n.name" :to="n.path"
-            class="group relative flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-md text-sm transition-colors"
+            v-for="n in nav" :key="n.name" :to="n.path"
+            class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all"
             :class="route.name === n.name
-              ? 'bg-panel-2 text-t1'
-              : 'text-t2 hover:text-t1 hover:bg-panel-2'"
+              ? 'bg-primary text-white shadow-lg shadow-primary/30'
+              : 'text-text-dim hover:text-text hover:bg-elevated'"
           >
-            <span v-if="route.name === n.name" class="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-signal"></span>
-            <span class="font-mono text-2xs w-4 text-center" :class="route.name === n.name ? 'text-signal' : 'text-t3'">{{ String(i + 1).padStart(2, '0') }}</span>
-            <svg viewBox="0 0 24 24" class="w-4 h-4 shrink-0" fill="currentColor"><path :d="n.icon"/></svg>
-            <span class="font-medium">{{ n.label }}</span>
+            <svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor"><path :d="n.icon"/></svg>
+            <span>{{ n.label }}</span>
           </router-link>
         </nav>
 
-        <!-- 退出 -->
-        <div class="p-2 border-t border-line">
+        <!-- 底部 -->
+        <div class="p-3 border-t border-border space-y-2">
+          <div class="flex items-center gap-2 px-3 py-2">
+            <div class="status-dot status-dot-online"></div>
+            <span class="text-xs text-text-muted">{{ VERSION }}</span>
+          </div>
           <button @click="logout"
-            class="w-full flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-md text-sm text-t2 hover:text-[rgb(var(--c-down))] hover:bg-[rgb(var(--c-down)/0.06)] transition-colors">
-            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M16 17v-3H9v-4h7V7l5 5-5 5zM14 2a2 2 0 012 2v2h-2V4H5v16h9v-2h2v2a2 2 0 01-2 2H5a2 2 0 01-2-2V4a2 2 0 012-2h9z"/></svg>
-            <span>退出登录</span>
+            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text-dim hover:text-danger hover:bg-danger/10 transition-all">
+            <svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor">
+              <path d="M16 17v-3H9v-4h7V7l5 5-5 5zM14 2a2 2 0 012 2v2h-2V4H5v16h9v-2h2v2a2 2 0 01-2 2H5a2 2 0 01-2-2V4a2 2 0 012-2h9z"/>
+            </svg>
+            <span>退出</span>
           </button>
         </div>
       </aside>
 
-      <!-- ===== 主内容区 ===== -->
-      <main class="flex-1 flex flex-col overflow-hidden min-w-0">
-        <!-- 顶部细 header -->
-        <header class="h-14 shrink-0 px-5 flex items-center justify-between border-b border-line bg-panel">
-          <!-- 路径刻度面包屑 -->
-          <div class="flex items-center gap-2 font-mono text-xs">
-            <span class="text-t3">{{ String(activeIdx + 1).padStart(2, '0') }}</span>
-            <span class="text-line-strong">/</span>
-            <span class="text-t1 font-medium">{{ activeLabel }}</span>
-          </div>
-
-          <div class="flex items-center gap-3">
-            <!-- 在线脉冲点 -->
-            <div class="hidden sm:flex items-center gap-1.5">
-              <SignalDot status="online" />
-              <span class="font-mono text-2xs text-t3">{{ VERSION }}</span>
-            </div>
-
-            <!-- 主题切换 -->
-            <button @click="toggle"
-              class="w-8 h-8 flex items-center justify-center rounded-md text-t2 hover:text-t1 hover:bg-panel-2 transition-colors"
-              :title="theme === 'dark' ? '切换到亮色' : '切换到暗色'">
-              <svg v-if="theme === 'dark'" viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M12 7a5 5 0 100 10 5 5 0 000-10zM12 1v3m0 16v3M4.2 4.2l2.1 2.1m11.4 11.4l2.1 2.1M1 12h3m16 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
-              <svg v-else viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M12 3a9 9 0 109 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 01-7.54-7.54c-.44-.06-.9-.1-1.36-.1z"/></svg>
-            </button>
-
-            <!-- admin -->
-            <div class="flex items-center gap-2 pl-3 border-l border-line">
-              <div class="w-7 h-7 rounded-md border border-line bg-panel-2 flex items-center justify-center text-t1 text-xs font-mono font-semibold">A</div>
-              <span class="text-xs text-t2 hidden sm:block font-mono">admin</span>
+      <!-- 主内容 -->
+      <main class="flex-1 flex flex-col overflow-hidden">
+        <!-- 顶部栏 -->
+        <header class="h-16 shrink-0 px-6 flex items-center justify-between bg-panel/50 backdrop-blur-sm border-b border-border">
+          <h1 class="text-xl font-semibold text-text">{{ activeLabel }}</h1>
+          <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-elevated">
+              <div class="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center text-primary text-sm font-semibold">A</div>
+              <span class="text-sm text-text">admin</span>
             </div>
           </div>
         </header>
 
-        <div class="flex-1 overflow-auto p-5">
-          <div class="animate-fade-in max-w-[1400px] mx-auto">
+        <div class="flex-1 overflow-auto p-6">
+          <div class="animate-fade-in max-w-7xl mx-auto">
             <router-view />
           </div>
         </div>
