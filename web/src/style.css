@@ -2,242 +2,120 @@
 @tailwind components;
 @tailwind utilities;
 
-/*
-  APIRelay ——「信号路由控制台」设计令牌
-  颜色以 RGB 通道形式声明，供 tailwind 的 <alpha-value> 机制使用。
-*/
 @layer base {
   :root {
-    /* 亮色：冷白基底 + 示波器青 */
-    --c-surface: 246 247 249;     /* #f6f7f9 */
-    --c-panel: 255 255 255;       /* #ffffff */
-    --c-panel-2: 241 243 246;     /* #f1f3f6 内嵌区 */
-    --c-line: 227 230 235;        /* #e3e6eb hairline */
-    --c-line-strong: 209 214 221; /* #d1d6dd */
+    /* 电信交换机配色：深蓝机房 + 橙红警示 */
+    --c-surface: 15 23 42;
+    --c-panel: 30 41 59;
+    --c-panel-2: 51 65 85;
+    --c-line: 71 85 105;
+    --c-line-strong: 100 116 139;
 
-    --c-t1: 23 28 38;             /* 主文 */
-    --c-t2: 82 92 106;            /* 次文 */
-    --c-t3: 139 148 161;          /* 弱文 / 刻度 */
+    --c-t1: 248 250 252;
+    --c-t2: 203 213 225;
+    --c-t3: 148 163 184;
 
-    --c-signal: 17 179 163;       /* #11b3a3 示波器青 */
-    --c-signal-soft: 209 240 236; /* 信号色低饱和底 */
+    --c-signal: 251 146 60;
+    --c-signal-soft: 67 56 55;
 
-    --c-online: 22 163 110;       /* 绿 */
-    --c-warn: 201 138 16;         /* 琥珀 */
-    --c-down: 211 64 64;          /* 红 */
+    --c-online: 34 197 94;
+    --c-warn: 234 179 8;
+    --c-down: 239 68 68;
 
-    font-family: "IBM Plex Sans", Inter, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-family: "JetBrains Mono", "SF Mono", Consolas, Monaco, monospace;
     -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    color-scheme: light;
-  }
-
-  .dark {
-    /* 暗色：仪表面板黑 + 高亮青绿 */
-    --c-surface: 11 14 20;        /* #0b0e14 仪表面板黑 */
-    --c-panel: 17 21 31;          /* #11151f */
-    --c-panel-2: 23 28 40;        /* #171c28 内嵌区 */
-    --c-line: 30 36 47;           /* #1e242f hairline */
-    --c-line-strong: 43 51 66;    /* #2b3342 */
-
-    --c-t1: 232 236 242;          /* 主文 */
-    --c-t2: 158 168 182;          /* 次文 */
-    --c-t3: 102 113 130;          /* 弱文 / 刻度 */
-
-    --c-signal: 45 212 191;       /* #2dd4bf */
-    --c-signal-soft: 16 49 49;    /* 信号色低饱和底 */
-
-    --c-online: 52 199 142;
-    --c-warn: 224 168 56;
-    --c-down: 244 110 110;
-
     color-scheme: dark;
   }
 
-  html {
-    @apply transition-colors duration-200;
-  }
+  html { @apply transition-colors duration-200; }
   body {
     @apply bg-surface text-t1;
-    background-image:
-      linear-gradient(rgb(var(--c-line) / 0.5) 1px, transparent 1px),
-      linear-gradient(90deg, rgb(var(--c-line) / 0.5) 1px, transparent 1px);
-    background-size: 32px 32px;
-    background-position: -1px -1px;
+    background-image: radial-gradient(circle at 1px 1px, rgb(var(--c-line) / 0.15) 1px, transparent 0);
+    background-size: 40px 40px;
   }
 
-  /* reduce-motion：尊重系统偏好，关闭非必要动效 */
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
-      animation-duration: 0.001ms !important;
-      animation-iteration-count: 1 !important;
-      transition-duration: 0.001ms !important;
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
     }
   }
 
-  /* 滚动条：细线风格 */
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
-  ::-webkit-scrollbar-thumb {
-    @apply rounded-full border-2 border-solid border-transparent bg-clip-content;
-    background-color: rgb(var(--c-line-strong) / 0.8);
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background-color: rgb(var(--c-t3) / 0.7);
-  }
+  ::-webkit-scrollbar-thumb { @apply rounded bg-line-strong/50; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-line-strong; }
 
-  /* 焦点可见：信号色环（可访问性） */
-  :focus-visible {
-    @apply outline-none;
-    box-shadow: 0 0 0 2px rgb(var(--c-surface)), 0 0 0 4px rgb(var(--c-signal) / 0.7);
-    border-radius: 4px;
-  }
+  :focus-visible { @apply outline-none ring-2 ring-signal/60 rounded; }
 }
 
 @layer components {
-  /* ============ 按钮 ============ */
+  /* 按钮 */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium
-           transition-colors duration-150 select-none
-           disabled:opacity-45 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded font-medium text-sm
+           transition-all duration-150 border disabled:opacity-50 disabled:cursor-not-allowed;
   }
-  .btn-primary {
-    @apply btn text-surface font-semibold;
-    background-color: rgb(var(--c-signal));
-  }
-  .btn-primary:hover:not(:disabled) { background-color: rgb(var(--c-signal) / 0.88); }
-  .btn-secondary {
-    @apply btn bg-panel border border-line text-t2 hover:text-t1 hover:border-line-strong;
-  }
-  .btn-danger {
-    @apply btn bg-transparent border text-[rgb(var(--c-down))] border-[rgb(var(--c-down)/0.35)]
-           hover:bg-[rgb(var(--c-down)/0.08)];
-  }
-  .btn-ghost {
-    @apply btn text-t2 hover:text-t1 hover:bg-panel-2;
-  }
-  .btn-sm { @apply px-2.5 py-1.5 text-xs rounded-md; }
+  .btn-primary { @apply btn bg-signal text-surface border-signal hover:bg-signal/90; }
+  .btn-secondary { @apply btn bg-panel-2 text-t1 border-line hover:border-line-strong; }
+  .btn-ghost { @apply btn text-t2 border-transparent hover:text-t1 hover:bg-panel-2; }
+  .btn-danger { @apply btn bg-down/10 text-down border-down/30 hover:bg-down/20; }
+  .btn-sm { @apply px-3 py-1 text-xs; }
 
-  /* ============ 输入框 ============ */
+  /* 表单 */
   .input {
-    @apply w-full px-3 py-2 rounded-lg text-sm transition-colors bg-panel-2 border border-line text-t1
-           placeholder:text-t3 focus:outline-none focus:border-[rgb(var(--c-signal))]
-           disabled:opacity-60 disabled:cursor-not-allowed;
+    @apply w-full px-3 py-2 rounded text-sm bg-panel-2 border border-line text-t1
+           placeholder:text-t3 transition-colors
+           focus:outline-none focus:border-signal focus:ring-2 focus:ring-signal/20
+           disabled:opacity-50 disabled:cursor-not-allowed;
   }
-  .input:focus {
-    box-shadow: 0 0 0 2px rgb(var(--c-signal) / 0.25);
-  }
-  select.input { @apply cursor-pointer; }
-  .input-error { @apply border-[rgb(var(--c-down))]; }
+  .label { @apply block text-xs font-medium text-t2 mb-1 uppercase tracking-wide; }
+  .hint { @apply text-xs text-t3 mt-1; }
 
-  .label {
-    @apply block text-xs font-medium text-t2 mb-1.5;
-  }
-  .hint { @apply text-2xs text-t3 mt-1 leading-relaxed; }
+  /* 面板 */
+  .panel { @apply bg-panel border border-line rounded-lg overflow-hidden; }
+  .inset { @apply bg-panel-2 border border-line/50 rounded; }
 
-  /* ============ 面板 / 卡片 ============ */
-  .panel {
-    @apply bg-panel border border-line rounded-lg;
-  }
-  .panel-pad { @apply panel p-5; }
-  /* 内嵌软分区 */
-  .inset {
-    @apply bg-panel-2 border border-line rounded-lg;
-  }
+  /* 刻度标签 */
+  .tick { @apply text-xs font-medium text-t3 uppercase tracking-wider; }
 
-  /* ============ 刻度标签（弱文 + 字间距） ============ */
-  .tick {
-    @apply text-2xs font-medium text-t3 uppercase;
-    letter-spacing: 0.12em;
-  }
-  .mono { @apply font-mono; }
+  /* 徽章 */
+  .badge { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border; }
+  .badge-signal { @apply bg-signal/10 text-signal border-signal/30; }
+  .badge-online { @apply bg-online/10 text-online border-online/30; }
+  .badge-warn { @apply bg-warn/10 text-warn border-warn/30; }
+  .badge-down { @apply bg-down/10 text-down border-down/30; }
+  .badge-neutral { @apply bg-panel-2 text-t2 border-line; }
 
-  /* ============ 徽章 ============ */
-  .badge {
-    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-medium border;
-  }
-  .badge-signal {
-    color: rgb(var(--c-signal));
-    background-color: rgb(var(--c-signal) / 0.10);
-    border-color: rgb(var(--c-signal) / 0.30);
-  }
-  .badge-online {
-    color: rgb(var(--c-online));
-    background-color: rgb(var(--c-online) / 0.10);
-    border-color: rgb(var(--c-online) / 0.30);
-  }
-  .badge-warn {
-    color: rgb(var(--c-warn));
-    background-color: rgb(var(--c-warn) / 0.10);
-    border-color: rgb(var(--c-warn) / 0.30);
-  }
-  .badge-down {
-    color: rgb(var(--c-down));
-    background-color: rgb(var(--c-down) / 0.10);
-    border-color: rgb(var(--c-down) / 0.30);
-  }
-  .badge-neutral {
-    @apply text-t2 bg-panel-2 border-line;
-  }
-
-  /* ============ 数据表（密集） ============ */
-  .dtable { @apply w-full text-sm border-collapse; }
-  .dtable thead th {
-    @apply px-3 py-2 text-left tick whitespace-nowrap border-b border-line bg-panel-2;
-  }
-  .dtable tbody td {
-    @apply px-3 py-2 text-t1 border-b border-line align-middle;
-  }
-  .dtable tbody tr:hover { background-color: rgb(var(--c-signal) / 0.04); }
+  /* 数据表 */
+  .dtable { @apply w-full text-sm; }
+  .dtable thead th { @apply px-3 py-2 text-left tick border-b border-line bg-panel-2; }
+  .dtable tbody td { @apply px-3 py-2 text-t1 border-b border-line; }
+  .dtable tbody tr:hover { @apply bg-signal/5; }
   .dtable tbody tr:last-child td { @apply border-b-0; }
 
-  /* ============ 模态框 ============ */
+  /* 模态框 */
   .modal-backdrop {
-    @apply fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in;
-    background-color: rgb(var(--c-surface) / 0.7);
-    backdrop-filter: blur(3px);
+    @apply fixed inset-0 z-50 flex items-center justify-center p-4;
+    background: rgba(15, 23, 42, 0.8);
+    backdrop-filter: blur(4px);
   }
-  .modal {
-    @apply bg-panel border border-line-strong rounded-lg shadow-pop w-full p-5 animate-pop-in
-           max-h-[90vh] overflow-auto;
-  }
-  .modal-header {
-    @apply flex items-center justify-between mb-4 pb-3 border-b border-line;
-  }
+  .modal { @apply bg-panel border border-line-strong rounded-lg w-full p-5 max-h-[90vh] overflow-auto; }
+  .modal-header { @apply flex items-center justify-between mb-4 pb-3 border-b border-line; }
   .modal-title { @apply text-base font-semibold text-t1; }
 
-  /* ============ 开关 ============ */
-  .toggle {
-    @apply relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer bg-line-strong;
-  }
-  .toggle-on { background-color: rgb(var(--c-signal)); }
-  .toggle-knob {
-    @apply inline-block h-3.5 w-3.5 transform rounded-full bg-panel transition-transform translate-x-0.5;
-  }
+  /* 开关 */
+  .toggle { @apply relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer bg-line; }
+  .toggle-on { @apply bg-signal; }
+  .toggle-knob { @apply inline-block h-3.5 w-3.5 rounded-full bg-t1 transition-transform translate-x-0.5; }
   .toggle-on .toggle-knob { @apply translate-x-[18px]; }
 
-  /* ============ 骨架屏 ============ */
-  .skeleton {
-    @apply rounded relative overflow-hidden bg-panel-2;
-  }
-  .skeleton::after {
-    content: '';
-    @apply absolute inset-0 animate-sweep;
-    background: linear-gradient(90deg, transparent, rgb(var(--c-line) / 0.7), transparent);
-  }
+  /* 骨架屏 */
+  .skeleton { @apply rounded bg-panel-2 animate-pulse; }
 
-  /* ============ 空状态 ============ */
-  .empty-state {
-    @apply flex flex-col items-center justify-center py-12 text-t3 text-sm gap-2;
-  }
+  /* 空状态 */
+  .empty-state { @apply flex flex-col items-center justify-center py-16 text-t3 text-sm gap-2; }
 
-  /* ============ 分页 ============ */
-  .page-btn {
-    @apply px-2.5 py-1.5 rounded-md border border-line text-t2 hover:text-t1 hover:border-line-strong
-           disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-xs;
-  }
-
-  /* ============ 页面标题 ============ */
-  .page-title { @apply text-lg font-semibold text-t1 tracking-tight; }
-  .page-subtitle { @apply text-xs text-t2 mt-0.5; }
+  /* 页面标题 */
+  .page-title { @apply text-2xl font-bold text-t1 tracking-tight; }
+  .page-subtitle { @apply text-sm text-t3 mt-1; }
 }
