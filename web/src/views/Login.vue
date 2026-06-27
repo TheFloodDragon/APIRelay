@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '../composables/useToast'
+import SignalDot from '../components/SignalDot.vue'
 import api from '../api'
 
 const router = useRouter()
@@ -33,42 +34,56 @@ async function login() {
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center p-4 bg-ink-50 dark:bg-ink-950 bg-mesh-light dark:bg-mesh-dark relative overflow-hidden">
-    <!-- 背景光晕 -->
-    <div class="absolute -top-24 -left-24 w-96 h-96 rounded-full bg-brand-400/20 blur-3xl animate-float"></div>
-    <div class="absolute -bottom-24 -right-24 w-96 h-96 rounded-full bg-purple-400/20 blur-3xl animate-float" style="animation-delay: -2s"></div>
-
-    <div class="w-full max-w-md relative">
-      <!-- 品牌 -->
-      <div class="text-center mb-8">
-        <div class="inline-flex items-center justify-center w-16 h-16 bg-brand-gradient rounded-2xl shadow-glow mb-4 animate-float text-white">
-          <svg viewBox="0 0 24 24" class="w-8 h-8" fill="currentColor"><path d="M13 2L4.5 13.5h6L9 22l9.5-12h-6z"/></svg>
+  <div class="min-h-screen flex items-center justify-center p-4 bg-surface relative">
+    <div class="w-full max-w-sm relative">
+      <!-- 品牌：开机感 -->
+      <div class="flex items-center gap-2.5 mb-6">
+        <div class="w-9 h-9 rounded-md flex items-center justify-center text-surface" style="background-color: rgb(var(--c-signal))">
+          <svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor"><path d="M13 2L4.5 13.5h6L9 22l9.5-12h-6z"/></svg>
         </div>
-        <h1 class="text-3xl font-bold text-ink-900 dark:text-ink-50 mb-2">APIRelay</h1>
-        <p class="text-sm text-ink-500 dark:text-ink-400">AI 模型聚合中转平台</p>
+        <div class="leading-tight">
+          <div class="font-mono text-base font-semibold text-t1 tracking-tight">APIRelay</div>
+          <div class="tick mt-0.5">SIGNAL ROUTER CONSOLE</div>
+        </div>
       </div>
 
-      <!-- 登录卡片 -->
-      <div class="card animate-slide-in">
-        <h2 class="text-lg font-semibold text-ink-900 dark:text-ink-100 mb-6">管理后台登录</h2>
-        <form @submit.prevent="login" class="space-y-4">
-          <div>
-            <label class="label">用户名</label>
-            <input v-model="username" class="input" placeholder="请输入用户名" autocomplete="username" />
-          </div>
-          <div>
-            <label class="label">密码</label>
-            <input v-model="password" type="password" class="input" placeholder="请输入密码" autocomplete="current-password" />
-          </div>
-          <button type="submit" :disabled="loading" class="btn-primary w-full mt-6">
-            <span v-if="loading">登录中...</span>
-            <span v-else>登录</span>
-          </button>
-        </form>
-      </div>
+      <!-- 终端卡片 -->
+      <div class="panel overflow-hidden animate-pop-in">
+        <!-- 开机扫描条 -->
+        <div class="h-[2px] bg-line relative overflow-hidden">
+          <div class="absolute inset-y-0 w-1/3 bg-signal animate-sweep"></div>
+        </div>
 
-      <div class="text-center mt-6 text-xs text-ink-400 dark:text-ink-600">
-        默认账号: admin / admin123
+        <div class="p-5">
+          <div class="flex items-center justify-between mb-5">
+            <span class="font-mono text-sm text-t1">// 管理后台登录</span>
+            <div class="flex items-center gap-1.5">
+              <SignalDot status="online" />
+              <span class="tick">ONLINE</span>
+            </div>
+          </div>
+
+          <form @submit.prevent="login" class="space-y-4">
+            <div>
+              <label class="label">用户名</label>
+              <input v-model="username" class="input font-mono" placeholder="username" autocomplete="username" />
+            </div>
+            <div>
+              <label class="label">密码</label>
+              <input v-model="password" type="password" class="input font-mono" placeholder="password" autocomplete="current-password" />
+            </div>
+            <button type="submit" :disabled="loading" class="btn-primary w-full mt-5">
+              <span v-if="loading" class="font-mono">连接中…</span>
+              <span v-else>接入控制台</span>
+            </button>
+          </form>
+        </div>
+
+        <!-- 底部刻度 -->
+        <div class="px-5 py-2.5 border-t border-line flex items-center justify-between font-mono text-2xs text-t3">
+          <span>默认 admin / admin123</span>
+          <span>v0.1.0</span>
+        </div>
       </div>
     </div>
   </div>

@@ -1,86 +1,98 @@
 /** @type {import('tailwindcss').Config} */
+//
+// APIRelay 设计令牌 ——「信号路由控制台」
+// 隐喻：工程仪表面板（示波器/频谱仪/机舱仪表）
+// 配色策略：石墨冷灰基底 + 单一信号色（示波器青绿），状态语义色仅用于点与细条。
+// 颜色通过 CSS 变量驱动（见 style.css），支持亮/暗双主题与 alpha 通道。
+//
+const v = (name) => `rgb(var(${name}) / <alpha-value>)`
+
 export default {
   darkMode: 'class',
   content: ['./index.html', './src/**/*.{vue,js,ts}'],
   theme: {
     extend: {
       colors: {
-        brand: {
-          50: '#eef2ff',
-          100: '#e0e7ff',
-          200: '#c7d2fe',
-          300: '#a5b4fc',
-          400: '#818cf8',
-          500: '#6366f1',
-          600: '#4f46e5',
-          700: '#4338ca',
-          800: '#3730a3',
-          900: '#312e81',
-        },
-        // 暗色界面用的中性色（基于石板灰，偏冷）
-        ink: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#0a0f1d',
-        },
+        // 结构层
+        surface: v('--c-surface'),     // 最底层背景（仪表面板黑 / 冷白）
+        panel: v('--c-panel'),         // 面板/卡片
+        'panel-2': v('--c-panel-2'),   // 次级面板（输入框、内嵌区）
+        line: v('--c-line'),           // hairline 分隔线（主要分隔手段）
+        'line-strong': v('--c-line-strong'),
+
+        // 文本三级灰阶
+        t1: v('--c-t1'),               // 主文
+        t2: v('--c-t2'),               // 次文
+        t3: v('--c-t3'),               // 弱文 / 刻度标签
+
+        // 唯一强调：信号色（示波器青绿）
+        signal: v('--c-signal'),
+        'signal-soft': v('--c-signal-soft'),
+
+        // 状态语义色（仅用于脉冲点 / 细条）
+        online: v('--c-online'),       // 绿 在线
+        warn: v('--c-warn'),           // 琥珀 降级/限流/冷却
+        down: v('--c-down'),           // 红 故障/禁用
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Microsoft YaHei', 'sans-serif'],
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
+        // 数据 / 数字 / ID / 模型名 —— 等宽（签名所在）
+        mono: ['"IBM Plex Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
+        // 界面标题 / 正文 —— 工程感无衬线
+        sans: ['"IBM Plex Sans"', 'Inter', 'system-ui', '-apple-system', 'Segoe UI', '"Microsoft YaHei"', 'sans-serif'],
+      },
+      fontSize: {
+        // 明确的类型刻度
+        '2xs': ['11px', { lineHeight: '14px' }],
+        xs: ['12px', { lineHeight: '16px' }],
+        sm: ['13px', { lineHeight: '18px' }],
+        base: ['15px', { lineHeight: '22px' }],
+        lg: ['20px', { lineHeight: '26px' }],
+        xl: ['28px', { lineHeight: '32px' }],
+      },
+      borderRadius: {
+        // 克制圆角：8px 为主
+        DEFAULT: '6px',
+        md: '6px',
+        lg: '8px',
+        xl: '10px',
       },
       boxShadow: {
-        card: '0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04)',
-        'card-hover': '0 8px 24px -6px rgb(79 70 229 / 0.18), 0 4px 10px -4px rgb(0 0 0 / 0.08)',
-        modal: '0 24px 60px -12px rgb(15 23 42 / 0.45)',
-        glow: '0 0 0 1px rgb(99 102 241 / 0.25), 0 8px 30px -6px rgb(99 102 241 / 0.35)',
-      },
-      backgroundImage: {
-        'brand-gradient': 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%)',
-        'mesh-light': 'radial-gradient(at 20% 0%, rgb(224 231 255 / 0.6) 0px, transparent 50%), radial-gradient(at 80% 100%, rgb(243 232 255 / 0.5) 0px, transparent 50%)',
-        'mesh-dark': 'radial-gradient(at 20% 0%, rgb(49 46 129 / 0.35) 0px, transparent 50%), radial-gradient(at 80% 100%, rgb(76 29 149 / 0.25) 0px, transparent 50%)',
+        // 去重阴影，仅保留极轻浮层 / 弹窗
+        panel: '0 1px 2px 0 rgb(0 0 0 / 0.04)',
+        pop: '0 8px 28px -8px rgb(0 0 0 / 0.30)',
+        'signal-focus': '0 0 0 2px rgb(var(--c-signal) / 0.35)',
       },
       keyframes: {
         'fade-in': {
-          '0%': { opacity: '0', transform: 'translateY(6px)' },
-          '100%': { opacity: '1', transform: 'translateY(0)' },
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
         },
-        'slide-in': {
-          '0%': { opacity: '0', transform: 'translateY(16px) scale(0.98)' },
+        'pop-in': {
+          '0%': { opacity: '0', transform: 'translateY(6px) scale(0.99)' },
           '100%': { opacity: '1', transform: 'translateY(0) scale(1)' },
         },
-        'slide-in-right': {
-          '0%': { opacity: '0', transform: 'translateX(20px)' },
-          '100%': { opacity: '1', transform: 'translateX(0)' },
+        // 在线脉冲点：信号色向外扩散
+        'signal-pulse': {
+          '0%': { boxShadow: '0 0 0 0 rgb(var(--c-online) / 0.55)' },
+          '70%': { boxShadow: '0 0 0 5px rgb(var(--c-online) / 0)' },
+          '100%': { boxShadow: '0 0 0 0 rgb(var(--c-online) / 0)' },
         },
-        shimmer: {
-          '0%': { backgroundPosition: '-400px 0' },
-          '100%': { backgroundPosition: '400px 0' },
+        // 开机序列：扫描线
+        sweep: {
+          '0%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(100%)' },
         },
-        'pulse-ring': {
-          '0%': { boxShadow: '0 0 0 0 rgb(34 197 94 / 0.5)' },
-          '70%': { boxShadow: '0 0 0 6px rgb(34 197 94 / 0)' },
-          '100%': { boxShadow: '0 0 0 0 rgb(34 197 94 / 0)' },
-        },
-        float: {
-          '0%, 100%': { transform: 'translateY(0)' },
-          '50%': { transform: 'translateY(-6px)' },
+        'boot-line': {
+          '0%': { transform: 'scaleX(0)', opacity: '0.2' },
+          '100%': { transform: 'scaleX(1)', opacity: '1' },
         },
       },
       animation: {
-        'fade-in': 'fade-in 0.25s ease-out',
-        'slide-in': 'slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
-        'slide-in-right': 'slide-in-right 0.25s ease-out',
-        shimmer: 'shimmer 1.4s linear infinite',
-        'pulse-ring': 'pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        float: 'float 4s ease-in-out infinite',
+        'fade-in': 'fade-in 0.2s ease-out',
+        'pop-in': 'pop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+        'signal-pulse': 'signal-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        sweep: 'sweep 1.6s linear infinite',
+        'boot-line': 'boot-line 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
       },
     },
   },
