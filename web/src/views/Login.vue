@@ -34,55 +34,44 @@ async function login() {
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center p-4 bg-surface relative">
-    <div class="w-full max-w-sm relative">
-      <!-- 品牌：开机感 -->
-      <div class="flex items-center gap-2.5 mb-6">
-        <div class="w-9 h-9 rounded-md flex items-center justify-center text-surface" style="background-color: rgb(var(--c-signal))">
-          <svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor"><path d="M13 2L4.5 13.5h6L9 22l9.5-12h-6z"/></svg>
+  <div class="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-bg to-surface">
+    <div class="w-full max-w-md">
+      <!-- 品牌 -->
+      <div class="flex items-center justify-center gap-3 mb-8">
+        <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center shadow-lg shadow-primary/30">
+          <svg viewBox="0 0 24 24" class="w-7 h-7 text-white" fill="currentColor">
+            <path d="M13 2L4.5 13.5h6L9 22l9.5-12h-6z"/>
+          </svg>
         </div>
-        <div class="leading-tight">
-          <div class="font-mono text-base font-semibold text-t1 tracking-tight">APIRelay</div>
-          <div class="tick mt-0.5">SIGNAL ROUTER CONSOLE</div>
+        <div>
+          <div class="text-xl font-bold text-text">APIRelay</div>
+          <div class="text-sm text-text-muted">信号路由控制台</div>
         </div>
       </div>
 
-      <!-- 终端卡片 -->
-      <div class="panel overflow-hidden animate-pop-in">
-        <!-- 开机扫描条 -->
-        <div class="h-[2px] bg-line relative overflow-hidden">
-          <div class="absolute inset-y-0 w-1/3 bg-signal animate-sweep"></div>
+      <!-- 登录卡片 -->
+      <div class="card p-8 animate-fade-in">
+        <div class="flex items-center gap-2 mb-6">
+          <div class="status-dot status-dot-online"></div>
+          <span class="text-sm text-text-dim">系统在线</span>
         </div>
 
-        <div class="p-5">
-          <div class="flex items-center justify-between mb-5">
-            <span class="font-mono text-sm text-t1">// 管理后台登录</span>
-            <div class="flex items-center gap-1.5">
-              <SignalDot status="online" />
-              <span class="tick">ONLINE</span>
-            </div>
+        <form @submit.prevent="login" class="space-y-4">
+          <div>
+            <label class="label">用户名</label>
+            <input v-model="username" class="input" placeholder="admin" autocomplete="username" />
           </div>
+          <div>
+            <label class="label">密码</label>
+            <input v-model="password" type="password" class="input" placeholder="输入密码" autocomplete="current-password" @keyup.enter="login" />
+          </div>
+          <button type="submit" :disabled="loading" class="btn-primary w-full mt-6">
+            {{ loading ? '连接中...' : '登录' }}
+          </button>
+        </form>
 
-          <form @submit.prevent="login" class="space-y-4">
-            <div>
-              <label class="label">用户名</label>
-              <input v-model="username" class="input font-mono" placeholder="username" autocomplete="username" />
-            </div>
-            <div>
-              <label class="label">密码</label>
-              <input v-model="password" type="password" class="input font-mono" placeholder="password" autocomplete="current-password" />
-            </div>
-            <button type="submit" :disabled="loading" class="btn-primary w-full mt-5">
-              <span v-if="loading" class="font-mono">连接中…</span>
-              <span v-else>接入控制台</span>
-            </button>
-          </form>
-        </div>
-
-        <!-- 底部刻度 -->
-        <div class="px-5 py-2.5 border-t border-line flex items-center justify-between font-mono text-2xs text-t3">
-          <span>默认 admin / admin123</span>
-          <span>v0.1.0</span>
+        <div class="mt-6 pt-6 border-t border-border text-xs text-text-muted text-center">
+          默认账号：admin / admin123
         </div>
       </div>
     </div>
