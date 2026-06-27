@@ -40,11 +40,14 @@ const (
 )
 
 // NewFailoverState 创建故障转移状态。
-func NewFailoverState(cooldownSeconds int) *FailoverState {
+func NewFailoverState(cooldownSeconds, channelMaxRetries int) *FailoverState {
+	if channelMaxRetries < 0 {
+		channelMaxRetries = defaultMaxSameChannelRetries
+	}
 	return &FailoverState{
 		FailedChannels:        make(map[int]struct{}),
 		SameChannelRetries:    make(map[int]int),
-		maxSameChannelRetries: defaultMaxSameChannelRetries,
+		maxSameChannelRetries: channelMaxRetries,
 		cooldownSeconds:       cooldownSeconds,
 	}
 }

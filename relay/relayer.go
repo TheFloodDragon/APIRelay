@@ -17,6 +17,7 @@ import (
 	"github.com/apirelay/apirelay/model"
 	"github.com/apirelay/apirelay/relay/adaptor"
 	"github.com/apirelay/apirelay/relay/apicompat"
+	"github.com/apirelay/apirelay/relay/circuitbreaker"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -145,7 +146,7 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 //   - 请求成功后清除该渠道冷却。
 func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, out Outbound) {
 	log := logger.FromContext(c.Request.Context())
-	state := NewFailoverState(r.cfg.CooldownSeconds)
+	state := NewFailoverState(r.cfg.CooldownSeconds, r.cfg.ChannelMaxRetries)
 
 	maxSwitches := r.cfg.MaxRetries
 	if maxSwitches < 1 {
@@ -153,7 +154,11 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 	}
 	switches := 0
 	// hardCap 防止同渠道重试导致的无限循环（切换预算 + 每渠道重试预算）。
-	hardCap := maxSwitches + (maxSwitches+1)*defaultMaxSameChannelRetries + 2
+	maxRetries := r.cfg.ChannelMaxRetries
+	if maxRetries < 0 {
+		maxRetries = 2
+	}
+	hardCap := maxSwitches + (maxSwitches+1)*maxRetries + 2
 
 	for iter := 0; iter < hardCap && switches < maxSwitches; iter++ {
 		nowMs := time.Now().UnixMilli()
@@ -201,8 +206,12 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		status, retryable, err := r.doOnce(c, info, ir, ad, out)
 		if err == nil {
 			model.ClearChannelCooldown(ch.Id) // 成功后清除冷却
+			circuitbreaker.GetManager().RecordSuccess(ch.Id) // 记录熔断器成功
 			return
 		}
+
+		// 记录熔断器失败
+		circuitbreaker.GetManager().RecordFailure(ch.Id, err.Error())
 
 		decision := state.OnFailure(ch.Id, status, retryable, err.Error())
 		log.Warn("relay.attempt_failed",

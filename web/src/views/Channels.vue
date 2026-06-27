@@ -74,6 +74,9 @@
 
           <!-- 操作 -->
           <div class="flex justify-end gap-2 max-lg:hidden">
+            <button @click="resetBreaker(ch)" class="btn-ghost btn-sm" title="重置熔断器">
+              <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="currentColor"><path d="M12 5V2L8 6l4 4V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8zm-6 8c0-2.97 2.17-5.43 5-5.91V5.07C7.05 5.56 4 8.92 4 13c0 4.42 3.58 8 8 8v-3l4 4-4 4v-3c-4.42 0-8-3.58-8-8z"/></svg>
+            </button>
             <button @click="openEdit(ch)" class="btn-ghost btn-sm">配置</button>
             <button @click="remove(ch)" class="btn-danger btn-sm">删除</button>
           </div>
@@ -508,6 +511,15 @@ async function remove(ch) {
     await load()
   } catch (e) {
     toast.error('删除失败: ' + e.message)
+  }
+}
+
+async function resetBreaker(ch) {
+  try {
+    await api.post(`/channels/${ch.id}/health/reset`)
+    toast.success(`已重置渠道「${ch.name}」的熔断器`)
+  } catch (e) {
+    toast.error('重置失败: ' + e.message)
   }
 }
 

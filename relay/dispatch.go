@@ -4,6 +4,7 @@ import (
 	"math/rand"
 
 	"github.com/apirelay/apirelay/model"
+	"github.com/apirelay/apirelay/relay/circuitbreaker"
 )
 
 // SelectChannel 从候选渠道中选择一个用于本次（重试）请求。
@@ -24,7 +25,8 @@ func SelectChannel(group, model_ string, excluded map[int]struct{}, nowMs int64)
 		return nil, nil
 	}
 
-	// 过滤 excluded 与冷却
+	// 过滤 excluded 与冷却 与熔断开路
+	mgr := circuitbreaker.GetManager()
 	avail := make([]model.ChannelCandidate, 0, len(candidates))
 	for _, cand := range candidates {
 		if excluded != nil {
@@ -33,6 +35,10 @@ func SelectChannel(group, model_ string, excluded map[int]struct{}, nowMs int64)
 			}
 		}
 		if cand.Channel.CooldownUntil > nowMs {
+			continue
+		}
+		// 过滤熔断开路的渠道
+		if !mgr.IsChannelAllowed(cand.Channel.Id) {
 			continue
 		}
 		avail = append(avail, cand)

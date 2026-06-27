@@ -11,6 +11,7 @@ import (
 	"github.com/apirelay/apirelay/common/config"
 	"github.com/apirelay/apirelay/common/logger"
 	"github.com/apirelay/apirelay/model"
+	"github.com/apirelay/apirelay/relay/circuitbreaker"
 	"github.com/apirelay/apirelay/router"
 
 	"go.uber.org/zap"
@@ -40,6 +41,16 @@ func main() {
 	// 启动异步 worker（日志落库 + 配额结算），退出前优雅 flush
 	model.StartAsyncWorker()
 	defer model.StopAsyncWorker()
+
+	// 初始化熔断器管理器
+	circuitbreaker.InitManager(circuitbreaker.Config{
+		FailureThreshold:   cfg.Relay.CircuitBreaker.FailureThreshold,
+		SuccessThreshold:   cfg.Relay.CircuitBreaker.SuccessThreshold,
+		TimeoutSeconds:     cfg.Relay.CircuitBreaker.TimeoutSeconds,
+		ErrorRateThreshold: cfg.Relay.CircuitBreaker.ErrorRateThreshold,
+		MinRequests:        cfg.Relay.CircuitBreaker.MinRequests,
+		ChannelMaxRetries:  cfg.Relay.ChannelMaxRetries,
+	})
 
 	bootstrap(cfg)
 

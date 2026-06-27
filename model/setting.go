@@ -152,3 +152,17 @@ func invalidateModelPricesCache() {
 	modelPricesCache = nil
 	modelPricesMu.Unlock()
 }
+
+// UnmarshalSetting 将 JSON 字符串反序列化为对象
+func UnmarshalSetting(jsonStr string, v interface{}) error {
+	return json.Unmarshal([]byte(jsonStr), v)
+}
+
+// SaveSettingJSON 将对象序列化为 JSON 并保存到 settings 表
+func SaveSettingJSON(key string, v interface{}) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return SetSetting(key, string(data))
+}

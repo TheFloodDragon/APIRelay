@@ -42,12 +42,24 @@ type LogConfig struct {
 type RelayConfig struct {
 	// MaxRetries 单次请求跨渠道最大切换次数
 	MaxRetries int `yaml:"max_retries"`
+	// ChannelMaxRetries 单个渠道的重试次数
+	ChannelMaxRetries int `yaml:"channel_max_retries"`
 	// CooldownSeconds 渠道失败后的冷却时间（秒）
 	CooldownSeconds int `yaml:"cooldown_seconds"`
 	// RequestTimeout 上游请求超时（秒），0 表示不限
 	RequestTimeout int `yaml:"request_timeout"`
 	// DefaultGroup 令牌未指定分组时使用的默认分组
 	DefaultGroup string `yaml:"default_group"`
+	// CircuitBreaker 熔断器配置
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+}
+
+type CircuitBreakerConfig struct {
+	FailureThreshold   int     `yaml:"failure_threshold"`    // 连续失败触发熔断
+	SuccessThreshold   int     `yaml:"success_threshold"`    // 半开状态恢复所需成功次数
+	TimeoutSeconds     int     `yaml:"timeout_seconds"`      // 熔断超时进入半开
+	ErrorRateThreshold float64 `yaml:"error_rate_threshold"` // 错误率阈值
+	MinRequests        int     `yaml:"min_requests"`         // 统计窗口最小请求数
 }
 
 type AuthConfig struct {
@@ -67,10 +79,18 @@ func Default() *Config {
 		},
 		Log: LogConfig{Level: "info", Path: "./logs", Format: "console"},
 		Relay: RelayConfig{
-			MaxRetries:      3,
-			CooldownSeconds: 60,
-			RequestTimeout:  0,
-			DefaultGroup:    "default",
+			MaxRetries:        3,
+			ChannelMaxRetries: 1,
+			CooldownSeconds:   60,
+			RequestTimeout:    0,
+			DefaultGroup:      "default",
+			CircuitBreaker: CircuitBreakerConfig{
+				FailureThreshold:   5,
+				SuccessThreshold:   2,
+				TimeoutSeconds:     30,
+				ErrorRateThreshold: 0.5,
+				MinRequests:        10,
+			},
 		},
 		Auth: AuthConfig{},
 	}

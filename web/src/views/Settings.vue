@@ -89,6 +89,53 @@
         <button class="btn-ghost btn-sm mt-3" @click="prices.push({ model: '', input: 0, output: 0 })">+ 添加价格</button>
       </div>
     </div>
+
+    <!-- ===== 熔断器配置 ===== -->
+    <div class="panel mt-4">
+      <div class="px-4 h-11 flex items-center justify-between border-b border-line">
+        <div>
+          <span class="font-mono text-sm font-medium text-t1">熔断器配置</span>
+          <span class="tick ml-2">CIRCUIT BREAKER</span>
+        </div>
+        <button class="btn-primary btn-sm" :disabled="savingBreaker" @click="saveBreaker">{{ savingBreaker ? '保存中…' : '保存' }}</button>
+      </div>
+
+      <div class="p-4">
+        <p class="hint mb-4">自动熔断故障渠道，防止级联失败。熔断后等待超时时间进入半开试探。</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div>
+            <label class="label">失败阈值</label>
+            <input v-model.number="breaker.failure_threshold" type="number" min="1" class="input" />
+            <p class="hint mt-1">连续失败多少次触发熔断</p>
+          </div>
+          <div>
+            <label class="label">恢复阈值</label>
+            <input v-model.number="breaker.success_threshold" type="number" min="1" class="input" />
+            <p class="hint mt-1">半开状态连续成功多少次恢复</p>
+          </div>
+          <div>
+            <label class="label">熔断超时（秒）</label>
+            <input v-model.number="breaker.timeout_seconds" type="number" min="1" class="input" />
+            <p class="hint mt-1">熔断后多久进入半开试探</p>
+          </div>
+          <div>
+            <label class="label">错误率阈值</label>
+            <input v-model.number="breaker.error_rate_threshold" type="number" min="0" max="1" step="0.01" class="input" />
+            <p class="hint mt-1">错误率超过此值触发熔断（0-1）</p>
+          </div>
+          <div>
+            <label class="label">最小请求数</label>
+            <input v-model.number="breaker.min_requests" type="number" min="1" class="input" />
+            <p class="hint mt-1">统计窗口最小请求数</p>
+          </div>
+          <div>
+            <label class="label">单渠道重试次数</label>
+            <input v-model.number="breaker.channel_max_retries" type="number" min="0" class="input" />
+            <p class="hint mt-1">同一渠道临时错误重试次数</p>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -104,6 +151,15 @@ const saving = ref(false)
 const testModel = ref('')
 const prices = ref([])
 const savingPrices = ref(false)
+const breaker = ref({
+  failure_threshold: 5,
+  success_threshold: 2,
+  timeout_seconds: 30,
+  error_rate_threshold: 0.5,
+  min_requests: 10,
+  channel_max_retries: 1,
+})
+const savingBreaker = ref(false)
 
 const testResult = computed(() => {
   const m = testModel.value.trim()
@@ -119,14 +175,16 @@ const testResult = computed(() => {
 
 async function load() {
   try {
-    const [r, p, mp] = await Promise.all([
+    const [r, p, mp, cb] = await Promise.all([
       api.get('/settings/protocol-rules'),
       api.get('/protocols'),
       api.get('/settings/model-prices'),
+      api.get('/settings/circuit-breaker'),
     ])
     rules.value = (r || []).map(x => ({ pattern: x.pattern || '', protocol: x.protocol || 'anthropic' }))
     protocols.value = p || []
     prices.value = (mp || []).map(x => ({ model: x.model || '', input: x.input || 0, output: x.output || 0 }))
+    if (cb) breaker.value = cb
   } catch (e) {
     toast.error('加载失败: ' + e.message)
   }
@@ -159,6 +217,18 @@ async function savePrices() {
     toast.error('保存失败: ' + e.message)
   } finally {
     savingPrices.value = false
+  }
+}
+
+async function saveBreaker() {
+  savingBreaker.value = true
+  try {
+    await api.put('/settings/circuit-breaker', breaker.value)
+    toast.success('熔断器配置已保存')
+  } catch (e) {
+    toast.error('保存失败: ' + e.message)
+  } finally {
+    savingBreaker.value = false
   }
 }
 

@@ -8,18 +8,21 @@ import PriorityBar from '../components/PriorityBar.vue'
 const data = ref({ channel_count: 0, stat: {} })
 const modelCount = ref(0)
 const channels = ref([])
+const healthStats = ref({})
 const loading = ref(true)
 
 onMounted(async () => {
   try {
-    const [dash, models, chs] = await Promise.all([
+    const [dash, models, chs, health] = await Promise.all([
       api.get('/dashboard'),
       api.get('/models').catch(() => []),
       api.get('/channels').catch(() => []),
+      api.get('/settings/health-stats').catch(() => ({})),
     ])
     data.value = dash
     modelCount.value = (models || []).length
     channels.value = chs || []
+    healthStats.value = health || {}
   } finally {
     loading.value = false
   }
@@ -33,9 +36,9 @@ const usd = (micro) => '$' + ((micro || 0) / 1_000_000).toFixed(4)
 const dials = computed(() => [
   { label: 'CHANNELS', value: fmt(data.value.channel_count), accent: true },
   { label: 'MODELS', value: fmt(modelCount.value), accent: true },
+  { label: 'CIRCUIT OPEN', value: fmt(healthStats.value.open || 0), state: 'down' },
   { label: 'REQUESTS · 7D', value: fmt(stat.value.total_requests) },
   { label: 'PROMPT TK', value: fmt(stat.value.total_prompt_tokens), unit: 'tk' },
-  { label: 'COMPLETION TK', value: fmt(stat.value.total_completion_tokens), unit: 'tk' },
   { label: 'SPEND · 7D', value: usd(stat.value.total_quota) },
 ])
 
@@ -79,7 +82,7 @@ const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'onli
       </div>
     </div>
     <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-      <StatDial v-for="d in dials" :key="d.label" :label="d.label" :value="d.value" :unit="d.unit" :accent="d.accent" />
+      <StatDial v-for="d in dials" :key="d.label" :label="d.label" :value="d.value" :unit="d.unit" :accent="d.accent" :status="d.state" />
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">

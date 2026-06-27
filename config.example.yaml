@@ -12,10 +12,19 @@ log:
   format: console       # console | json
 
 relay:
-  max_retries: 3
-  cooldown_seconds: 60
-  request_timeout: 0    # 秒，0 表示不限（流式）
+  max_retries: 3           # 跨渠道总重试次数
+  channel_max_retries: 1   # 单个渠道重试次数
+  cooldown_seconds: 60     # 渠道故障冷却时间
+  request_timeout: 0       # 秒，0 表示不限（流式）
   default_group: default
+
+  # 熔断器配置
+  circuit_breaker:
+    failure_threshold: 5       # 连续失败次数触发熔断
+    success_threshold: 2       # 半开状态连续成功次数恢复
+    timeout_seconds: 30        # 熔断后多久进入半开试探
+    error_rate_threshold: 0.5  # 错误率阈值（0-1）
+    min_requests: 10           # 统计窗口最小请求数
 
 auth:
   session_secret: ""    # 管理后台会话密钥（留空自动）
