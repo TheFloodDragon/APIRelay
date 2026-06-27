@@ -48,6 +48,10 @@ func (m *Manager) GetBreaker(channelID int) *CircuitBreaker {
 	breaker := NewCircuitBreaker(channelID, m.cfg)
 	breaker.state = health.CircuitState
 	breaker.openedAt = health.CircuitOpenedAt
+	breaker.consecutiveFailures = health.ConsecutiveFailures
+	breaker.consecutiveSuccesses = health.ConsecutiveSuccesses
+	breaker.totalRequests = health.TotalRequests
+	breaker.failedRequests = health.FailedRequests
 
 	actual, _ := m.breakers.LoadOrStore(channelID, breaker)
 	return actual.(*CircuitBreaker)

@@ -9,11 +9,15 @@ import (
 
 // CircuitBreaker 熔断器实例（per-channel）
 type CircuitBreaker struct {
-	channelID int
-	cfg       Config
-	mu        sync.RWMutex
-	state     model.CircuitState
-	openedAt  *time.Time
+	channelID            int
+	cfg                  Config
+	mu                   sync.RWMutex
+	state                model.CircuitState
+	openedAt             *time.Time
+	consecutiveFailures  int
+	consecutiveSuccesses int
+	totalRequests        int
+	failedRequests       int
 }
 
 // NewCircuitBreaker 创建新的熔断器实例
@@ -27,8 +31,8 @@ func NewCircuitBreaker(channelID int, cfg Config) *CircuitBreaker {
 
 // IsAllowed 判断请求是否允许通过
 func (cb *CircuitBreaker) IsAllowed() bool {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
 	if cb.state == model.CircuitClosed {
 		return true
@@ -36,11 +40,7 @@ func (cb *CircuitBreaker) IsAllowed() bool {
 	if cb.state == model.CircuitOpen {
 		// 检查是否超过超时时间，可以进入半开状态
 		if cb.openedAt != nil && time.Since(*cb.openedAt) > time.Duration(cb.cfg.TimeoutSeconds)*time.Second {
-			cb.mu.RUnlock()
-			cb.mu.Lock()
 			cb.state = model.CircuitHalfOpen
-			cb.mu.Unlock()
-			cb.mu.RLock()
 			return true
 		}
 		return false
@@ -54,28 +54,22 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	// 从数据库加载当前状态
-	health, err := model.GetChannelHealth(cb.channelID)
-	if err != nil {
-		return
-	}
-
 	now := time.Now()
-	health.LastSuccessAt = &now
-	health.ConsecutiveFailures = 0
-	health.ConsecutiveSuccesses++
-	health.TotalRequests++
+	cb.consecutiveFailures = 0
+	cb.consecutiveSuccesses++
+	cb.totalRequests++
 
 	// 状态转换逻辑
-	if cb.state == model.CircuitHalfOpen && health.ConsecutiveSuccesses >= cb.cfg.SuccessThreshold {
+	prevState := cb.state
+	if cb.state == model.CircuitHalfOpen && cb.consecutiveSuccesses >= cb.cfg.SuccessThreshold {
 		cb.state = model.CircuitClosed
-		health.CircuitState = model.CircuitClosed
-		health.CircuitOpenedAt = nil
-	} else {
-		health.CircuitState = cb.state
+		cb.openedAt = nil
 	}
 
-	_ = model.UpsertChannelHealth(health)
+	// 异步持久化
+	if prevState != cb.state || cb.totalRequests%10 == 0 {
+		go cb.persist(now, true, "")
+	}
 }
 
 // RecordFailure 记录失败请求
@@ -83,47 +77,57 @@ func (cb *CircuitBreaker) RecordFailure(errMsg string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	health, err := model.GetChannelHealth(cb.channelID)
-	if err != nil {
-		return
-	}
-
 	now := time.Now()
-	health.LastFailureAt = &now
-	health.LastError = errMsg
-	health.ConsecutiveSuccesses = 0
-	health.ConsecutiveFailures++
-	health.TotalRequests++
-	health.FailedRequests++
+	cb.consecutiveSuccesses = 0
+	cb.consecutiveFailures++
+	cb.totalRequests++
+	cb.failedRequests++
 
 	// 状态转换逻辑
 	shouldOpen := false
 	if cb.state == model.CircuitHalfOpen {
-		// 半开状态任何失败都直接熔断
 		shouldOpen = true
 	} else if cb.state == model.CircuitClosed {
-		// 闭合状态检查是否达到阈值
-		if health.ConsecutiveFailures >= cb.cfg.FailureThreshold {
+		if cb.consecutiveFailures >= cb.cfg.FailureThreshold {
 			shouldOpen = true
 		}
-		// 或检查错误率
-		if health.TotalRequests >= cb.cfg.MinRequests {
-			errorRate := float64(health.FailedRequests) / float64(health.TotalRequests)
+		if cb.totalRequests >= cb.cfg.MinRequests {
+			errorRate := float64(cb.failedRequests) / float64(cb.totalRequests)
 			if errorRate >= cb.cfg.ErrorRateThreshold {
 				shouldOpen = true
 			}
 		}
 	}
 
+	prevState := cb.state
 	if shouldOpen {
 		cb.state = model.CircuitOpen
 		cb.openedAt = &now
-		health.CircuitState = model.CircuitOpen
-		health.CircuitOpenedAt = &now
-	} else {
-		health.CircuitState = cb.state
 	}
 
+	// 异步持久化（状态变化或每10次请求）
+	if prevState != cb.state || cb.totalRequests%10 == 0 {
+		go cb.persist(now, false, errMsg)
+	}
+}
+
+// persist 异步持久化到数据库
+func (cb *CircuitBreaker) persist(timestamp time.Time, isSuccess bool, errMsg string) {
+	health := &model.ChannelHealth{
+		ChannelId:            cb.channelID,
+		ConsecutiveFailures:  cb.consecutiveFailures,
+		ConsecutiveSuccesses: cb.consecutiveSuccesses,
+		TotalRequests:        cb.totalRequests,
+		FailedRequests:       cb.failedRequests,
+		CircuitState:         cb.state,
+		CircuitOpenedAt:      cb.openedAt,
+	}
+	if isSuccess {
+		health.LastSuccessAt = &timestamp
+	} else {
+		health.LastFailureAt = &timestamp
+		health.LastError = errMsg
+	}
 	_ = model.UpsertChannelHealth(health)
 }
 
