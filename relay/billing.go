@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"sync"
+
 	"github.com/apirelay/apirelay/dto"
 	"github.com/apirelay/apirelay/model"
 )
@@ -14,6 +16,106 @@ const (
 	// tokensPerPriceUnit 价格以每 100 万 token 计。
 	tokensPerPriceUnit = 1_000_000.0
 )
+
+// BillingSession 管理一次请求的预扣、结算与失败退款，保证重复调用不会重复扣退。
+type BillingSession struct {
+	mu       sync.Mutex
+	tokenID  int
+	reserved int64
+	settled  bool
+	refunded bool
+}
+
+// NewBillingSession 创建一次请求的计费会话。
+func NewBillingSession(tokenID int) *BillingSession {
+	if tokenID <= 0 {
+		return nil
+	}
+	return &BillingSession{tokenID: tokenID}
+}
+
+// TokenID 返回会话绑定的 token id。
+func (b *BillingSession) TokenID() int {
+	if b == nil {
+		return 0
+	}
+	return b.tokenID
+}
+
+// Reserved 返回已预扣额度。
+func (b *BillingSession) Reserved() int64 {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reserved
+}
+
+// Reserve 预扣额度。预扣成功后纳入会话管理，后续可被一次性结算或退款。
+func (b *BillingSession) Reserve(amount int64) error {
+	if b == nil || amount <= 0 {
+		return nil
+	}
+	if err := model.PreConsumeQuota(b.tokenID, amount); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.reserved += amount
+	b.mu.Unlock()
+	return nil
+}
+
+// Settle 同步结算额度，重复调用仅第一次生效。
+func (b *BillingSession) Settle(actual int64) error {
+	reserved, ok := b.markSettled()
+	if !ok {
+		return nil
+	}
+	return model.SettleQuota(b.tokenID, reserved, actual)
+}
+
+// AsyncLogAndSettle 异步写消费日志并结算额度，重复调用仅第一次触发结算。
+func (b *BillingSession) AsyncLogAndSettle(l *model.Log, actual int64) {
+	reserved, ok := b.markSettled()
+	if !ok {
+		model.AsyncLog(l)
+		return
+	}
+	model.AsyncLogAndSettle(l, b.tokenID, reserved, actual)
+}
+
+// Refund 失败路径退款，重复调用仅第一次生效；已结算的会话不会退款。
+func (b *BillingSession) Refund() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	if b.settled || b.refunded || b.reserved <= 0 {
+		b.mu.Unlock()
+		return false
+	}
+	b.refunded = true
+	reserved := b.reserved
+	tokenID := b.tokenID
+	b.mu.Unlock()
+
+	model.RefundQuota(tokenID, reserved)
+	return true
+}
+
+func (b *BillingSession) markSettled() (int64, bool) {
+	if b == nil {
+		return 0, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.settled || b.refunded {
+		return 0, false
+	}
+	b.settled = true
+	return b.reserved, true
+}
 
 // ResolvePrice 解析某渠道下指定显示模型的 input/output 价格（USD / 1M tokens）。
 //

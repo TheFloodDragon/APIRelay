@@ -42,7 +42,7 @@ func (a *Adaptor) SetupRequestHeader(info *relaycommon.RelayInfo, h http.Header)
 	if info.IsStream {
 		h.Set("Accept", "text/event-stream")
 	}
-	for k, v := range info.Channel.HeaderOverrideMap() {
+	for k, v := range info.Channel.SafeHeaderOverrideMap() {
 		h.Set(k, v)
 	}
 	return nil

@@ -25,7 +25,7 @@ func ProbeModels(ch *model.Channel) ([]string, error) {
 		return nil, err
 	}
 	setProbeAuth(ch, req.Header)
-	for k, v := range ch.HeaderOverrideMap() {
+	for k, v := range ch.SafeHeaderOverrideMap() {
 		req.Header.Set(k, v)
 	}
 

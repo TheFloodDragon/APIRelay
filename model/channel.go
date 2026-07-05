@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 
 	"github.com/apirelay/apirelay/constant"
@@ -166,6 +167,40 @@ func (c *Channel) HeaderOverrideMap() map[string]string {
 	return m
 }
 
+var headerOverrideDenylist = map[string]struct{}{
+	"authorization":     {},
+	"x-api-key":         {},
+	"anthropic-version": {},
+	"content-length":    {},
+	"host":              {},
+	"connection":        {},
+	"transfer-encoding": {},
+	"content-type":      {},
+}
+
+// SafeHeaderOverrideMap 返回过滤后的 HeaderOverride，避免覆盖鉴权、协议与传输关键请求头。
+func (c *Channel) SafeHeaderOverrideMap() map[string]string {
+	raw := c.HeaderOverrideMap()
+	if len(raw) == 0 {
+		return nil
+	}
+	safe := make(map[string]string, len(raw))
+	for k, v := range raw {
+		name := strings.TrimSpace(k)
+		if name == "" {
+			continue
+		}
+		if _, denied := headerOverrideDenylist[strings.ToLower(name)]; denied {
+			continue
+		}
+		safe[http.CanonicalHeaderKey(name)] = v
+	}
+	if len(safe) == 0 {
+		return nil
+	}
+	return safe
+}
+
 func splitComma(s string) []string {
 	parts := strings.Split(s, ",")
 	out := make([]string, 0, len(parts))
@@ -179,23 +214,27 @@ func splitComma(s string) []string {
 
 // CreateChannel 创建渠道并同步 Ability 索引。
 func CreateChannel(c *Channel) error {
-	c.backfillModels()
-	c.CreatedAt = nowMilli()
-	c.UpdatedAt = c.CreatedAt
-	if err := DB.Create(c).Error; err != nil {
-		return err
-	}
-	return SyncChannelAbilities(c)
+	return DB.Transaction(func(tx *gorm.DB) error {
+		c.backfillModels()
+		c.CreatedAt = nowMilli()
+		c.UpdatedAt = c.CreatedAt
+		if err := tx.Create(c).Error; err != nil {
+			return err
+		}
+		return syncChannelAbilitiesTx(tx, c)
+	})
 }
 
 // UpdateChannel 更新渠道并同步 Ability 索引。
 func UpdateChannel(c *Channel) error {
-	c.backfillModels()
-	c.UpdatedAt = nowMilli()
-	if err := DB.Save(c).Error; err != nil {
-		return err
-	}
-	return SyncChannelAbilities(c)
+	return DB.Transaction(func(tx *gorm.DB) error {
+		c.backfillModels()
+		c.UpdatedAt = nowMilli()
+		if err := tx.Save(c).Error; err != nil {
+			return err
+		}
+		return syncChannelAbilitiesTx(tx, c)
+	})
 }
 
 // backfillModels 用启用模型的显示名回填 Models 字段，使旧聚合查询继续有效。
@@ -208,10 +247,12 @@ func (c *Channel) backfillModels() {
 
 // DeleteChannel 删除渠道及其 Ability 索引。
 func DeleteChannel(id int) error {
-	if err := DB.Where("channel_id = ?", id).Delete(&Ability{}).Error; err != nil {
-		return err
-	}
-	return DB.Delete(&Channel{}, id).Error
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("channel_id = ?", id).Delete(&Ability{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&Channel{}, id).Error
+	})
 }
 
 // GetChannelByID 按 ID 查询渠道。

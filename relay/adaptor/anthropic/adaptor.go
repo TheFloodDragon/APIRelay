@@ -44,7 +44,7 @@ func (a *Adaptor) SetupRequestHeader(info *relaycommon.RelayInfo, h http.Header)
 		h.Set("Accept", "text/event-stream")
 	}
 	// 渠道自定义请求头（可注入 Claude Code wire image 等）
-	for k, v := range info.Channel.HeaderOverrideMap() {
+	for k, v := range info.Channel.SafeHeaderOverrideMap() {
 		h.Set(k, v)
 	}
 	return nil

@@ -3,6 +3,7 @@ package relay
 import (
 	"testing"
 
+	"github.com/apirelay/apirelay/common/config"
 	"github.com/apirelay/apirelay/dto"
 	"github.com/apirelay/apirelay/model"
 )
@@ -67,5 +68,67 @@ func TestEstimateCompletionTokens(t *testing.T) {
 	}
 	if got := estimateCompletionTokens(&dto.UnifiedRequest{}); got != 1024 {
 		t.Errorf("default = %d, want 1024", got)
+	}
+}
+
+func setupBillingSessionTestDB(t *testing.T) {
+	t.Helper()
+	if err := model.InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	model.DB.Exec("DELETE FROM tokens")
+	model.DB.Exec("DELETE FROM logs")
+}
+
+func TestBillingSessionRefundOnlyOnce(t *testing.T) {
+	setupBillingSessionTestDB(t)
+	tok := &model.Token{Name: "billing-refund", Quota: 1000, Unlimited: false, Status: model.TokenStatusEnabled}
+	if err := model.CreateToken(tok, "k-billing-refund"); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	billing := NewBillingSession(tok.Id)
+	if err := billing.Reserve(400); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if !billing.Refund() {
+		t.Fatal("first refund should happen")
+	}
+	if billing.Refund() {
+		t.Fatal("second refund should be ignored")
+	}
+
+	var r model.Token
+	model.DB.First(&r, tok.Id)
+	if r.UsedQuota != 0 {
+		t.Fatalf("used quota after duplicate refund = %d, want 0", r.UsedQuota)
+	}
+}
+
+func TestBillingSessionSettleOnlyOnce(t *testing.T) {
+	setupBillingSessionTestDB(t)
+	tok := &model.Token{Name: "billing-settle", Quota: 1000, Unlimited: false, Status: model.TokenStatusEnabled}
+	if err := model.CreateToken(tok, "k-billing-settle"); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	billing := NewBillingSession(tok.Id)
+	if err := billing.Reserve(400); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if err := billing.Settle(100); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if err := billing.Settle(900); err != nil {
+		t.Fatalf("duplicate settle should be ignored: %v", err)
+	}
+	if billing.Refund() {
+		t.Fatal("refund after settle should be ignored")
+	}
+
+	var r model.Token
+	model.DB.First(&r, tok.Id)
+	if r.UsedQuota != 100 {
+		t.Fatalf("used quota after duplicate settle = %d, want 100", r.UsedQuota)
 	}
 }

@@ -126,8 +126,10 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 	}
 
 	// 模型白名单校验 + 额度预扣
+	var billing *BillingSession
 	if tok, ok := c.Get("token"); ok {
 		if t, _ := tok.(*model.Token); t != nil {
+			billing = NewBillingSession(t.Id)
 			if !t.AllowModel(ir.Model) {
 				msg := fmt.Sprintf("当前令牌无权使用模型 %q，请检查令牌的模型白名单设置", ir.Model)
 				out.WriteError(c, http.StatusForbidden, msg)
@@ -137,22 +139,22 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 			// 预扣额度（基于全局价格表估算；未配置价格则为 0，不扣费）
 			reserved := EstimateQuota(ir)
 			if reserved > 0 {
-				if err := model.PreConsumeQuota(t.Id, reserved); err != nil {
+				if err := billing.Reserve(reserved); err != nil {
 					out.WriteError(c, http.StatusForbidden, "令牌额度不足，请充值或调整额度后重试")
 					r.logError(info, http.StatusForbidden, "quota insufficient: need "+strconv.FormatInt(reserved, 10))
 					return
 				}
-				info.ReservedQuota = reserved
+				info.ReservedQuota = billing.Reserved()
 			}
 		}
 	}
+	defer func() {
+		if billing != nil {
+			billing.Refund()
+		}
+	}()
 
-	r.relayWithFailover(c, info, ir, out)
-
-	// 兜底退款：若已预扣额度但未发生结算（请求失败/未选到渠道等），全额退还。
-	if info.ReservedQuota > 0 && !info.Settled {
-		model.RefundQuota(info.TokenId, info.ReservedQuota)
-	}
+	r.relayWithFailover(c, info, ir, out, billing)
 }
 
 // relayWithFailover 执行带故障转移的转发主循环。
@@ -162,7 +164,7 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 //   - 临时性错误（429/503/504）在同渠道有限次重试（带退避）；
 //   - 其它可重试错误冷却当前渠道并切换；高优先级耗尽后自动降级；
 //   - 请求成功后清除该渠道冷却。
-func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, out Outbound) {
+func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, out Outbound, billing *BillingSession) {
 	log := logger.FromContext(c.Request.Context())
 	state := NewFailoverState(r.cfg.CooldownSeconds, r.cfg.ChannelMaxRetries)
 
@@ -232,7 +234,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 			zap.Bool("stream", info.IsStream),
 		)
 
-		status, retryable, err := r.doOnce(c, info, ir, ad, out)
+		status, retryable, err := r.doOnce(c, info, ir, ad, out, billing)
 		if err == nil {
 			model.ClearChannelCooldown(ch.Id)                // 成功后清除冷却
 			circuitbreaker.GetManager().RecordSuccess(ch.Id) // 记录熔断器成功
@@ -306,7 +308,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 // doOnce 对单个渠道执行一次完整转发。
 // 返回 (上游状态码, 是否可重试, error)；err==nil 表示成功。
-func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, out Outbound) (int, bool, error) {
+func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, out Outbound, billing *BillingSession) (int, bool, error) {
 	if err := relayContext(info).Err(); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return statusClientClosedRequest, false, err
@@ -348,12 +350,12 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 	}
 
 	if info.IsStream {
-		return r.handleStream(c, info, adp, resp, out)
+		return r.handleStream(c, info, adp, resp, out, billing)
 	}
-	return r.handleNonStream(c, info, adp, resp, out)
+	return r.handleNonStream(c, info, adp, resp, out, billing)
 }
 
-func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound) (int, bool, error) {
+func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound, billing *BillingSession) (int, bool, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		switch classifyRelayError(relayContext(info), err) {
@@ -376,11 +378,11 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.A
 	// 按对外协议序列化
 	out.WriteResponse(c, uniResp, info.OriginModel)
 
-	r.logConsume(info, &uniResp.Usage)
+	r.logConsume(info, &uniResp.Usage, billing)
 	return http.StatusOK, false, nil
 }
 
-func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound) (int, bool, error) {
+func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound, billing *BillingSession) (int, bool, error) {
 	// 透传上游 request-id，便于排障（需在写出响应头之前设置）
 	if info.UpstreamRequestId != "" {
 		c.Writer.Header().Set("X-Request-Id", info.UpstreamRequestId)
@@ -423,7 +425,7 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adap
 	if usage != nil {
 		u = *usage
 	}
-	r.logConsume(info, &u)
+	r.logConsume(info, &u, billing)
 	return http.StatusOK, false, nil
 }
 
@@ -449,7 +451,7 @@ func (r *Relayer) buildRelayInfo(c *gin.Context, ep constant.EndpointType) *Rela
 	return info
 }
 
-func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage) {
+func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage, billing *BillingSession) {
 	useTime := int(time.Now().UnixMilli() - info.StartAtMs)
 
 	// 按实际渠道价格计算消耗额度（微美元）
@@ -487,7 +489,9 @@ func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage) {
 
 	// 结算额度（预扣 -> 实际）并异步落库，避免阻塞响应。
 	info.Settled = true
-	if info.TokenId > 0 {
+	if billing != nil && billing.TokenID() > 0 {
+		billing.AsyncLogAndSettle(l, quota)
+	} else if info.TokenId > 0 {
 		model.AsyncLogAndSettle(l, info.TokenId, info.ReservedQuota, quota)
 	} else {
 		model.AsyncLog(l)

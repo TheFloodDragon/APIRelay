@@ -134,20 +134,30 @@ func RefundQuota(id int, amount int64) {
 		return
 	}
 	DB.Model(&Token{}).Where("id = ?", id).
-		UpdateColumn("used_quota", gorm.Expr("used_quota - ?", amount))
+		UpdateColumn("used_quota", gorm.Expr("CASE WHEN used_quota >= ? THEN used_quota - ? ELSE 0 END", amount, amount))
 }
 
 // SettleQuota 结算：将预扣额度调整为实际用量。
 //   - actual > reserved：补扣差额；
 //   - actual < reserved：退还差额；
 //   - 相等：无操作。
-func SettleQuota(id int, reserved, actual int64) {
+//
+// 限额令牌补扣差额时仍受 quota 约束，避免并发结算突破限额。
+func SettleQuota(id int, reserved, actual int64) error {
 	diff := actual - reserved
 	switch {
 	case diff > 0:
-		DB.Model(&Token{}).Where("id = ?", id).
+		res := DB.Model(&Token{}).
+			Where("id = ? AND (unlimited = ? OR used_quota + ? <= quota)", id, true, diff).
 			UpdateColumn("used_quota", gorm.Expr("used_quota + ?", diff))
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrQuotaInsufficient
+		}
 	case diff < 0:
 		RefundQuota(id, -diff)
 	}
+	return nil
 }

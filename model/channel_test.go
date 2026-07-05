@@ -56,3 +56,40 @@ func TestBackfillModels(t *testing.T) {
 		t.Errorf("backfilled Models = %q, want a,c", ch.Models)
 	}
 }
+
+func TestSafeHeaderOverrideMap(t *testing.T) {
+	ch := &Channel{HeaderOverride: `{
+		"Authorization":"Bearer bad",
+		"x-api-key":"bad-key",
+		"anthropic-version":"2024-01-01",
+		"Content-Length":"123",
+		"Host":"evil.example",
+		"Connection":"close",
+		"Transfer-Encoding":"chunked",
+		"Content-Type":"text/plain",
+		"X-Custom-Trace":"trace-1",
+		" x-extra ":"kept"
+	}`}
+
+	safe := ch.SafeHeaderOverrideMap()
+	for _, denied := range []string{
+		"Authorization",
+		"X-Api-Key",
+		"Anthropic-Version",
+		"Content-Length",
+		"Host",
+		"Connection",
+		"Transfer-Encoding",
+		"Content-Type",
+	} {
+		if _, ok := safe[denied]; ok {
+			t.Fatalf("denied header %q should be filtered, got %v", denied, safe)
+		}
+	}
+	if safe["X-Custom-Trace"] != "trace-1" {
+		t.Errorf("custom header missing: %v", safe)
+	}
+	if safe["X-Extra"] != "kept" {
+		t.Errorf("trimmed custom header missing: %v", safe)
+	}
+}

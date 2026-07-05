@@ -1,5 +1,7 @@
 package model
 
+import "gorm.io/gorm"
+
 // Ability 是 (group, model) -> channel 的倒排索引，用于按模型快速选渠道。
 type Ability struct {
 	Id        int    `json:"id" gorm:"primaryKey"`
@@ -18,7 +20,13 @@ const WildcardModel = "*"
 
 // SyncChannelAbilities 重建某渠道的 Ability 索引（每个 model 一行）。
 func SyncChannelAbilities(c *Channel) error {
-	if err := DB.Where("channel_id = ?", c.Id).Delete(&Ability{}).Error; err != nil {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		return syncChannelAbilitiesTx(tx, c)
+	})
+}
+
+func syncChannelAbilitiesTx(tx *gorm.DB, c *Channel) error {
+	if err := tx.Where("channel_id = ?", c.Id).Delete(&Ability{}).Error; err != nil {
 		return err
 	}
 	enabled := c.Status == ChannelStatusEnabled
@@ -36,7 +44,7 @@ func SyncChannelAbilities(c *Channel) error {
 	if len(abilities) == 0 {
 		return nil
 	}
-	return DB.Create(&abilities).Error
+	return tx.Create(&abilities).Error
 }
 
 // ResyncAllAbilities 重建所有渠道的 Ability 索引（启动时调用，自愈历史脏数据）。

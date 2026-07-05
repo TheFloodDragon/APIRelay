@@ -100,3 +100,47 @@ func TestRefundQuota(t *testing.T) {
 		t.Errorf("after refund: used = %d, want 0", r.UsedQuota)
 	}
 }
+
+func TestRefundQuota_DoesNotGoNegative(t *testing.T) {
+	setupQuotaTestDB(t)
+	tok := &Token{Name: "refund-floor", Quota: 5000, Unlimited: false, Status: TokenStatusEnabled}
+	CreateToken(tok, "k-refund-floor")
+	PreConsumeQuota(tok.Id, 100)
+	RefundQuota(tok.Id, 1000)
+	var r Token
+	DB.First(&r, tok.Id)
+	if r.UsedQuota != 0 {
+		t.Errorf("after over-refund: used = %d, want 0", r.UsedQuota)
+	}
+}
+
+func TestSettleQuota_DoesNotExceedLimitedQuota(t *testing.T) {
+	setupQuotaTestDB(t)
+	tok := &Token{Name: "settle-limit", Quota: 1000, Unlimited: false, Status: TokenStatusEnabled}
+	CreateToken(tok, "k-settle-limit")
+	if err := PreConsumeQuota(tok.Id, 900); err != nil {
+		t.Fatal(err)
+	}
+	if err := SettleQuota(tok.Id, 900, 1200); err != ErrQuotaInsufficient {
+		t.Fatalf("settle over quota error = %v, want ErrQuotaInsufficient", err)
+	}
+	var r Token
+	DB.First(&r, tok.Id)
+	if r.UsedQuota != 900 {
+		t.Errorf("used after failed settle = %d, want 900", r.UsedQuota)
+	}
+}
+
+func TestSettleQuota_UnlimitedCanExceedQuota(t *testing.T) {
+	setupQuotaTestDB(t)
+	tok := &Token{Name: "settle-unlimited", Quota: 0, Unlimited: true, Status: TokenStatusEnabled}
+	CreateToken(tok, "k-settle-unlimited")
+	if err := SettleQuota(tok.Id, 0, 1200); err != nil {
+		t.Fatalf("unlimited settle: %v", err)
+	}
+	var r Token
+	DB.First(&r, tok.Id)
+	if r.UsedQuota != 1200 {
+		t.Errorf("used after unlimited settle = %d, want 1200", r.UsedQuota)
+	}
+}

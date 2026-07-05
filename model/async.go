@@ -81,7 +81,9 @@ func processAsyncTask(t asyncTask) {
 		}
 	}
 	if t.settle != nil {
-		SettleQuota(t.settle.tokenID, t.settle.reserved, t.settle.actual)
+		if err := SettleQuota(t.settle.tokenID, t.settle.reserved, t.settle.actual); err != nil {
+			logger.L().Error("async settle quota failed", zap.Error(err))
+		}
 	}
 }
 
