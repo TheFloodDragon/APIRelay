@@ -235,18 +235,25 @@ function resetBreakerDefaults() {
   toast.info('已填入推荐默认值，保存后生效')
 }
 
+function breakerNumberOrDefault(value, fallback, { min = 1, max = null } = {}) {
+  if (value === '' || value === null || value === undefined) return fallback
+  const next = Number(value)
+  if (!Number.isFinite(next) || next < min) return fallback
+  return max === null ? next : Math.min(next, max)
+}
+
 async function saveBreaker() {
   savingBreaker.value = true
   try {
     const clean = {
       ...breaker.value,
-      failure_threshold: Number(breaker.value.failure_threshold) || defaultBreaker.failure_threshold,
-      success_threshold: Number(breaker.value.success_threshold) || defaultBreaker.success_threshold,
-      timeout_seconds: Number(breaker.value.timeout_seconds) || defaultBreaker.timeout_seconds,
-      error_rate_threshold: Number(breaker.value.error_rate_threshold) || defaultBreaker.error_rate_threshold,
-      min_requests: Number(breaker.value.min_requests) || defaultBreaker.min_requests,
-      window_seconds: Number(breaker.value.window_seconds) || defaultBreaker.window_seconds,
-      channel_max_retries: Number(breaker.value.channel_max_retries) || defaultBreaker.channel_max_retries,
+      failure_threshold: breakerNumberOrDefault(breaker.value.failure_threshold, defaultBreaker.failure_threshold),
+      success_threshold: breakerNumberOrDefault(breaker.value.success_threshold, defaultBreaker.success_threshold),
+      timeout_seconds: breakerNumberOrDefault(breaker.value.timeout_seconds, defaultBreaker.timeout_seconds),
+      error_rate_threshold: breakerNumberOrDefault(breaker.value.error_rate_threshold, defaultBreaker.error_rate_threshold, { max: 1 }),
+      min_requests: breakerNumberOrDefault(breaker.value.min_requests, defaultBreaker.min_requests),
+      window_seconds: breakerNumberOrDefault(breaker.value.window_seconds, defaultBreaker.window_seconds),
+      channel_max_retries: breakerNumberOrDefault(breaker.value.channel_max_retries, defaultBreaker.channel_max_retries, { min: 0 }),
     }
     await api.put('/settings/circuit-breaker', clean)
     breaker.value = clean
