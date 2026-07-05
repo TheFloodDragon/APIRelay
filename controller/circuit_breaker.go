@@ -86,5 +86,5 @@ func UpdateCircuitBreakerConfig(c *gin.Context) {
 	// 更新运行时配置
 	circuitbreaker.GetManager().UpdateConfig(cfg)
 
-	c.JSON(http.StatusOK, gin.H{"message": "config updated"})
+	c.JSON(http.StatusOK, gin.H{"message": "config updated", "config": cfg})
 }

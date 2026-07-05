@@ -255,8 +255,8 @@ async function saveBreaker() {
       window_seconds: breakerNumberOrDefault(breaker.value.window_seconds, defaultBreaker.window_seconds),
       channel_max_retries: breakerNumberOrDefault(breaker.value.channel_max_retries, defaultBreaker.channel_max_retries, { min: 0 }),
     }
-    await api.put('/settings/circuit-breaker', clean)
-    breaker.value = clean
+    const resp = await api.put('/settings/circuit-breaker', clean)
+    breaker.value = { ...defaultBreaker, ...(resp?.config || clean) }
     toast.success('熔断器配置已保存')
   } catch (e) {
     toast.error('保存失败: ' + e.message)
