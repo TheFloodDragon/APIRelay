@@ -223,6 +223,20 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		if ad == nil {
 			state.FailedChannels[ch.Id] = struct{}{}
 			state.LastStatus, state.LastErr = http.StatusNotImplemented, "no adaptor for api type"
+			state.RecordAttempt(FailoverAttempt{
+				Iter:          iter,
+				Switches:      switches,
+				ChannelId:     ch.Id,
+				ChannelName:   ch.Name,
+				ApiType:       apiTypeLabel(info),
+				OriginModel:   info.OriginModel,
+				UpstreamModel: info.UpstreamModel,
+				Status:        http.StatusNotImplemented,
+				Retryable:     true,
+				Decision:      "switch_channel",
+				ErrorCategory: string(ErrorCategoryInternal),
+				Error:         "no adaptor for api type",
+			})
 			switches++
 			log.Warn("relay.no_adaptor", zap.Int("channel_id", ch.Id), zap.Int("api_type", int(info.ApiType)))
 			continue
@@ -243,6 +257,19 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 		status, retryable, err := r.doOnce(c, info, ir, ad, out, billing)
 		if err == nil {
+			state.RecordAttempt(FailoverAttempt{
+				Iter:          iter,
+				Switches:      switches,
+				ChannelId:     ch.Id,
+				ChannelName:   ch.Name,
+				ApiType:       ad.ChannelTypeName(),
+				OriginModel:   info.OriginModel,
+				UpstreamModel: info.UpstreamModel,
+				Status:        http.StatusOK,
+				Retryable:     false,
+				Decision:      "success",
+			})
+			info.FailoverChain = state.ChainJSON()
 			model.ClearChannelCooldown(ch.Id)                // 成功后清除冷却
 			circuitbreaker.GetManager().RecordSuccess(ch.Id) // 记录熔断器成功
 			return
@@ -261,6 +288,21 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		if category == ErrorCategoryRelayTimeout {
 			status = http.StatusGatewayTimeout
 			retryable = false
+			state.RecordAttempt(FailoverAttempt{
+				Iter:          iter,
+				Switches:      switches,
+				ChannelId:     ch.Id,
+				ChannelName:   ch.Name,
+				ApiType:       ad.ChannelTypeName(),
+				OriginModel:   info.OriginModel,
+				UpstreamModel: info.UpstreamModel,
+				Status:        status,
+				Retryable:     retryable,
+				Decision:      "fatal",
+				ErrorCategory: string(category),
+				Error:         err.Error(),
+			})
+			info.FailoverChain = state.ChainJSON()
 			circuitbreaker.GetManager().RecordFailure(ch.Id, err.Error())
 			if !c.Writer.Written() {
 				out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
@@ -277,6 +319,21 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		circuitbreaker.GetManager().RecordFailure(ch.Id, err.Error())
 
 		decision := state.OnFailure(ch.Id, status, retryable, err.Error())
+		state.RecordAttempt(FailoverAttempt{
+			Iter:          iter,
+			Switches:      switches,
+			ChannelId:     ch.Id,
+			ChannelName:   ch.Name,
+			ApiType:       ad.ChannelTypeName(),
+			OriginModel:   info.OriginModel,
+			UpstreamModel: info.UpstreamModel,
+			Status:        status,
+			Retryable:     retryable,
+			Decision:      failoverDecisionLabel(decision),
+			ErrorCategory: string(category),
+			Error:         err.Error(),
+		})
+		info.FailoverChain = state.ChainJSON()
 		log.Warn("relay.attempt_failed",
 			zap.Int("channel_id", ch.Id),
 			zap.String("channel", ch.Name),
@@ -320,6 +377,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 	}
 
 	// 重试耗尽
+	info.FailoverChain = state.ChainJSON()
 	if !c.Writer.Written() {
 		out.WriteError(c, statusOrDefault(state.LastStatus),
 			friendlyExhaustedError(info, state.LastStatus, state.LastErr))
@@ -513,6 +571,7 @@ func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage, billing *Billing
 		UseTimeMs:         useTime,
 		FirstByteMs:       info.FirstByteMs,
 		Status:            http.StatusOK,
+		Content:           info.FailoverChain,
 	}
 	if info.Channel != nil {
 		l.ChannelId = info.Channel.Id
@@ -545,6 +604,7 @@ func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
 		UseTimeMs:    int(time.Now().UnixMilli() - info.StartAtMs),
 		Status:       status,
 		Error:        cleanErrorMessage(errMsg),
+		Content:      info.FailoverChain,
 	}
 	// 记录实际尝试的上游协议（便于排查协议互转问题）
 	if info.Channel != nil {
@@ -573,6 +633,7 @@ func (r *Relayer) logAttemptFailure(info *RelayInfo, ch *model.Channel, status i
 		UseTimeMs:    int(time.Now().UnixMilli() - info.StartAtMs),
 		Status:       status,
 		Error:        cleanErrorMessage(errMsg),
+		Content:      info.FailoverChain,
 	}
 	if ch != nil {
 		l.ChannelId = ch.Id

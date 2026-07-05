@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -20,6 +21,23 @@ const (
 	DecisionFatal
 )
 
+// FailoverAttempt 记录一次渠道尝试及其调度决策，用于最终日志诊断。
+type FailoverAttempt struct {
+	Iter          int    `json:"iter"`
+	Switches      int    `json:"switches"`
+	ChannelId     int    `json:"channel_id"`
+	ChannelName   string `json:"channel_name"`
+	ApiType       string `json:"api_type"`
+	OriginModel   string `json:"origin_model"`
+	UpstreamModel string `json:"upstream_model"`
+	Status        int    `json:"status"`
+	Retryable     bool   `json:"retryable"`
+	Decision      string `json:"decision"`
+	ErrorCategory string `json:"error_category,omitempty"`
+	Error         string `json:"error,omitempty"`
+	AtMs          int64  `json:"at_ms"`
+}
+
 // FailoverState 跨重试迭代共享的故障转移状态（借鉴 sub2api FailoverState）。
 type FailoverState struct {
 	// FailedChannels 已被切换排除的渠道集合。
@@ -32,6 +50,7 @@ type FailoverState struct {
 
 	LastStatus int
 	LastErr    string
+	Attempts   []FailoverAttempt
 }
 
 const (
@@ -74,6 +93,40 @@ func (s *FailoverState) OnFailure(channelID, status int, retryable bool, errMsg 
 	s.FailedChannels[channelID] = struct{}{}
 	model.SetChannelCooldown(channelID, time.Now().Add(time.Duration(s.cooldownSeconds)*time.Second).UnixMilli())
 	return DecisionSwitchChannel
+}
+
+func (s *FailoverState) RecordAttempt(a FailoverAttempt) {
+	if a.AtMs == 0 {
+		a.AtMs = time.Now().UnixMilli()
+	}
+	if a.Error != "" {
+		a.Error = truncateMessage(cleanErrorMessage(a.Error), 500)
+	}
+	s.Attempts = append(s.Attempts, a)
+}
+
+func (s *FailoverState) ChainJSON() string {
+	if s == nil || len(s.Attempts) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(s.Attempts)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func failoverDecisionLabel(d FailoverDecision) string {
+	switch d {
+	case DecisionRetrySameChannel:
+		return "retry_same_channel"
+	case DecisionSwitchChannel:
+		return "switch_channel"
+	case DecisionFatal:
+		return "fatal"
+	default:
+		return "unknown"
+	}
 }
 
 // Excluded 返回当前应排除的渠道集合（用于下一次选渠道）。

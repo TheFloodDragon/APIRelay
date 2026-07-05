@@ -40,6 +40,9 @@ type RelayInfo struct {
 	// Settled 标记本次请求是否已完成额度结算（成功路径置 true）
 	Settled bool
 
+	// FailoverChain JSON：记录本次请求尝试过的渠道、错误与决策链，写入日志 Content 便于诊断。
+	FailoverChain string
+
 	// 计时
 	StartAtMs   int64
 	FirstByteMs int

@@ -1,7 +1,9 @@
 package relay
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/apirelay/apirelay/model"
@@ -61,5 +63,68 @@ func TestWeightedPick_SingleAndDistribution(t *testing.T) {
 	}
 	if seen[10] == 0 || seen[20] == 0 {
 		t.Fatalf("both channels should be picked at least once, got %v", seen)
+	}
+}
+
+func TestFailoverState_RecordAttemptChainJSON(t *testing.T) {
+	s := NewFailoverState(60, 1)
+	s.RecordAttempt(FailoverAttempt{
+		Iter:          0,
+		Switches:      0,
+		ChannelId:     7,
+		ChannelName:   "primary",
+		ApiType:       "OpenAI",
+		OriginModel:   "gpt-4o",
+		UpstreamModel: "gpt-4o-real",
+		Status:        http.StatusBadGateway,
+		Retryable:     true,
+		Decision:      "switch_channel",
+		ErrorCategory: string(ErrorCategoryUpstream),
+		Error:         `upstream status 502: {"error":{"message":"bad gateway"}}`,
+	})
+	s.RecordAttempt(FailoverAttempt{
+		Iter:          1,
+		Switches:      1,
+		ChannelId:     8,
+		ChannelName:   "backup",
+		ApiType:       "Anthropic",
+		OriginModel:   "gpt-4o",
+		UpstreamModel: "claude-real",
+		Status:        http.StatusOK,
+		Decision:      "success",
+	})
+
+	chain := s.ChainJSON()
+	if chain == "" {
+		t.Fatal("chain json should not be empty")
+	}
+	var attempts []FailoverAttempt
+	if err := json.Unmarshal([]byte(chain), &attempts); err != nil {
+		t.Fatalf("unmarshal chain: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(attempts))
+	}
+	if attempts[0].ChannelName != "primary" || attempts[0].Decision != "switch_channel" {
+		t.Fatalf("first attempt not preserved: %+v", attempts[0])
+	}
+	if !strings.Contains(attempts[0].Error, "bad gateway") || strings.Contains(attempts[0].Error, "upstream status") {
+		t.Fatalf("attempt error should be cleaned, got %q", attempts[0].Error)
+	}
+	if attempts[1].Decision != "success" || attempts[1].Status != http.StatusOK {
+		t.Fatalf("success attempt not preserved: %+v", attempts[1])
+	}
+}
+
+func TestFailoverDecisionLabel(t *testing.T) {
+	cases := map[FailoverDecision]string{
+		DecisionRetrySameChannel: "retry_same_channel",
+		DecisionSwitchChannel:    "switch_channel",
+		DecisionFatal:            "fatal",
+	}
+	for decision, want := range cases {
+		if got := failoverDecisionLabel(decision); got != want {
+			t.Fatalf("decision label = %q, want %q", got, want)
+		}
 	}
 }
