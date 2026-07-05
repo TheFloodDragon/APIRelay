@@ -18,14 +18,23 @@ type CircuitBreaker struct {
 	consecutiveSuccesses int
 	totalRequests        int
 	failedRequests       int
+	requestEvents        []requestEvent
+	halfOpenInFlight     int
+	now                  func() time.Time
+}
+
+type requestEvent struct {
+	at     time.Time
+	failed bool
 }
 
 // NewCircuitBreaker 创建新的熔断器实例
 func NewCircuitBreaker(channelID int, cfg Config) *CircuitBreaker {
 	return &CircuitBreaker{
 		channelID: channelID,
-		cfg:       cfg,
+		cfg:       cfg.normalized(),
 		state:     model.CircuitClosed,
+		now:       time.Now,
 	}
 }
 
@@ -34,56 +43,75 @@ func (cb *CircuitBreaker) IsAllowed() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	if cb.state == model.CircuitClosed {
+	now := cb.currentTime()
+	switch cb.state {
+	case model.CircuitClosed:
 		return true
-	}
-	if cb.state == model.CircuitOpen {
-		// 检查是否超过超时时间，可以进入半开状态
-		if cb.openedAt != nil && time.Since(*cb.openedAt) > time.Duration(cb.cfg.TimeoutSeconds)*time.Second {
-			cb.state = model.CircuitHalfOpen
+	case model.CircuitOpen:
+		if cb.openedAt != nil && now.Sub(*cb.openedAt) >= time.Duration(cb.cfg.TimeoutSeconds)*time.Second {
+			cb.toHalfOpenLocked(now)
+			health := cb.stateSnapshotLocked()
+			go persistHealth(health)
 			return true
 		}
 		return false
+	case model.CircuitHalfOpen:
+		if cb.halfOpenInFlight >= cb.cfg.SuccessThreshold {
+			return false
+		}
+		cb.halfOpenInFlight++
+		return true
+	default:
+		return true
 	}
-	// half_open 状态允许少量请求试探
-	return true
 }
 
 // RecordSuccess 记录成功请求
 func (cb *CircuitBreaker) RecordSuccess() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
+	var health *model.ChannelHealth
 
-	now := time.Now()
+	cb.mu.Lock()
+	now := cb.currentTime()
+	prevState := cb.state
+
+	cb.recordEventLocked(now, false)
 	cb.consecutiveFailures = 0
 	cb.consecutiveSuccesses++
-	cb.totalRequests++
+	if cb.state == model.CircuitHalfOpen && cb.halfOpenInFlight > 0 {
+		cb.halfOpenInFlight--
+	}
 
-	// 状态转换逻辑
-	prevState := cb.state
 	if cb.state == model.CircuitHalfOpen && cb.consecutiveSuccesses >= cb.cfg.SuccessThreshold {
 		cb.state = model.CircuitClosed
 		cb.openedAt = nil
+		cb.halfOpenInFlight = 0
 	}
 
-	// 异步持久化
 	if prevState != cb.state || cb.totalRequests%10 == 0 {
-		go cb.persist(now, true, "")
+		health = cb.snapshotLocked(now, true, "")
+	}
+	cb.mu.Unlock()
+
+	if health != nil {
+		go persistHealth(health)
 	}
 }
 
 // RecordFailure 记录失败请求
 func (cb *CircuitBreaker) RecordFailure(errMsg string) {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
+	var health *model.ChannelHealth
 
-	now := time.Now()
+	cb.mu.Lock()
+	now := cb.currentTime()
+	prevState := cb.state
+
+	cb.recordEventLocked(now, true)
 	cb.consecutiveSuccesses = 0
 	cb.consecutiveFailures++
-	cb.totalRequests++
-	cb.failedRequests++
+	if cb.state == model.CircuitHalfOpen && cb.halfOpenInFlight > 0 {
+		cb.halfOpenInFlight--
+	}
 
-	// 状态转换逻辑
 	shouldOpen := false
 	if cb.state == model.CircuitHalfOpen {
 		shouldOpen = true
@@ -99,20 +127,71 @@ func (cb *CircuitBreaker) RecordFailure(errMsg string) {
 		}
 	}
 
-	prevState := cb.state
 	if shouldOpen {
-		cb.state = model.CircuitOpen
-		cb.openedAt = &now
+		cb.toOpenLocked(now)
 	}
 
-	// 异步持久化（状态变化或每10次请求）
 	if prevState != cb.state || cb.totalRequests%10 == 0 {
-		go cb.persist(now, false, errMsg)
+		health = cb.snapshotLocked(now, false, errMsg)
+	}
+	cb.mu.Unlock()
+
+	if health != nil {
+		go persistHealth(health)
 	}
 }
 
-// persist 异步持久化到数据库
-func (cb *CircuitBreaker) persist(timestamp time.Time, isSuccess bool, errMsg string) {
+func (cb *CircuitBreaker) recordEventLocked(now time.Time, failed bool) {
+	cb.requestEvents = append(cb.requestEvents, requestEvent{at: now, failed: failed})
+	cb.pruneEventsLocked(now)
+	cb.totalRequests = len(cb.requestEvents)
+	cb.failedRequests = 0
+	for _, event := range cb.requestEvents {
+		if event.failed {
+			cb.failedRequests++
+		}
+	}
+}
+
+func (cb *CircuitBreaker) pruneEventsLocked(now time.Time) {
+	window := time.Duration(cb.cfg.WindowSeconds) * time.Second
+	if window <= 0 || len(cb.requestEvents) == 0 {
+		return
+	}
+	cutoff := now.Add(-window)
+	keepFrom := 0
+	for keepFrom < len(cb.requestEvents) && cb.requestEvents[keepFrom].at.Before(cutoff) {
+		keepFrom++
+	}
+	if keepFrom > 0 {
+		copy(cb.requestEvents, cb.requestEvents[keepFrom:])
+		cb.requestEvents = cb.requestEvents[:len(cb.requestEvents)-keepFrom]
+	}
+}
+
+func (cb *CircuitBreaker) toOpenLocked(now time.Time) {
+	openedAt := now
+	cb.state = model.CircuitOpen
+	cb.openedAt = &openedAt
+	cb.consecutiveSuccesses = 0
+	cb.halfOpenInFlight = 0
+}
+
+func (cb *CircuitBreaker) toHalfOpenLocked(now time.Time) {
+	cb.state = model.CircuitHalfOpen
+	cb.consecutiveFailures = 0
+	cb.consecutiveSuccesses = 0
+	cb.halfOpenInFlight = 1
+}
+
+func (cb *CircuitBreaker) currentTime() time.Time {
+	if cb.now != nil {
+		return cb.now()
+	}
+	return time.Now()
+}
+
+func (cb *CircuitBreaker) stateSnapshotLocked() *model.ChannelHealth {
 	health := &model.ChannelHealth{
 		ChannelId:            cb.channelID,
 		ConsecutiveFailures:  cb.consecutiveFailures,
@@ -120,13 +199,31 @@ func (cb *CircuitBreaker) persist(timestamp time.Time, isSuccess bool, errMsg st
 		TotalRequests:        cb.totalRequests,
 		FailedRequests:       cb.failedRequests,
 		CircuitState:         cb.state,
-		CircuitOpenedAt:      cb.openedAt,
 	}
+	if cb.openedAt != nil {
+		openedAt := *cb.openedAt
+		health.CircuitOpenedAt = &openedAt
+	}
+	return health
+}
+
+func (cb *CircuitBreaker) snapshotLocked(timestamp time.Time, isSuccess bool, errMsg string) *model.ChannelHealth {
+	health := cb.stateSnapshotLocked()
 	if isSuccess {
-		health.LastSuccessAt = &timestamp
+		lastSuccess := timestamp
+		health.LastSuccessAt = &lastSuccess
 	} else {
-		health.LastFailureAt = &timestamp
+		lastFailure := timestamp
+		health.LastFailureAt = &lastFailure
 		health.LastError = errMsg
+	}
+	return health
+}
+
+// persistHealth 异步持久化到数据库
+func persistHealth(health *model.ChannelHealth) {
+	if health == nil || model.DB == nil {
+		return
 	}
 	_ = model.UpsertChannelHealth(health)
 }
@@ -141,8 +238,17 @@ func (cb *CircuitBreaker) GetState() model.CircuitState {
 // Reset 重置熔断器状态
 func (cb *CircuitBreaker) Reset() {
 	cb.mu.Lock()
-	defer cb.mu.Unlock()
 	cb.state = model.CircuitClosed
 	cb.openedAt = nil
-	_ = model.ResetChannelHealth(cb.channelID)
+	cb.consecutiveFailures = 0
+	cb.consecutiveSuccesses = 0
+	cb.totalRequests = 0
+	cb.failedRequests = 0
+	cb.requestEvents = nil
+	cb.halfOpenInFlight = 0
+	cb.mu.Unlock()
+
+	if model.DB != nil {
+		_ = model.ResetChannelHealth(cb.channelID)
+	}
 }

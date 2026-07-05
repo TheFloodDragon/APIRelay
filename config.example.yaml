@@ -29,6 +29,7 @@ relay:
     timeout_seconds: 30        # 熔断后多久进入半开试探
     error_rate_threshold: 0.5  # 错误率阈值（0-1）
     min_requests: 10           # 统计窗口最小请求数
+    window_seconds: 60         # 错误率统计滑动窗口秒数
 
 auth:
   session_secret: ""            # 管理后台会话签名密钥；留空时会生成临时密钥，重启后需重新登录

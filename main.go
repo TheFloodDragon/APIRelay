@@ -49,6 +49,7 @@ func main() {
 		TimeoutSeconds:     cfg.Relay.CircuitBreaker.TimeoutSeconds,
 		ErrorRateThreshold: cfg.Relay.CircuitBreaker.ErrorRateThreshold,
 		MinRequests:        cfg.Relay.CircuitBreaker.MinRequests,
+		WindowSeconds:      cfg.Relay.CircuitBreaker.WindowSeconds,
 		ChannelMaxRetries:  cfg.Relay.ChannelMaxRetries,
 	})
 

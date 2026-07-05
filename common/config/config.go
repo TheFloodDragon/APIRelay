@@ -75,6 +75,7 @@ type CircuitBreakerConfig struct {
 	TimeoutSeconds     int     `yaml:"timeout_seconds"`      // 熔断超时进入半开
 	ErrorRateThreshold float64 `yaml:"error_rate_threshold"` // 错误率阈值
 	MinRequests        int     `yaml:"min_requests"`         // 统计窗口最小请求数
+	WindowSeconds      int     `yaml:"window_seconds"`       // 错误率统计滑动窗口秒数
 }
 
 type AuthConfig struct {
@@ -122,6 +123,7 @@ func Default() *Config {
 				TimeoutSeconds:     30,
 				ErrorRateThreshold: 0.5,
 				MinRequests:        10,
+				WindowSeconds:      60,
 			},
 		},
 		Auth: AuthConfig{
@@ -209,6 +211,9 @@ func (c *Config) Normalize() {
 	}
 	if c.Relay.CircuitBreaker.MinRequests <= 0 {
 		c.Relay.CircuitBreaker.MinRequests = 10
+	}
+	if c.Relay.CircuitBreaker.WindowSeconds <= 0 {
+		c.Relay.CircuitBreaker.WindowSeconds = 60
 	}
 
 	if strings.TrimSpace(c.Auth.InitialAdminUsername) == "" {

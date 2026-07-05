@@ -18,7 +18,7 @@ var once sync.Once
 // InitManager 初始化全局熔断器管理器
 func InitManager(cfg Config) {
 	once.Do(func() {
-		globalManager = &Manager{cfg: cfg}
+		globalManager = &Manager{cfg: cfg.normalized()}
 	})
 }
 
@@ -59,11 +59,20 @@ func (m *Manager) GetBreaker(channelID int) *CircuitBreaker {
 
 // UpdateConfig 更新全局配置（需重新加载所有熔断器）
 func (m *Manager) UpdateConfig(cfg Config) {
+	cfg = cfg.normalized()
 	m.cfg = cfg
 	m.breakers.Range(func(key, value interface{}) bool {
 		breaker := value.(*CircuitBreaker)
 		breaker.mu.Lock()
 		breaker.cfg = cfg
+		breaker.pruneEventsLocked(breaker.currentTime())
+		breaker.totalRequests = len(breaker.requestEvents)
+		breaker.failedRequests = 0
+		for _, event := range breaker.requestEvents {
+			if event.failed {
+				breaker.failedRequests++
+			}
+		}
 		breaker.mu.Unlock()
 		return true
 	})

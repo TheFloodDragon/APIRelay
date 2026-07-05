@@ -1,78 +1,201 @@
 package circuitbreaker
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/apirelay/apirelay/model"
 )
 
-func TestCircuitBreakerStateMachine(t *testing.T) {
-	// 测试数据库需要初始化，这里只测试状态机逻辑
-	cfg := Config{
+func testConfig() Config {
+	return Config{
 		FailureThreshold:   3,
 		SuccessThreshold:   2,
 		TimeoutSeconds:     1,
 		ErrorRateThreshold: 0.5,
-		MinRequests:        5,
-	}
-
-	cb := NewCircuitBreaker(9999, cfg)
-
-	// 初始状态：closed
-	if cb.GetState() != model.CircuitClosed {
-		t.Errorf("初始状态应为 closed，实际为 %s", cb.GetState())
-	}
-
-	// 应允许请求
-	if !cb.IsAllowed() {
-		t.Error("closed 状态应允许请求")
-	}
-
-	// 连续失败触发熔断
-	for i := 0; i < cfg.FailureThreshold; i++ {
-		cb.state = model.CircuitClosed // 手动保持 closed（避免依赖数据库）
-	}
-
-	// 设置熔断状态
-	cb.state = model.CircuitOpen
-	now := time.Now()
-	cb.openedAt = &now
-
-	if cb.GetState() != model.CircuitOpen {
-		t.Errorf("熔断后状态应为 open，实际为 %s", cb.GetState())
-	}
-
-	// open 状态拒绝请求
-	if cb.IsAllowed() {
-		t.Error("open 状态应拒绝请求")
-	}
-
-	// 等待超时进入半开
-	time.Sleep(time.Duration(cfg.TimeoutSeconds+1) * time.Second)
-	if !cb.IsAllowed() {
-		t.Error("超时后应进入 half_open 允许试探")
-	}
-
-	if cb.GetState() != model.CircuitHalfOpen {
-		t.Errorf("超时后状态应为 half_open，实际为 %s", cb.GetState())
+		MinRequests:        4,
+		WindowSeconds:      10,
 	}
 }
 
-func TestCircuitBreakerErrorRate(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:   10, // 高阈值，主要测试错误率
-		SuccessThreshold:   2,
-		TimeoutSeconds:     30,
-		ErrorRateThreshold: 0.4, // 40% 错误率
-		MinRequests:        10,
+func TestCircuitBreakerStateMachine(t *testing.T) {
+	cfg := testConfig()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	cb := NewCircuitBreaker(9999, cfg)
+	cb.now = func() time.Time { return now }
+
+	if cb.GetState() != model.CircuitClosed {
+		t.Fatalf("初始状态应为 closed，实际为 %s", cb.GetState())
+	}
+	if !cb.IsAllowed() {
+		t.Fatal("closed 状态应允许请求")
 	}
 
-	cb := NewCircuitBreaker(9998, cfg)
+	for i := 0; i < cfg.FailureThreshold; i++ {
+		cb.RecordFailure("temporary upstream failure")
+	}
+	if cb.GetState() != model.CircuitOpen {
+		t.Fatalf("连续失败后状态应为 open，实际为 %s", cb.GetState())
+	}
+	if cb.IsAllowed() {
+		t.Fatal("open 且未超时时应拒绝请求")
+	}
 
-	// 模拟 10 次请求，5 次失败（50% 错误率，超过 40%）
-	// 由于依赖数据库，这里只验证配置加载
-	if cb.cfg.ErrorRateThreshold != 0.4 {
-		t.Errorf("错误率阈值应为 0.4，实际为 %f", cb.cfg.ErrorRateThreshold)
+	now = base.Add(time.Duration(cfg.TimeoutSeconds) * time.Second)
+	if !cb.IsAllowed() {
+		t.Fatal("熔断超时后应允许第一个 half_open 试探请求")
+	}
+	if cb.GetState() != model.CircuitHalfOpen {
+		t.Fatalf("超时后状态应为 half_open，实际为 %s", cb.GetState())
+	}
+	if !cb.IsAllowed() {
+		t.Fatal("half_open 应允许 success_threshold 数量内的试探请求")
+	}
+	if cb.IsAllowed() {
+		t.Fatal("half_open 达到试探上限后应暂时拒绝额外请求")
+	}
+
+	cb.RecordSuccess()
+	if cb.GetState() != model.CircuitHalfOpen {
+		t.Fatalf("未达到恢复成功阈值前应保持 half_open，实际为 %s", cb.GetState())
+	}
+	cb.RecordSuccess()
+	if cb.GetState() != model.CircuitClosed {
+		t.Fatalf("连续试探成功后应恢复 closed，实际为 %s", cb.GetState())
+	}
+}
+
+func TestCircuitBreakerOpensOnWindowErrorRate(t *testing.T) {
+	cfg := testConfig()
+	cfg.FailureThreshold = 100
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	cb := NewCircuitBreaker(9998, cfg)
+	cb.now = func() time.Time { return now }
+
+	cb.RecordSuccess()
+	cb.RecordFailure("first failure")
+	cb.RecordSuccess()
+	if cb.GetState() != model.CircuitClosed {
+		t.Fatalf("未达到 min_requests 前不应按错误率熔断，实际为 %s", cb.GetState())
+	}
+	cb.RecordFailure("second failure")
+
+	if cb.GetState() != model.CircuitOpen {
+		t.Fatalf("窗口内错误率达到阈值后应熔断，实际为 %s", cb.GetState())
+	}
+}
+
+func TestCircuitBreakerSlidingWindowExpiresOldFailures(t *testing.T) {
+	cfg := testConfig()
+	cfg.FailureThreshold = 100
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	cb := NewCircuitBreaker(9997, cfg)
+	cb.now = func() time.Time { return now }
+
+	cb.RecordFailure("old failure 1")
+	cb.RecordFailure("old failure 2")
+	cb.RecordFailure("old failure 3")
+
+	now = base.Add(time.Duration(cfg.WindowSeconds+1) * time.Second)
+	cb.RecordSuccess()
+	cb.RecordSuccess()
+	cb.RecordSuccess()
+	cb.RecordFailure("fresh failure")
+
+	if cb.GetState() != model.CircuitClosed {
+		t.Fatalf("过期失败不应参与当前窗口错误率，实际状态为 %s", cb.GetState())
+	}
+	cb.mu.RLock()
+	total, failed := cb.totalRequests, cb.failedRequests
+	cb.mu.RUnlock()
+	if total != 4 || failed != 1 {
+		t.Fatalf("窗口计数 = total:%d failed:%d，期望 total:4 failed:1", total, failed)
+	}
+}
+
+func TestCircuitBreakerHalfOpenFailureReopens(t *testing.T) {
+	cfg := testConfig()
+	cfg.FailureThreshold = 1
+	cfg.SuccessThreshold = 1
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	cb := NewCircuitBreaker(9996, cfg)
+	cb.now = func() time.Time { return now }
+
+	cb.RecordFailure("open immediately")
+	if cb.GetState() != model.CircuitOpen {
+		t.Fatalf("应已熔断，实际为 %s", cb.GetState())
+	}
+	now = base.Add(time.Duration(cfg.TimeoutSeconds) * time.Second)
+	if !cb.IsAllowed() {
+		t.Fatal("超时后应允许 half_open 试探")
+	}
+	if cb.IsAllowed() {
+		t.Fatal("success_threshold=1 时 half_open 只能有一个试探请求在飞")
+	}
+
+	cb.RecordFailure("probe failed")
+	if cb.GetState() != model.CircuitOpen {
+		t.Fatalf("half_open 试探失败应重新 open，实际为 %s", cb.GetState())
+	}
+}
+
+func TestCircuitBreakerConcurrentRecords(t *testing.T) {
+	cfg := testConfig()
+	cfg.FailureThreshold = 1000
+	cfg.MinRequests = 1000
+	cfg.ErrorRateThreshold = 1
+	cb := NewCircuitBreaker(9995, cfg)
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				cb.RecordSuccess()
+			} else {
+				cb.RecordFailure("concurrent failure")
+			}
+		}()
+	}
+	wg.Wait()
+
+	cb.mu.RLock()
+	total, failed, state := cb.totalRequests, cb.failedRequests, cb.state
+	cb.mu.RUnlock()
+	if total != n || failed != n/2 {
+		t.Fatalf("并发窗口计数 = total:%d failed:%d，期望 total:%d failed:%d", total, failed, n, n/2)
+	}
+	if state != model.CircuitClosed {
+		t.Fatalf("高阈值并发记录后应保持 closed，实际为 %s", state)
+	}
+}
+
+func TestCircuitBreakerResetClearsRuntimeCounters(t *testing.T) {
+	cfg := testConfig()
+	cfg.FailureThreshold = 1
+	cb := NewCircuitBreaker(9994, cfg)
+	cb.RecordFailure("open")
+	if cb.GetState() != model.CircuitOpen {
+		t.Fatalf("应已熔断，实际为 %s", cb.GetState())
+	}
+
+	cb.Reset()
+	cb.mu.RLock()
+	state := cb.state
+	total := cb.totalRequests
+	failed := cb.failedRequests
+	events := len(cb.requestEvents)
+	cb.mu.RUnlock()
+
+	if state != model.CircuitClosed || total != 0 || failed != 0 || events != 0 {
+		t.Fatalf("reset 后状态/计数不正确: state=%s total=%d failed=%d events=%d", state, total, failed, events)
 	}
 }
