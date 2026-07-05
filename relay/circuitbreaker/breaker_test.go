@@ -19,6 +19,42 @@ func testConfig() Config {
 	}
 }
 
+func TestNormalizeConfig(t *testing.T) {
+	cfg := NormalizeConfig(Config{
+		FailureThreshold:   -1,
+		SuccessThreshold:   0,
+		TimeoutSeconds:     -10,
+		ErrorRateThreshold: 2,
+		MinRequests:        0,
+		WindowSeconds:      -30,
+		ChannelMaxRetries:  -1,
+	})
+	def := DefaultConfig()
+
+	if cfg.FailureThreshold != def.FailureThreshold || cfg.SuccessThreshold != def.SuccessThreshold || cfg.TimeoutSeconds != def.TimeoutSeconds {
+		t.Fatalf("基础阈值未正确回退默认值: %#v", cfg)
+	}
+	if cfg.MinRequests != def.MinRequests || cfg.WindowSeconds != def.WindowSeconds || cfg.ChannelMaxRetries != def.ChannelMaxRetries {
+		t.Fatalf("窗口/重试配置未正确回退默认值: %#v", cfg)
+	}
+	if cfg.ErrorRateThreshold != 1 {
+		t.Fatalf("错误率阈值应被限制到 1，实际为 %v", cfg.ErrorRateThreshold)
+	}
+
+	zeroRetry := NormalizeConfig(Config{
+		FailureThreshold:   1,
+		SuccessThreshold:   1,
+		TimeoutSeconds:     1,
+		ErrorRateThreshold: 0.5,
+		MinRequests:        1,
+		WindowSeconds:      1,
+		ChannelMaxRetries:  0,
+	})
+	if zeroRetry.ChannelMaxRetries != 0 {
+		t.Fatalf("0 次单渠道重试应被保留，实际为 %d", zeroRetry.ChannelMaxRetries)
+	}
+}
+
 func TestCircuitBreakerStateMachine(t *testing.T) {
 	cfg := testConfig()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

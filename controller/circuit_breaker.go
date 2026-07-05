@@ -66,7 +66,7 @@ func GetCircuitBreakerConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "parse config failed"})
 		return
 	}
-	c.JSON(http.StatusOK, cbCfg)
+	c.JSON(http.StatusOK, circuitbreaker.NormalizeConfig(cbCfg))
 }
 
 // UpdateCircuitBreakerConfig 更新熔断器配置
@@ -75,6 +75,7 @@ func UpdateCircuitBreakerConfig(c *gin.Context) {
 	if !bindJSON(c, &cfg) {
 		return
 	}
+	cfg = circuitbreaker.NormalizeConfig(cfg)
 
 	// 存储到 settings 表
 	if err := model.SaveSettingJSON("circuit_breaker_config", cfg); err != nil {

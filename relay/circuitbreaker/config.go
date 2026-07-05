@@ -24,6 +24,11 @@ func DefaultConfig() Config {
 	}
 }
 
+// NormalizeConfig 返回清洗后的安全配置。
+func NormalizeConfig(cfg Config) Config {
+	return cfg.normalized()
+}
+
 func (cfg Config) normalized() Config {
 	def := DefaultConfig()
 	if cfg.FailureThreshold <= 0 {
