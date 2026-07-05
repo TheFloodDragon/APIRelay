@@ -23,11 +23,11 @@
       <div v-if="channels.length" class="divide-y divide-line">
         <div
           v-for="(ch, idx) in sortedChannels" :key="ch.id"
-          class="group grid grid-cols-[40px_54px_minmax(0,1fr)_82px_66px_120px] max-lg:grid-cols-[40px_54px_minmax(0,1fr)_82px] gap-3 items-center px-4 py-3 transition-colors hover:bg-[rgb(var(--c-signal)/0.04)]"
+          class="group grid grid-cols-[40px_54px_minmax(0,1fr)_82px_66px_120px] max-lg:grid-cols-[40px_54px_minmax(0,1fr)] gap-3 items-start px-4 py-3 transition-colors hover:bg-[rgb(var(--c-signal)/0.04)]"
           :class="[
             dragIndex === idx ? 'opacity-40' : '',
             dropIndex === idx && dragIndex !== null && dragIndex !== idx ? 'ring-1 ring-signal' : '',
-            ch.status !== 1 ? 'opacity-65' : '',
+            ch.status !== 1 ? 'opacity-60' : '',
           ]"
           draggable="true"
           @dragstart="onDragStart(idx, $event)"
@@ -57,6 +57,13 @@
             <div class="mt-1 flex items-center gap-3 text-2xs text-t3 font-mono min-w-0">
               <span>#{{ ch.id }}</span>
               <span class="truncate" :title="ch.base_url">{{ ch.base_url || 'default-url' }}</span>
+            </div>
+            <div class="mt-2 flex items-start gap-2 min-w-0">
+              <span class="tick shrink-0 pt-1">KEY</span>
+              <span class="key-chip key-chip-full flex-1 min-w-0">
+                <code :title="ch.key">{{ ch.key || '未配置' }}</code>
+              </span>
+              <button class="btn-secondary btn-sm !px-2 !py-1 shrink-0" :disabled="!ch.key" @click.stop="copyKey(ch)">复制</button>
             </div>
           </div>
 
@@ -130,28 +137,21 @@
               </div>
               <div>
                 <label class="label">API Key <span class="text-[rgb(var(--c-down))]">*</span></label>
-                <div class="relative">
-                  <input
-                    v-model="form.key"
-                    type="text"
-                    class="input pr-10 font-mono"
-                    :class="{ 'key-mask': !showKey }"
-                    placeholder="upstream-key"
-                    name="apirelay-upstream-key"
-                    autocomplete="off"
-                    autocapitalize="off"
-                    autocorrect="off"
-                    spellcheck="false"
-                    data-1p-ignore
-                    data-lpignore="true"
-                    data-form-type="other"
-                  />
-                  <button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 text-t3 hover:text-t1 p-1" :title="showKey ? '隐藏' : '显示'" @click="showKey = !showKey">
-                    <svg v-if="showKey" viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M12 6c3.79 0 7.17 2.13 8.82 5.5C19.17 14.87 15.79 17 12 17s-7.17-2.13-8.82-5.5C4.83 8.13 8.21 6 12 6zm0 2a3.5 3.5 0 100 7 3.5 3.5 0 000-7zm0 1.5a2 2 0 110 4 2 2 0 010-4z"/></svg>
-                    <svg v-else viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M2 5.27L3.28 4 20 20.72 18.73 22l-3.08-3.08A11 11 0 0112 19c-5 0-9.27-3.11-11-7.5a11.8 11.8 0 014.17-5.06L2 5.27zM12 9a3 3 0 012.83 4L12 9zm0-3c5 0 9.27 3.11 11 7.5a11.8 11.8 0 01-2.18 3.36l-1.42-1.42A9.8 9.8 0 0020.82 13C19.17 9.63 15.79 7.5 12 7.5c-.74 0-1.46.09-2.16.26L8.36 6.28A11 11 0 0112 6z"/></svg>
-                  </button>
-                </div>
-                <p class="hint" v-if="form.id">留空表示不修改现有密钥。</p>
+                <input
+                  v-model="form.key"
+                  type="text"
+                  class="input font-mono"
+                  placeholder="upstream-key"
+                  name="apirelay-upstream-key"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  spellcheck="false"
+                  data-1p-ignore
+                  data-lpignore="true"
+                  data-form-type="other"
+                />
+                <p class="hint">供应商 / 上游站点 Key 会按明文保存并在路由表中直接显示。</p>
               </div>
             </div>
 
@@ -270,8 +270,6 @@ const showModal = ref(false)
 const probing = ref(false)
 const saving = ref(false)
 const err = ref('')
-const showKey = ref(false)
-
 const models = ref([])
 const rules = ref([])
 const newModelName = ref('')
@@ -294,7 +292,7 @@ const enabledCount = computed(() => models.value.filter(m => m.enabled && m.name
 const canSave = computed(() =>
   form.value.name &&
   form.value.base_url &&
-  (form.value.id ? true : form.value.key) &&
+  String(form.value.key || '').trim() &&
   enabledCount.value > 0
 )
 
@@ -310,6 +308,16 @@ function stateOf(ch) {
   if (ch.status !== 1) return 'down'
   if (ch.cooldown_until && ch.cooldown_until > Date.now()) return 'warn'
   return 'online'
+}
+
+async function copyKey(ch) {
+  if (!ch.key) return
+  try {
+    await navigator.clipboard.writeText(ch.key)
+    toast.success(`已复制「${ch.name}」的供应商 Key`)
+  } catch {
+    toast.warning('浏览器阻止了剪贴板写入，请手动复制列表中的 Key')
+  }
 }
 
 async function load() {
@@ -354,7 +362,6 @@ function openCreate() {
   models.value = []
   rules.value = []
   err.value = ''
-  showKey.value = false
   testing.value = {}
   testResults.value = {}
   const t = channelTypes.value.find(x => x.value === form.value.type)
@@ -362,12 +369,10 @@ function openCreate() {
   showModal.value = true
 }
 function openEdit(ch) {
-  form.value = { ...blank(), ...ch }
-  form.value.key = ''
+  form.value = { ...blank(), ...ch, key: ch.key || '' }
   models.value = parseModels(ch)
   rules.value = parseRules(ch)
   err.value = ''
-  showKey.value = false
   testing.value = {}
   testResults.value = {}
   showModal.value = true
@@ -403,23 +408,22 @@ async function testModel(m) {
     toast.warning('请先填写 Base URL')
     return
   }
+  if (!form.value.key) {
+    toast.warning('请先填写 API Key')
+    return
+  }
   testing.value = { ...testing.value, [name]: true }
   try {
-    let res
-    if (form.value.id && !form.value.key) {
-      res = await api.post(`/channels/${form.value.id}/test`, { model: name })
-    } else {
-      res = await api.post('/channels/test', {
-        type: form.value.type,
-        base_url: form.value.base_url,
-        key: form.value.key,
-        group: form.value.group || 'default',
-        model_configs: JSON.stringify([{ name, enabled: true, protocol: m.protocol || '', upstream: m.upstream || '' }]),
-        protocol_rules: JSON.stringify(rules.value.filter(r => r.pattern.trim() && r.protocol)),
-        header_override: form.value.header_override || '',
-        model: name,
-      })
-    }
+    const res = await api.post('/channels/test', {
+      type: form.value.type,
+      base_url: form.value.base_url,
+      key: form.value.key,
+      group: form.value.group || 'default',
+      model_configs: JSON.stringify([{ name, enabled: true, protocol: m.protocol || '', upstream: m.upstream || '' }]),
+      protocol_rules: JSON.stringify(rules.value.filter(r => r.pattern.trim() && r.protocol)),
+      header_override: form.value.header_override || '',
+      model: name,
+    })
     testResults.value = { ...testResults.value, [name]: res }
     if (res.success) toast.success(`模型 ${name} 连通正常`)
     else toast.error(`模型 ${name} 测试失败`)
@@ -462,7 +466,7 @@ async function fetchModels() {
 
 async function save() {
   if (!canSave.value) {
-    err.value = '请填写必填项并至少启用一个模型'
+    err.value = '请填写供应商名称、Base URL、API Key，并至少启用一个模型'
     return
   }
   err.value = ''
@@ -481,9 +485,6 @@ async function save() {
     model_configs: JSON.stringify(cleanModels),
     protocol_rules: JSON.stringify(cleanRules),
     models: cleanModels.filter(m => m.enabled).map(m => m.name).join(','),
-  }
-  if (form.value.id && !form.value.key) {
-    delete payload.key
   }
   try {
     if (form.value.id) {
@@ -567,10 +568,3 @@ onMounted(async () => {
 })
 </script>
 
-<style scoped>
-.key-mask {
-  -webkit-text-security: disc;
-  text-security: disc;
-  font-family: text-security-disc, "IBM Plex Mono", ui-monospace, monospace;
-}
-</style>

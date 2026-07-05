@@ -106,3 +106,24 @@ func TestNormalizeCircuitBreakerErrorRateCap(t *testing.T) {
 		t.Fatalf("error rate threshold = %v", cfg.Relay.CircuitBreaker.ErrorRateThreshold)
 	}
 }
+
+func TestConfigFilePathDefaultsAndCleans(t *testing.T) {
+	t.Cleanup(func() { SetConfigFilePath("") })
+	SetConfigFilePath("")
+	if got := ConfigFilePath(); got != DefaultConfigPath {
+		t.Fatalf("default config path = %q", got)
+	}
+	SetConfigFilePath("./configs/../apirelay.yaml")
+	if got := ConfigFilePath(); got != "apirelay.yaml" {
+		t.Fatalf("cleaned config path = %q", got)
+	}
+}
+
+func TestValidateYAMLRejectsInvalidConfigShape(t *testing.T) {
+	if err := ValidateYAML([]byte("server:\n  port: 3001\nrelay:\n  max_retries: 2\n")); err != nil {
+		t.Fatalf("valid yaml rejected: %v", err)
+	}
+	if err := ValidateYAML([]byte("server:\n  port: [bad]\n")); err == nil {
+		t.Fatal("expected invalid config yaml to be rejected")
+	}
+}

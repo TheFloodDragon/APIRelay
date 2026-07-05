@@ -5,9 +5,9 @@ export function useToast() {
   const toast = instance?.appContext.config.globalProperties.$toast
 
   return {
-    success: (msg) => toast?.add(msg, 'success'),
-    error: (msg) => toast?.add(msg, 'error'),
-    warning: (msg) => toast?.add(msg, 'warning'),
-    info: (msg) => toast?.add(msg, 'info'),
+    success: (msg, duration) => toast?.add(msg, 'success', duration),
+    error: (msg, duration) => toast?.add(msg, 'error', duration),
+    warning: (msg, duration) => toast?.add(msg, 'warning', duration),
+    info: (msg, duration) => toast?.add(msg, 'info', duration),
   }
 }

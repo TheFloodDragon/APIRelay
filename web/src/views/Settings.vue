@@ -1,8 +1,43 @@
 <template>
   <div>
     <div class="mb-5">
-      <h2 class="page-title">规则配置</h2>
-      <p class="page-subtitle">全局协议映射与模型定价表</p>
+      <h2 class="page-title">设置</h2>
+      <p class="page-subtitle">配置文件、全局协议映射、模型定价与熔断参数</p>
+    </div>
+
+    <!-- ===== 当前配置文件 ===== -->
+    <div class="panel mb-4">
+      <div class="px-4 h-12 flex items-center justify-between border-b border-line">
+        <div class="min-w-0">
+          <span class="font-mono text-sm font-medium text-t1">配置文件</span>
+          <span class="tick ml-2">CONFIG.YAML</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="btn-secondary btn-sm" :disabled="loadingConfig || savingConfig" @click="loadConfigFile">{{ loadingConfig ? '读取中…' : '重新加载文件' }}</button>
+          <button class="btn-primary btn-sm" :disabled="savingConfig" @click="saveConfigFile">{{ savingConfig ? '写入中…' : '保存配置文件' }}</button>
+        </div>
+      </div>
+      <div class="p-4 space-y-4">
+        <div class="grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-3 items-start">
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="tick">PATH</span>
+              <span class="key-chip key-chip-full"><code>{{ configFile.path || 'config.yaml' }}</code></span>
+              <span class="badge" :class="configFile.exists ? 'badge-online' : 'badge-warn'">{{ configFile.exists ? '已存在' : '保存时创建' }}</span>
+            </div>
+            <p class="hint">这里编辑的是当前进程启动时使用的配置文件路径；保存会写入文件，不代表所有运行时参数立即热更新。</p>
+          </div>
+          <div class="relay-callout">
+            配置写入前会先按 APIRelay 配置结构解析 YAML。数据库、监听地址、认证初始化等参数通常需要重启后才会完整生效。
+          </div>
+        </div>
+        <textarea
+          v-model="configDraft"
+          class="config-textarea"
+          spellcheck="false"
+          placeholder="server:\n  port: 3000\n  host: 0.0.0.0\n"
+        ></textarea>
+      </div>
     </div>
 
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -170,6 +205,10 @@ const defaultBreaker = {
 }
 const breaker = ref({ ...defaultBreaker })
 const savingBreaker = ref(false)
+const configFile = ref({ path: '', exists: false, content: '' })
+const configDraft = ref('')
+const loadingConfig = ref(false)
+const savingConfig = ref(false)
 
 const testResult = computed(() => {
   const m = testModel.value.trim()
@@ -182,6 +221,33 @@ const testResult = computed(() => {
   }
   return ''
 })
+
+async function loadConfigFile() {
+  loadingConfig.value = true
+  try {
+    const data = await api.get('/settings/config-file')
+    configFile.value = { path: data?.path || 'config.yaml', exists: !!data?.exists, content: data?.content || '' }
+    configDraft.value = data?.content || ''
+  } catch (e) {
+    toast.error('配置文件读取失败: ' + e.message)
+  } finally {
+    loadingConfig.value = false
+  }
+}
+
+async function saveConfigFile() {
+  savingConfig.value = true
+  try {
+    const data = await api.put('/settings/config-file', { content: configDraft.value })
+    configFile.value = { path: data?.path || configFile.value.path || 'config.yaml', exists: true, content: data?.content ?? configDraft.value }
+    configDraft.value = data?.content ?? configDraft.value
+    toast.success(data?.message || '配置文件已写入，部分配置需要重启后生效')
+  } catch (e) {
+    toast.error('配置文件保存失败: ' + e.message)
+  } finally {
+    savingConfig.value = false
+  }
+}
 
 async function load() {
   try {
@@ -265,5 +331,8 @@ async function saveBreaker() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadConfigFile()
+})
 </script>

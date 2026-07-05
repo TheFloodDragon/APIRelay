@@ -91,6 +91,8 @@ func registerAdminRoutes(r *gin.Engine, cfg *config.Config) {
 
 		api.GET("/models", controller.ListAggregatedModels)
 
+		api.GET("/settings/config-file", controller.GetConfigFile)
+		api.PUT("/settings/config-file", controller.UpdateConfigFile)
 		api.GET("/settings/protocol-rules", controller.GetProtocolRules)
 		api.PUT("/settings/protocol-rules", controller.UpdateProtocolRules)
 		api.GET("/settings/model-prices", controller.GetModelPrices)

@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/model"
@@ -25,6 +26,10 @@ func ListChannels(c *gin.Context) {
 func CreateChannel(c *gin.Context) {
 	var ch model.Channel
 	if !bindJSON(c, &ch) {
+		return
+	}
+	if strings.TrimSpace(ch.Key) == "" {
+		fail(c, http.StatusBadRequest, "API Key 不能为空")
 		return
 	}
 	if ch.Status == 0 {
@@ -55,12 +60,12 @@ func UpdateChannel(c *gin.Context) {
 	if !bindJSON(c, &in) {
 		return
 	}
+	if strings.TrimSpace(in.Key) == "" {
+		fail(c, http.StatusBadRequest, "API Key 不能为空")
+		return
+	}
 	in.Id = existing.Id
 	in.CreatedAt = existing.CreatedAt
-	// 密钥留空表示不修改，保留原有密钥
-	if in.Key == "" {
-		in.Key = existing.Key
-	}
 	if err := model.UpdateChannel(&in); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return

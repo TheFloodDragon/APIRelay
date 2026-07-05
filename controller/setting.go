@@ -3,12 +3,73 @@ package controller
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 
+	"github.com/apirelay/apirelay/common/config"
 	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/model"
 
 	"github.com/gin-gonic/gin"
 )
+
+type configFileResponse struct {
+	Path    string `json:"path"`
+	Exists  bool   `json:"exists"`
+	Content string `json:"content"`
+	Message string `json:"message,omitempty"`
+}
+
+type updateConfigFileRequest struct {
+	Content string `json:"content"`
+}
+
+// GetConfigFile GET /api/settings/config-file
+// 返回当前启动使用的配置文件路径与文件内容。
+func GetConfigFile(c *gin.Context) {
+	path := config.ConfigFilePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			ok(c, configFileResponse{Path: path, Exists: false, Content: ""})
+			return
+		}
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, configFileResponse{Path: path, Exists: true, Content: string(data)})
+}
+
+// UpdateConfigFile PUT /api/settings/config-file
+// 校验并写回当前启动使用的配置文件。
+func UpdateConfigFile(c *gin.Context) {
+	var req updateConfigFileRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	if err := config.ValidateYAML([]byte(req.Content)); err != nil {
+		fail(c, http.StatusBadRequest, "配置文件 YAML 无法解析: "+err.Error())
+		return
+	}
+
+	path := config.ConfigFilePath()
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if err := os.WriteFile(path, []byte(req.Content), 0o600); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, configFileResponse{
+		Path:    path,
+		Exists:  true,
+		Content: req.Content,
+		Message: "配置文件已写入，部分配置需要重启后生效",
+	})
+}
 
 // GetProtocolRules GET /api/settings/protocol-rules
 // 返回全局协议正则规则。

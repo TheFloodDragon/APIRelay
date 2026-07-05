@@ -12,8 +12,7 @@ const err = ref('')
 const form = ref({ name: '', group: 'default', models: '', unlimited: true, quota_usd: 0 })
 
 function mask(k) {
-  if (!k) return ''
-  return k.slice(0, 7) + '...' + k.slice(-4)
+  return k || '—'
 }
 
 const usd = (micro) => '$' + ((micro || 0) / 1_000_000).toFixed(4)
@@ -112,8 +111,8 @@ onMounted(load)
             <td class="font-medium text-t1">{{ t.name }}</td>
             <td>
               <div class="flex items-center gap-2">
-                <span class="font-mono text-xs text-t2" :title="`完整 key 仅创建时可见 · 前缀: ${t.key_prefix}`">{{ mask(t.key_prefix) }}</span>
-                <span class="tick">once</span>
+                <span class="key-chip"><code :title="`完整 key 仅创建时可见 · 前缀: ${t.key_prefix}`">{{ mask(t.key_prefix) }}</code></span>
+                <span class="tick">hash only</span>
               </div>
             </td>
             <td><span class="badge badge-neutral font-mono">{{ t.group }}</span></td>

@@ -2,13 +2,16 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
 const (
+	DefaultConfigPath                      = "config.yaml"
 	DefaultAdminMaxBodyBytes         int64 = 2 * 1024 * 1024
 	DefaultRelayMaxBodyBytes         int64 = 20 * 1024 * 1024
 	DefaultInitialAdminUsername            = "admin"
@@ -16,6 +19,11 @@ const (
 	DefaultLoginFailureWindowSeconds       = 10 * 60
 	DefaultLoginLockoutSeconds             = 15 * 60
 )
+
+var configFilePath = struct {
+	sync.RWMutex
+	value string
+}{value: DefaultConfigPath}
 
 // Config 是 APIRelay 的全局配置。
 // 加载顺序：默认值 -> config.yaml -> 环境变量覆盖。
@@ -136,11 +144,40 @@ func Default() *Config {
 	}
 }
 
+// SetConfigFilePath 记录当前进程启动使用的配置文件路径。
+func SetConfigFilePath(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = DefaultConfigPath
+	}
+	configFilePath.Lock()
+	configFilePath.value = filepath.Clean(path)
+	configFilePath.Unlock()
+}
+
+// ConfigFilePath 返回当前进程启动使用的配置文件路径。
+func ConfigFilePath() string {
+	configFilePath.RLock()
+	defer configFilePath.RUnlock()
+	return configFilePath.value
+}
+
+// ValidateYAML 校验配置文件内容是否能按 APIRelay 配置结构解析。
+func ValidateYAML(data []byte) error {
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return err
+	}
+	cfg.Normalize()
+	return nil
+}
+
 // Load 从 path 读取 yaml（可不存在），再应用环境变量覆盖。
 func Load(path string) (*Config, error) {
+	SetConfigFilePath(path)
 	cfg := Default()
 
-	if path != "" {
+	if strings.TrimSpace(path) != "" {
 		if data, err := os.ReadFile(path); err == nil {
 			if err := yaml.Unmarshal(data, cfg); err != nil {
 				return nil, err

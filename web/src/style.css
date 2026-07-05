@@ -4,24 +4,33 @@
 
 @layer base {
   :root {
-    /* 航空管制配色：深蓝背景 + 青色主调 + 琥珀警告 */
-    --c-bg: 8 12 20;
-    --c-surface: 14 20 32;
-    --c-panel: 20 28 44;
-    --c-elevated: 28 38 58;
-    --c-border: 42 54 78;
+    /* APIRelay Relay 控制台：机柜碳黑、面板墨蓝、信号青、配置琥珀、终端绿 */
+    --c-bg: 7 16 24;             /* carbon-bay #071018 */
+    --c-surface: 10 23 32;
+    --c-panel: 13 27 37;         /* panel-ink #0D1B25 */
+    --c-elevated: 18 42 55;
+    --c-border: 43 72 87;
+    --c-line: 37 63 77;
+    --c-line-strong: 62 94 108;
 
-    --c-text: 226 232 240;
-    --c-text-dim: 148 163 184;
-    --c-text-muted: 100 116 139;
+    --c-text: 220 231 239;       /* paper-fog #DCE7EF */
+    --c-text-dim: 154 178 190;
+    --c-text-muted: 101 126 138;
+    --c-t1: 220 231 239;
+    --c-t2: 154 178 190;
+    --c-t3: 101 126 138;
 
-    --c-primary: 14 165 233;
-    --c-accent: 251 191 36;
-    --c-success: 34 197 94;
-    --c-warning: 251 146 60;
-    --c-danger: 239 68 68;
+    --c-primary: 36 210 255;     /* trace-cyan #24D2FF */
+    --c-accent: 255 176 32;      /* relay-amber #FFB020 */
+    --c-success: 102 242 165;    /* terminal-green #66F2A5 */
+    --c-warning: 255 176 32;
+    --c-danger: 255 91 91;
+    --c-signal: 36 210 255;
+    --c-online: 102 242 165;
+    --c-warn: 255 176 32;
+    --c-down: 255 91 91;
 
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro", Inter, system-ui, sans-serif;
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     color-scheme: dark;
   }
@@ -29,115 +38,236 @@
   * { @apply border-border; }
   html { @apply bg-bg text-text; }
   body {
-    background: linear-gradient(135deg, rgb(var(--c-bg)) 0%, rgb(var(--c-surface)) 100%);
     min-height: 100vh;
+    background:
+      radial-gradient(circle at 15% -10%, rgb(var(--c-signal) / 0.16), transparent 34rem),
+      radial-gradient(circle at 88% 8%, rgb(var(--c-accent) / 0.10), transparent 30rem),
+      linear-gradient(135deg, rgb(var(--c-bg)) 0%, rgb(4 10 16) 100%);
   }
+  button, input, select, textarea { font: inherit; }
+  code, pre, kbd, samp { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace; }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
       animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
       transition-duration: 0.01ms !important;
     }
   }
 
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
-  ::-webkit-scrollbar-thumb { @apply rounded-full bg-border; }
-  ::-webkit-scrollbar-thumb:hover { @apply bg-text-muted; }
+  ::-webkit-scrollbar-thumb { @apply rounded-full bg-line; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-line-strong; }
 
-  :focus-visible { @apply outline-none ring-2 ring-primary/40 ring-offset-2 ring-offset-bg; }
+  :focus-visible { @apply outline-none ring-2 ring-signal/40 ring-offset-2 ring-offset-bg; }
 }
 
 @layer components {
+  .app-shell {
+    @apply min-h-screen flex bg-bg text-text;
+  }
+  .relay-sidebar {
+    @apply relative w-72 shrink-0 flex flex-col border-r border-line overflow-hidden;
+    background:
+      linear-gradient(180deg, rgb(var(--c-panel) / 0.94), rgb(5 14 22 / 0.98)),
+      repeating-linear-gradient(90deg, rgb(var(--c-signal) / 0.06) 0 1px, transparent 1px 34px);
+    box-shadow: inset -1px 0 0 rgb(var(--c-signal) / 0.10);
+  }
+  .relay-sidebar::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 1.35rem;
+    width: 1px;
+    background: linear-gradient(180deg, transparent, rgb(var(--c-signal) / 0.42), transparent);
+    pointer-events: none;
+  }
+  .relay-brand {
+    @apply relative h-20 px-6 flex items-center gap-3 border-b border-line;
+  }
+  .relay-logo {
+    @apply relative w-11 h-11 rounded-xl flex items-center justify-center text-bg shadow-signal;
+    background:
+      linear-gradient(135deg, rgb(var(--c-signal)), rgb(var(--c-online))),
+      rgb(var(--c-signal));
+  }
+  .relay-logo::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+    border: 1px solid rgb(var(--c-signal) / 0.18);
+    border-radius: 1rem;
+  }
+  .relay-bus {
+    @apply flex-1 p-4 space-y-2 overflow-y-auto;
+  }
+  .nav-wire {
+    @apply relative flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all border border-transparent;
+  }
+  .nav-wire::before {
+    content: "";
+    @apply absolute rounded-full;
+    left: -0.92rem;
+    width: 0.55rem;
+    height: 0.55rem;
+    background: rgb(var(--c-line-strong));
+    box-shadow: 0 0 0 4px rgb(var(--c-bg));
+  }
+  .nav-wire-active {
+    @apply text-bg border-signal/40 shadow-signal;
+    background: linear-gradient(135deg, rgb(var(--c-signal)), rgb(125 232 255));
+  }
+  .nav-wire-active::before {
+    background: rgb(var(--c-online));
+    box-shadow: 0 0 0 4px rgb(var(--c-bg)), 0 0 18px rgb(var(--c-online) / 0.8);
+  }
+  .nav-wire-idle {
+    @apply text-t2 hover:text-t1 hover:border-line hover:bg-elevated/50;
+  }
+  .main-grid {
+    @apply relative flex-1 flex flex-col overflow-hidden;
+    background:
+      linear-gradient(rgb(var(--c-bg) / 0.82), rgb(var(--c-bg) / 0.92)),
+      linear-gradient(90deg, rgb(var(--c-signal) / 0.06) 1px, transparent 1px),
+      linear-gradient(0deg, rgb(var(--c-signal) / 0.045) 1px, transparent 1px);
+    background-size: auto, 48px 48px, 48px 48px;
+  }
+  .console-topbar {
+    @apply h-16 shrink-0 px-6 flex items-center justify-between border-b border-line bg-panel/70 backdrop-blur-xl;
+    box-shadow: 0 1px 0 rgb(var(--c-signal) / 0.08);
+  }
+  .console-title {
+    @apply font-mono text-sm font-semibold uppercase tracking-[0.18em] text-t1;
+  }
+  .console-frame {
+    @apply flex-1 overflow-auto p-6;
+  }
+
   .btn {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm
            transition-all disabled:opacity-40 disabled:cursor-not-allowed;
   }
   .btn-primary {
-    @apply btn bg-primary text-white hover:bg-primary/90 shadow-lg shadow-primary/20;
+    @apply btn text-bg border border-signal/40 shadow-signal;
+    background: linear-gradient(135deg, rgb(var(--c-signal)), rgb(126 232 255));
   }
+  .btn-primary:hover { filter: brightness(1.06); }
   .btn-secondary {
-    @apply btn bg-elevated text-text hover:bg-elevated/80 border border-border;
+    @apply btn bg-elevated/80 text-t1 hover:bg-elevated border border-line hover:border-line-strong;
   }
   .btn-ghost {
-    @apply btn text-text-dim hover:text-text hover:bg-elevated/50;
+    @apply btn text-t2 hover:text-t1 hover:bg-elevated/50 border border-transparent hover:border-line;
   }
   .btn-danger {
-    @apply btn bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20;
+    @apply btn bg-down/10 text-down border border-down/25 hover:bg-down/20;
   }
   .btn-sm { @apply px-3 py-1.5 text-xs; }
 
   .input {
-    @apply w-full px-3 py-2.5 rounded-lg text-sm bg-surface border border-border text-text
-           placeholder:text-text-muted transition-all
-           focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20
+    @apply w-full px-3 py-2.5 rounded-lg text-sm bg-bg/70 border border-line text-t1
+           placeholder:text-t3 transition-all
+           focus:outline-none focus:border-signal/60 focus:ring-2 focus:ring-signal/20
            disabled:opacity-40 disabled:cursor-not-allowed;
   }
-  .label { @apply block text-xs font-medium text-text-dim mb-1.5 uppercase tracking-wide; }
-  .hint { @apply text-xs text-text-muted mt-1; }
+  textarea.input { @apply leading-relaxed; }
+  .label { @apply block text-xs font-medium text-t2 mb-1.5 uppercase tracking-wide; }
+  .hint { @apply text-xs text-t3 mt-1; }
 
   .card, .panel {
-    @apply bg-panel border border-border rounded-xl shadow-lg shadow-bg/20 overflow-hidden;
+    @apply bg-panel/90 border border-line rounded-xl shadow-panel overflow-hidden;
+    backdrop-filter: blur(14px);
+  }
+  .panel {
+    background:
+      linear-gradient(180deg, rgb(var(--c-panel) / 0.94), rgb(9 21 30 / 0.94));
+  }
+  .inset {
+    @apply rounded-xl border border-line bg-bg/50;
   }
 
   .badge {
-    @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium;
+    @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border;
   }
-  .badge-primary, .badge-signal { @apply bg-primary/15 text-primary border border-primary/30; }
-  .badge-success, .badge-online { @apply bg-success/15 text-success border border-success/30; }
-  .badge-warning, .badge-warn { @apply bg-warning/15 text-warning border border-warning/30; }
-  .badge-danger, .badge-down { @apply bg-danger/15 text-danger border border-danger/30; }
-  .badge-neutral { @apply bg-elevated text-text-dim border border-border; }
+  .badge-primary, .badge-signal { @apply bg-signal/10 text-signal border-signal/30; }
+  .badge-success, .badge-online { @apply bg-online/10 text-online border-online/30; }
+  .badge-warning, .badge-warn { @apply bg-warn/10 text-warn border-warn/30; }
+  .badge-danger, .badge-down { @apply bg-down/10 text-down border-down/30; }
+  .badge-neutral { @apply bg-elevated/75 text-t2 border-line; }
 
-  .status-dot {
-    @apply w-2 h-2 rounded-full;
-  }
-  .status-dot-online { @apply bg-success shadow-sm shadow-success/50; }
-  .status-dot-warning { @apply bg-warning shadow-sm shadow-warning/50; }
-  .status-dot-danger { @apply bg-danger shadow-sm shadow-danger/50; }
+  .status-dot { @apply w-2 h-2 rounded-full; }
+  .status-dot-online { @apply bg-online shadow-sm shadow-online/50; }
+  .status-dot-warning { @apply bg-warn shadow-sm shadow-warn/50; }
+  .status-dot-danger { @apply bg-down shadow-sm shadow-down/50; }
 
-  .tick { @apply text-xs font-medium text-text-muted uppercase tracking-wider; }
+  .tick { @apply text-2xs font-medium text-t3 uppercase tracking-[0.16em]; }
   .skeleton { @apply rounded-lg bg-elevated animate-pulse; }
-  .empty-state { @apply flex flex-col items-center justify-center py-16 text-text-muted text-sm gap-3; }
+  .empty-state { @apply flex flex-col items-center justify-center py-16 text-t3 text-sm gap-3; }
 
-  /* 兼容旧样式 */
-  .t1 { @apply text-text; }
-  .t2 { @apply text-text-dim; }
-  .t3 { @apply text-text-muted; }
-  .line { @apply border-border; }
-  .line-strong { @apply border-border; }
-  .panel-2 { @apply bg-elevated; }
-  .signal { @apply text-primary; }
-  .online { @apply text-success; }
-  .warn { @apply text-warning; }
-  .down { @apply text-danger; }
+  /* 兼容旧样式 / 语义别名 */
+  .t1 { @apply text-t1; }
+  .t2 { @apply text-t2; }
+  .t3 { @apply text-t3; }
+  .line { @apply border-line; }
+  .line-strong { @apply border-line-strong; }
+  .panel-2 { @apply bg-elevated/70; }
+  .signal { @apply text-signal; }
+  .online { @apply text-online; }
+  .warn { @apply text-warn; }
+  .down { @apply text-down; }
 
-  .page-title { @apply text-2xl font-bold text-text mb-1; }
-  .page-subtitle { @apply text-sm text-text-muted; }
+  .page-title { @apply text-2xl font-semibold text-t1 mb-1 tracking-tight; }
+  .page-subtitle { @apply text-sm text-t3; }
 
   .modal-backdrop {
     @apply fixed inset-0 z-50 flex items-center justify-center p-4 bg-bg/80 backdrop-blur-sm;
   }
   .modal {
-    @apply bg-panel border border-border rounded-xl w-full max-h-[90vh] overflow-auto shadow-2xl;
+    @apply bg-panel border border-line rounded-xl w-full max-h-[90vh] overflow-auto shadow-2xl;
   }
   .modal-header {
-    @apply flex items-center justify-between p-6 border-b border-border;
+    @apply flex items-center justify-between p-6 border-b border-line bg-bg/25;
   }
-  .modal-title { @apply text-lg font-semibold text-text; }
+  .modal-title { @apply text-lg font-semibold text-t1; }
+  .modal > .grid { @apply p-4; }
+  .modal > .space-y-4 { @apply px-5 pt-5; }
+  .modal > .mt-4 { @apply mx-5 mb-5; }
+  .modal > .flex.justify-end { @apply mx-5 mb-5; }
 
   .dtable { @apply w-full text-sm; }
-  .dtable thead th { @apply px-4 py-3 text-left text-xs font-medium text-text-muted uppercase tracking-wider border-b border-border bg-elevated; }
-  .dtable tbody td { @apply px-4 py-3 text-text border-b border-border; }
-  .dtable tbody tr:hover { @apply bg-elevated/50; }
+  .dtable thead th { @apply px-4 py-3 text-left text-xs font-medium text-t3 uppercase tracking-wider border-b border-line bg-bg/50; }
+  .dtable tbody td { @apply px-4 py-3 text-t1 border-b border-line; }
+  .dtable tbody tr:hover { @apply bg-signal/5; }
   .dtable tbody tr:last-child td { @apply border-b-0; }
 
   .toggle {
-    @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer bg-border;
+    @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer bg-line-strong;
   }
-  .toggle-on { @apply bg-primary; }
+  .toggle-on { @apply bg-signal; }
   .toggle-knob {
     @apply inline-block h-4 w-4 rounded-full bg-white transition-transform translate-x-1;
   }
   .toggle-on .toggle-knob { @apply translate-x-6; }
+
+  .key-chip {
+    @apply inline-flex items-center gap-2 min-w-0 max-w-full px-2.5 py-1.5 rounded-lg border border-signal/25 bg-signal/10 text-signal font-mono text-xs;
+  }
+  .key-chip code {
+    @apply truncate;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  }
+  .key-chip-full code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .config-textarea {
+    @apply w-full min-h-[420px] resize-y rounded-xl border border-line bg-bg/80 px-4 py-3 text-sm text-t1 font-mono leading-6
+           focus:outline-none focus:border-warn/70 focus:ring-2 focus:ring-warn/20 placeholder:text-t3;
+    tab-size: 2;
+  }
+  .relay-callout {
+    @apply rounded-xl border border-warn/25 bg-warn/10 px-4 py-3 text-sm text-t2;
+  }
 }
