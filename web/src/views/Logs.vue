@@ -20,6 +20,42 @@ function fmt(ms) {
 
 const cost = (micro) => micro ? '$' + (micro / 1_000_000).toFixed(4) : '-'
 
+function parseFailoverChain(content) {
+  if (!content || typeof content !== 'string') return []
+  try {
+    const parsed = JSON.parse(content)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function decisionName(d) {
+  return {
+    success: '命中',
+    retry_same_channel: '同频重试',
+    switch_channel: '切换航路',
+    fatal: '终止',
+  }[d] || d || '-'
+}
+function decisionBadge(d) {
+  if (d === 'success') return 'badge-online'
+  if (d === 'retry_same_channel') return 'badge-warn'
+  if (d === 'switch_channel') return 'badge-signal'
+  if (d === 'fatal') return 'badge-down'
+  return 'badge-neutral'
+}
+function attemptStatusClass(status) {
+  if (!status) return 'text-t3'
+  if (status >= 500) return 'text-danger'
+  if (status >= 400) return 'text-warning'
+  return 'text-success'
+}
+function attemptTime(ms) {
+  if (!ms) return '-'
+  return fmt(ms)
+}
+
 function typeName(t) {
   return { 1: '消费', 2: '错误', 3: '管理', 4: '系统' }[t] || '其他'
 }
@@ -43,7 +79,10 @@ async function load() {
   loading.value = true
   try {
     const data = await api.get('/logs', { params: { page: page.value, page_size: pageSize } })
-    logs.value = data.items || []
+    logs.value = (data.items || []).map((item) => ({
+      ...item,
+      _failover_chain: parseFailoverChain(item.content),
+    }))
     total.value = data.total || 0
     expandedId.value = null
   } finally {
@@ -127,7 +166,46 @@ onMounted(load)
                     </div>
                     <div v-if="l.error" class="mt-3">
                       <span class="tick">ERROR</span>
-                      <pre class="mt-1 p-2.5 rounded-md border text-2xs whitespace-pre-wrap break-all max-h-56 overflow-auto font-mono text-[rgb(var(--c-down))] border-[rgb(var(--c-down)/0.28)] bg-[rgb(var(--c-down)/0.06)]">{{ l.error }}</pre>
+                      <pre class="mt-1 p-2.5 rounded-md border text-2xs whitespace-pre-wrap break-all max-h-56 overflow-auto font-mono text-danger border-danger/30 bg-danger/10">{{ l.error }}</pre>
+                    </div>
+
+                    <div v-if="l._failover_chain?.length" class="mt-4">
+                      <div class="flex items-center justify-between gap-3 mb-2">
+                        <div>
+                          <span class="tick">FAILOVER TRACK</span>
+                          <p class="text-2xs text-t3 mt-0.5">按实际尝试顺序记录渠道、状态与调度决策</p>
+                        </div>
+                        <span class="badge badge-neutral font-mono !text-2xs">{{ l._failover_chain.length }} HOPS</span>
+                      </div>
+
+                      <div class="rounded-lg border border-primary/20 bg-surface/70 overflow-hidden">
+                        <div v-for="(a, idx) in l._failover_chain" :key="idx" class="relative grid grid-cols-[2rem_1fr] gap-3 px-3 py-3 border-b border-border/70 last:border-b-0">
+                          <div class="relative flex justify-center">
+                            <div v-if="idx < l._failover_chain.length - 1" class="absolute top-7 bottom-[-0.75rem] w-px bg-primary/25"></div>
+                            <div class="relative z-10 h-7 w-7 rounded-full border flex items-center justify-center font-mono text-2xs"
+                                 :class="a.decision === 'success' ? 'border-success/50 bg-success/15 text-success' : a.decision === 'fatal' ? 'border-danger/50 bg-danger/15 text-danger' : 'border-primary/40 bg-primary/10 text-primary'">
+                              {{ idx + 1 }}
+                            </div>
+                          </div>
+
+                          <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                              <span class="font-mono text-xs text-t1 truncate max-w-[180px]">{{ a.channel_name || ('#' + a.channel_id) }}</span>
+                              <span class="badge !px-2 !py-0.5" :class="decisionBadge(a.decision)">{{ decisionName(a.decision) }}</span>
+                              <span class="font-mono text-2xs tabular-nums" :class="attemptStatusClass(a.status)">HTTP {{ a.status || '-' }}</span>
+                              <span v-if="a.retryable" class="badge badge-warning !px-2 !py-0.5">可重试</span>
+                            </div>
+                            <div class="mt-1.5 grid grid-cols-1 md:grid-cols-3 gap-1.5 text-2xs text-t3 font-mono">
+                              <span>API {{ a.api_type || '-' }}</span>
+                              <span>MODEL {{ a.origin_model || '-' }}<template v-if="a.upstream_model && a.upstream_model !== a.origin_model"> → {{ a.upstream_model }}</template></span>
+                              <span>T+ {{ attemptTime(a.at_ms) }}</span>
+                            </div>
+                            <div v-if="a.error" class="mt-2 rounded-md border border-border/80 bg-bg/40 px-2 py-1.5 font-mono text-2xs text-t2 break-all">
+                              <span v-if="a.error_category" class="text-t3">{{ a.error_category }} · </span>{{ a.error }}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </td>
