@@ -119,6 +119,33 @@ function clearFilters() {
   page.value = 1
   load()
 }
+function quickErrors() {
+  filters.value.type = '2'
+  filters.value.status = ''
+  applyFilters()
+}
+function quickRateLimit() {
+  filters.value.type = '2'
+  filters.value.status = '429'
+  applyFilters()
+}
+function quickTimeouts() {
+  filters.value.type = '2'
+  filters.value.status = '504'
+  applyFilters()
+}
+function filterSummary() {
+  const parts = []
+  const type = logTypes.find((item) => item.value === filters.value.type)
+  const range = timeRanges.find((item) => item.value === filters.value.range)
+  if (type?.value) parts.push(type.label)
+  if (range?.value) parts.push(range.label)
+  if (filters.value.model) parts.push(`模型 ${filters.value.model}`)
+  if (filters.value.token_name) parts.push(`令牌 ${filters.value.token_name}`)
+  if (filters.value.status) parts.push(`HTTP ${filters.value.status}`)
+  if (filters.value.channel_id) parts.push(`节点 #${filters.value.channel_id}`)
+  return parts.length ? parts.join(' · ') : '全部信号'
+}
 
 async function load() {
   loading.value = true
@@ -157,7 +184,12 @@ onMounted(load)
           <span class="tick">FILTER RADAR</span>
           <p class="text-2xs text-t3 mt-0.5">缩小信号范围，快速定位异常节点与模型航迹</p>
         </div>
-        <button @click="clearFilters" class="btn-ghost btn-sm">清除</button>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <button @click="quickErrors" class="btn-ghost btn-sm">异常</button>
+          <button @click="quickRateLimit" class="btn-ghost btn-sm">限流 429</button>
+          <button @click="quickTimeouts" class="btn-ghost btn-sm">超时 504</button>
+          <button @click="clearFilters" class="btn-ghost btn-sm">清除</button>
+        </div>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
         <label>
@@ -191,6 +223,10 @@ onMounted(load)
         <label class="flex items-end">
           <button @click="applyFilters" class="btn-secondary w-full">扫描</button>
         </label>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 font-mono text-2xs text-t3">
+        <span>LOCKED ON · {{ filterSummary() }}</span>
+        <span>{{ total }} 条匹配 · PAGE {{ page }}</span>
       </div>
     </div>
 
