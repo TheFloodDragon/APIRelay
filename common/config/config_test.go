@@ -54,6 +54,36 @@ func TestEnvOverridesSecurityFields(t *testing.T) {
 	}
 }
 
+func TestEnvOverridesRelayRuntimeFields(t *testing.T) {
+	t.Setenv("APIRELAY_MAX_RETRIES", "4")
+	t.Setenv("APIRELAY_CHANNEL_MAX_RETRIES", "0")
+	t.Setenv("APIRELAY_COOLDOWN_SECONDS", "45")
+	t.Setenv("APIRELAY_REQUEST_TIMEOUT", "12")
+	t.Setenv("APIRELAY_RELAY_MAX_BODY_BYTES", "3333")
+	t.Setenv("APIRELAY_DEFAULT_GROUP", "vip")
+	t.Setenv("APIRELAY_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "7")
+	t.Setenv("APIRELAY_CIRCUIT_BREAKER_SUCCESS_THRESHOLD", "3")
+	t.Setenv("APIRELAY_CIRCUIT_BREAKER_TIMEOUT_SECONDS", "90")
+	t.Setenv("APIRELAY_CIRCUIT_BREAKER_ERROR_RATE_THRESHOLD", "0.75")
+	t.Setenv("APIRELAY_CIRCUIT_BREAKER_MIN_REQUESTS", "20")
+	t.Setenv("APIRELAY_CIRCUIT_BREAKER_WINDOW_SECONDS", "120")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Relay.MaxRetries != 4 || cfg.Relay.ChannelMaxRetries != 0 || cfg.Relay.CooldownSeconds != 45 || cfg.Relay.RequestTimeout != 12 {
+		t.Fatalf("relay retry/timeout env overrides not applied: %#v", cfg.Relay)
+	}
+	if cfg.Relay.MaxBodyBytes != 3333 || cfg.Relay.DefaultGroup != "vip" {
+		t.Fatalf("relay body/group env overrides not applied: %#v", cfg.Relay)
+	}
+	cb := cfg.Relay.CircuitBreaker
+	if cb.FailureThreshold != 7 || cb.SuccessThreshold != 3 || cb.TimeoutSeconds != 90 || cb.ErrorRateThreshold != 0.75 || cb.MinRequests != 20 || cb.WindowSeconds != 120 {
+		t.Fatalf("circuit breaker env overrides not applied: %#v", cb)
+	}
+}
+
 func TestNormalizeSecurityDefaults(t *testing.T) {
 	cfg := &Config{}
 	cfg.Normalize()

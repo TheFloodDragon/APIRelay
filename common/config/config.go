@@ -303,6 +303,16 @@ func applyEnv(cfg *Config) {
 			cfg.Relay.MaxRetries = p
 		}
 	}
+	if v := os.Getenv("APIRELAY_CHANNEL_MAX_RETRIES"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Relay.ChannelMaxRetries = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_COOLDOWN_SECONDS"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Relay.CooldownSeconds = p
+		}
+	}
 	if v := os.Getenv("APIRELAY_REQUEST_TIMEOUT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			cfg.Relay.RequestTimeout = p
@@ -311,6 +321,39 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("APIRELAY_RELAY_MAX_BODY_BYTES"); v != "" {
 		if p, err := strconv.ParseInt(v, 10, 64); err == nil {
 			cfg.Relay.MaxBodyBytes = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_DEFAULT_GROUP"); v != "" {
+		cfg.Relay.DefaultGroup = v
+	}
+	if v := os.Getenv("APIRELAY_CIRCUIT_BREAKER_FAILURE_THRESHOLD"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Relay.CircuitBreaker.FailureThreshold = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_CIRCUIT_BREAKER_SUCCESS_THRESHOLD"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Relay.CircuitBreaker.SuccessThreshold = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_CIRCUIT_BREAKER_TIMEOUT_SECONDS"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Relay.CircuitBreaker.TimeoutSeconds = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_CIRCUIT_BREAKER_ERROR_RATE_THRESHOLD"); v != "" {
+		if p, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Relay.CircuitBreaker.ErrorRateThreshold = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_CIRCUIT_BREAKER_MIN_REQUESTS"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Relay.CircuitBreaker.MinRequests = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_CIRCUIT_BREAKER_WINDOW_SECONDS"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Relay.CircuitBreaker.WindowSeconds = p
 		}
 	}
 }
