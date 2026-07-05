@@ -2,10 +2,36 @@ package relaycommon
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/model"
 )
+
+const unsetChannelMaxRetries int64 = -1
+
+var runtimeChannelMaxRetries atomic.Int64
+
+func init() {
+	runtimeChannelMaxRetries.Store(unsetChannelMaxRetries)
+}
+
+// SetRuntimeChannelMaxRetries 更新运行时单渠道重试次数。传入负数会恢复为使用启动配置。
+func SetRuntimeChannelMaxRetries(retries int) {
+	if retries < 0 {
+		runtimeChannelMaxRetries.Store(unsetChannelMaxRetries)
+		return
+	}
+	runtimeChannelMaxRetries.Store(int64(retries))
+}
+
+// RuntimeChannelMaxRetries 返回当前运行时单渠道重试次数；未在线覆盖时返回 fallback。
+func RuntimeChannelMaxRetries(fallback int) int {
+	if retries := runtimeChannelMaxRetries.Load(); retries >= 0 {
+		return int(retries)
+	}
+	return fallback
+}
 
 // RelayInfo 贯穿一次转发请求的上下文信息。
 // 放在独立子包，供 relay 主包与各 adaptor 子包共享，避免循环依赖。

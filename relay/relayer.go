@@ -19,6 +19,7 @@ import (
 	"github.com/apirelay/apirelay/relay/adaptor"
 	"github.com/apirelay/apirelay/relay/apicompat"
 	"github.com/apirelay/apirelay/relay/circuitbreaker"
+	"github.com/apirelay/apirelay/relay/relaycommon"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -31,7 +32,17 @@ type Relayer struct {
 
 // NewRelayer 创建转发器。
 func NewRelayer(cfg *config.RelayConfig) *Relayer {
+	if cfg != nil {
+		relaycommon.SetRuntimeChannelMaxRetries(cfg.ChannelMaxRetries)
+	}
 	return &Relayer{cfg: cfg}
+}
+
+func (r *Relayer) channelMaxRetries() int {
+	if r == nil || r.cfg == nil {
+		return relaycommon.RuntimeChannelMaxRetries(defaultMaxSameChannelRetries)
+	}
+	return relaycommon.RuntimeChannelMaxRetries(r.cfg.ChannelMaxRetries)
 }
 
 // HandleOpenAIChat 处理对外的 OpenAI /v1/chat/completions 请求。
@@ -172,7 +183,8 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 //   - 请求成功后清除该渠道冷却。
 func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, out Outbound, billing *BillingSession) {
 	log := logger.FromContext(c.Request.Context())
-	state := NewFailoverState(r.cfg.CooldownSeconds, r.cfg.ChannelMaxRetries)
+	channelMaxRetries := r.channelMaxRetries()
+	state := NewFailoverState(r.cfg.CooldownSeconds, channelMaxRetries)
 
 	maxSwitches := r.cfg.MaxRetries
 	if maxSwitches < 1 {
@@ -180,9 +192,9 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 	}
 	switches := 0
 	// hardCap 防止同渠道重试导致的无限循环（切换预算 + 每渠道重试预算）。
-	maxRetries := r.cfg.ChannelMaxRetries
+	maxRetries := channelMaxRetries
 	if maxRetries < 0 {
-		maxRetries = 2
+		maxRetries = defaultMaxSameChannelRetries
 	}
 	hardCap := maxSwitches + (maxSwitches+1)*maxRetries + 2
 

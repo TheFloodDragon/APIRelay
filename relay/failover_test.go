@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/apirelay/apirelay/common/config"
 	"github.com/apirelay/apirelay/model"
+	"github.com/apirelay/apirelay/relay/relaycommon"
 )
 
 func TestFailoverState_FatalOnNonRetryable(t *testing.T) {
@@ -42,6 +44,32 @@ func TestFailoverState_NonTransientRetryableSwitches(t *testing.T) {
 	d := s.OnFailure(3, http.StatusBadGateway, true, "bad gateway")
 	if d != DecisionSwitchChannel {
 		t.Fatalf("expected switch for 502, got %d", d)
+	}
+}
+
+func TestFailoverState_ZeroSameChannelRetriesSwitches(t *testing.T) {
+	s := NewFailoverState(60, 0)
+	d := s.OnFailure(7, http.StatusTooManyRequests, true, "rate limited")
+	if d != DecisionSwitchChannel {
+		t.Fatalf("zero same-channel retries should switch immediately, got %d", d)
+	}
+	if retries := s.SameChannelRetries[7]; retries != 0 {
+		t.Fatalf("same-channel retry counter = %d", retries)
+	}
+}
+
+func TestRelayerRuntimeChannelMaxRetriesOverride(t *testing.T) {
+	relaycommon.SetRuntimeChannelMaxRetries(-1)
+	t.Cleanup(func() { relaycommon.SetRuntimeChannelMaxRetries(-1) })
+
+	r := NewRelayer(&config.RelayConfig{ChannelMaxRetries: 2})
+	if got := r.channelMaxRetries(); got != 2 {
+		t.Fatalf("initial channel max retries = %d", got)
+	}
+
+	relaycommon.SetRuntimeChannelMaxRetries(0)
+	if got := r.channelMaxRetries(); got != 0 {
+		t.Fatalf("runtime channel max retries = %d", got)
 	}
 }
 

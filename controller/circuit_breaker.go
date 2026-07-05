@@ -6,6 +6,7 @@ import (
 
 	"github.com/apirelay/apirelay/model"
 	"github.com/apirelay/apirelay/relay/circuitbreaker"
+	"github.com/apirelay/apirelay/relay/relaycommon"
 	"github.com/gin-gonic/gin"
 )
 
@@ -85,6 +86,7 @@ func UpdateCircuitBreakerConfig(c *gin.Context) {
 
 	// 更新运行时配置
 	circuitbreaker.GetManager().UpdateConfig(cfg)
+	relaycommon.SetRuntimeChannelMaxRetries(cfg.ChannelMaxRetries)
 
 	c.JSON(http.StatusOK, gin.H{"message": "config updated", "config": cfg})
 }
