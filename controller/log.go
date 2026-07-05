@@ -20,6 +20,7 @@ func ListLogs(c *gin.Context) {
 	q.PageSize, _ = strconv.Atoi(c.DefaultQuery("page_size", "20"))
 	q.ChannelId, _ = strconv.Atoi(c.DefaultQuery("channel_id", "0"))
 	q.Type, _ = strconv.Atoi(c.DefaultQuery("type", "0"))
+	q.Status, _ = strconv.Atoi(c.DefaultQuery("status", "0"))
 	q.StartTime, _ = strconv.ParseInt(c.DefaultQuery("start_time", "0"), 10, 64)
 	q.EndTime, _ = strconv.ParseInt(c.DefaultQuery("end_time", "0"), 10, 64)
 

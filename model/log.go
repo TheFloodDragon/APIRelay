@@ -65,6 +65,7 @@ type LogQuery struct {
 	ChannelId int
 	Model     string
 	Type      int
+	Status    int
 	StartTime int64
 	EndTime   int64
 	Page      int
@@ -88,6 +89,9 @@ func ListLogs(q *LogQuery) ([]*Log, int64, error) {
 	}
 	if q.Type > 0 {
 		tx = tx.Where("type = ?", q.Type)
+	}
+	if q.Status > 0 {
+		tx = tx.Where("status = ?", q.Status)
 	}
 	if q.StartTime > 0 {
 		tx = tx.Where("created_at >= ?", q.StartTime)

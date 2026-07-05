@@ -10,6 +10,26 @@ const pageSize = 20
 const total = ref(0)
 const loading = ref(false)
 const expandedId = ref(null) // 行内展开的日志 id
+const filters = ref({
+  type: '',
+  model: '',
+  token_name: '',
+  channel_id: '',
+  status: '',
+  range: '24h',
+})
+const logTypes = [
+  { value: '', label: '全部类型' },
+  { value: '1', label: '消费' },
+  { value: '2', label: '错误' },
+  { value: '3', label: '管理' },
+]
+const timeRanges = [
+  { value: '', label: '全部时间', ms: 0 },
+  { value: '1h', label: '最近 1 小时', ms: 60 * 60 * 1000 },
+  { value: '24h', label: '最近 24 小时', ms: 24 * 60 * 60 * 1000 },
+  { value: '7d', label: '最近 7 天', ms: 7 * 24 * 60 * 60 * 1000 },
+]
 
 function fmt(ms) {
   if (!ms) return '-'
@@ -75,10 +95,35 @@ function toggle(l) {
   expandedId.value = expandedId.value === l.id ? null : l.id
 }
 
+function logParams() {
+  const params = { page: page.value, page_size: pageSize }
+  for (const [key, value] of Object.entries(filters.value)) {
+    if (key === 'range') continue
+    const v = String(value || '').trim()
+    if (v) params[key] = v
+  }
+  const range = timeRanges.find((item) => item.value === filters.value.range)
+  if (range?.ms) {
+    const end = Date.now()
+    params.start_time = end - range.ms
+    params.end_time = end
+  }
+  return params
+}
+function applyFilters() {
+  page.value = 1
+  load()
+}
+function clearFilters() {
+  filters.value = { type: '', model: '', token_name: '', channel_id: '', status: '', range: '24h' }
+  page.value = 1
+  load()
+}
+
 async function load() {
   loading.value = true
   try {
-    const data = await api.get('/logs', { params: { page: page.value, page_size: pageSize } })
+    const data = await api.get('/logs', { params: logParams() })
     logs.value = (data.items || []).map((item) => ({
       ...item,
       _failover_chain: parseFailoverChain(item.content),
@@ -104,6 +149,49 @@ onMounted(load)
         <p class="page-subtitle">API 调用历史 · 点击行展开详情</p>
       </div>
       <button @click="load" class="btn-secondary">刷新</button>
+    </div>
+
+    <div class="panel p-4 mb-4">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <span class="tick">FILTER RADAR</span>
+          <p class="text-2xs text-t3 mt-0.5">缩小信号范围，快速定位异常节点与模型航迹</p>
+        </div>
+        <button @click="clearFilters" class="btn-ghost btn-sm">清除</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
+        <label>
+          <span class="label !mb-1">类型</span>
+          <select v-model="filters.type" class="input" @change="applyFilters">
+            <option v-for="t in logTypes" :key="t.value" :value="t.value">{{ t.label }}</option>
+          </select>
+        </label>
+        <label>
+          <span class="label !mb-1">时间窗</span>
+          <select v-model="filters.range" class="input" @change="applyFilters">
+            <option v-for="r in timeRanges" :key="r.value" :value="r.value">{{ r.label }}</option>
+          </select>
+        </label>
+        <label>
+          <span class="label !mb-1">模型</span>
+          <input v-model="filters.model" class="input font-mono" placeholder="gpt-4o" @keyup.enter="applyFilters" />
+        </label>
+        <label>
+          <span class="label !mb-1">令牌</span>
+          <input v-model="filters.token_name" class="input font-mono" placeholder="token name" @keyup.enter="applyFilters" />
+        </label>
+        <label>
+          <span class="label !mb-1">状态码</span>
+          <input v-model="filters.status" class="input font-mono" placeholder="503" inputmode="numeric" @keyup.enter="applyFilters" />
+        </label>
+        <label>
+          <span class="label !mb-1">节点 ID</span>
+          <input v-model="filters.channel_id" class="input font-mono" placeholder="42" inputmode="numeric" @keyup.enter="applyFilters" />
+        </label>
+        <label class="flex items-end">
+          <button @click="applyFilters" class="btn-secondary w-full">扫描</button>
+        </label>
+      </div>
     </div>
 
     <div class="panel overflow-hidden">
@@ -149,7 +237,7 @@ onMounted(load)
                 <td class="text-right font-mono text-2xs text-t2 tabular-nums">{{ l.use_time_ms }}ms</td>
                 <td class="text-right font-mono text-2xs text-t3 tabular-nums">{{ l.first_byte_ms ? l.first_byte_ms + 'ms' : '-' }}</td>
                 <td class="text-center">
-                  <span class="font-mono text-2xs tabular-nums" :class="l.status >= 400 ? 'text-[rgb(var(--c-down))]' : 'text-t2'">{{ l.status }}</span>
+                  <span class="font-mono text-2xs tabular-nums" :class="l.status >= 400 ? 'text-danger' : 'text-t2'">{{ l.status }}</span>
                 </td>
               </tr>
               <!-- 行内展开详情 -->
