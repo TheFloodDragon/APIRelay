@@ -97,11 +97,14 @@
           <span class="font-mono text-sm font-medium text-t1">熔断器配置</span>
           <span class="tick ml-2">CIRCUIT BREAKER</span>
         </div>
-        <button class="btn-primary btn-sm" :disabled="savingBreaker" @click="saveBreaker">{{ savingBreaker ? '保存中…' : '保存' }}</button>
+        <div class="flex items-center gap-2">
+          <button class="btn-ghost btn-sm" :disabled="savingBreaker" @click="resetBreakerDefaults">恢复默认</button>
+          <button class="btn-primary btn-sm" :disabled="savingBreaker" @click="saveBreaker">{{ savingBreaker ? '保存中…' : '保存' }}</button>
+        </div>
       </div>
 
       <div class="p-4">
-        <p class="hint mb-4">自动熔断故障渠道，防止级联失败。熔断后等待超时时间进入半开试探。</p>
+        <p class="hint mb-4">自动熔断故障渠道，防止级联失败。错误率只统计滑动窗口内的请求，过期失败不会长期误伤渠道；熔断后等待超时时间进入半开试探。</p>
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <div>
             <label class="label">失败阈值</label>
@@ -129,6 +132,11 @@
             <p class="hint mt-1">统计窗口最小请求数</p>
           </div>
           <div>
+            <label class="label">统计窗口（秒）</label>
+            <input v-model.number="breaker.window_seconds" type="number" min="1" class="input" />
+            <p class="hint mt-1">仅统计最近 N 秒内的错误率，默认 60 秒</p>
+          </div>
+          <div>
             <label class="label">单渠道重试次数</label>
             <input v-model.number="breaker.channel_max_retries" type="number" min="0" class="input" />
             <p class="hint mt-1">同一渠道临时错误重试次数</p>
@@ -151,14 +159,16 @@ const saving = ref(false)
 const testModel = ref('')
 const prices = ref([])
 const savingPrices = ref(false)
-const breaker = ref({
+const defaultBreaker = {
   failure_threshold: 5,
   success_threshold: 2,
   timeout_seconds: 30,
   error_rate_threshold: 0.5,
   min_requests: 10,
+  window_seconds: 60,
   channel_max_retries: 1,
-})
+}
+const breaker = ref({ ...defaultBreaker })
 const savingBreaker = ref(false)
 
 const testResult = computed(() => {
@@ -184,7 +194,7 @@ async function load() {
     rules.value = (r || []).map(x => ({ pattern: x.pattern || '', protocol: x.protocol || 'anthropic' }))
     protocols.value = p || []
     prices.value = (mp || []).map(x => ({ model: x.model || '', input: x.input || 0, output: x.output || 0 }))
-    if (cb) breaker.value = cb
+    if (cb) breaker.value = { ...defaultBreaker, ...cb }
   } catch (e) {
     toast.error('加载失败: ' + e.message)
   }
@@ -220,10 +230,26 @@ async function savePrices() {
   }
 }
 
+function resetBreakerDefaults() {
+  breaker.value = { ...defaultBreaker }
+  toast.info('已填入推荐默认值，保存后生效')
+}
+
 async function saveBreaker() {
   savingBreaker.value = true
   try {
-    await api.put('/settings/circuit-breaker', breaker.value)
+    const clean = {
+      ...breaker.value,
+      failure_threshold: Number(breaker.value.failure_threshold) || defaultBreaker.failure_threshold,
+      success_threshold: Number(breaker.value.success_threshold) || defaultBreaker.success_threshold,
+      timeout_seconds: Number(breaker.value.timeout_seconds) || defaultBreaker.timeout_seconds,
+      error_rate_threshold: Number(breaker.value.error_rate_threshold) || defaultBreaker.error_rate_threshold,
+      min_requests: Number(breaker.value.min_requests) || defaultBreaker.min_requests,
+      window_seconds: Number(breaker.value.window_seconds) || defaultBreaker.window_seconds,
+      channel_max_retries: Number(breaker.value.channel_max_retries) || defaultBreaker.channel_max_retries,
+    }
+    await api.put('/settings/circuit-breaker', clean)
+    breaker.value = clean
     toast.success('熔断器配置已保存')
   } catch (e) {
     toast.error('保存失败: ' + e.message)
