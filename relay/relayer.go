@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -85,11 +86,28 @@ func (r *Relayer) HandleListModels(c *gin.Context) {
 
 // handle 是协议无关的入口：解析对外协议为 IR，再交给故障转移主循环。
 func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]byte) (*dto.UnifiedRequest, error)) {
+	ctx := c.Request.Context()
+	if r.cfg.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(r.cfg.RequestTimeout)*time.Second)
+		defer cancel()
+	}
+
 	info := r.buildRelayInfo(c, ep)
+	info.Context = ctx
 	out := GetOutbound(ep)
 
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			out.WriteError(c, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		if classifyRelayError(ctx, err) == ErrorCategoryClientCanceled {
+			r.logError(info, statusClientClosedRequest, "client canceled while reading request body")
+			return
+		}
 		out.WriteError(c, http.StatusBadRequest, "read body failed")
 		return
 	}
@@ -161,6 +179,17 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 	hardCap := maxSwitches + (maxSwitches+1)*maxRetries + 2
 
 	for iter := 0; iter < hardCap && switches < maxSwitches; iter++ {
+		if err := relayContext(info).Err(); err != nil {
+			if errors.Is(err, context.Canceled) {
+				r.logError(info, statusClientClosedRequest, "client canceled")
+				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
+				r.logError(info, http.StatusGatewayTimeout, "request timeout")
+				return
+			}
+		}
 		nowMs := time.Now().UnixMilli()
 		ch, err := SelectChannel(info.Group, ir.Model, state.Excluded(), nowMs)
 		if err != nil {
@@ -205,12 +234,27 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 		status, retryable, err := r.doOnce(c, info, ir, ad, out)
 		if err == nil {
-			model.ClearChannelCooldown(ch.Id) // 成功后清除冷却
+			model.ClearChannelCooldown(ch.Id)                // 成功后清除冷却
 			circuitbreaker.GetManager().RecordSuccess(ch.Id) // 记录熔断器成功
 			return
 		}
 
-		// 记录熔断器失败
+		category := classifyRelayError(relayContext(info), err)
+		if category == ErrorCategoryClientCanceled {
+			log.Warn("relay.client_canceled",
+				zap.Int("channel_id", ch.Id),
+				zap.String("channel", ch.Name),
+				zap.Error(err),
+			)
+			r.logError(info, statusClientClosedRequest, "client canceled")
+			return
+		}
+		if category == ErrorCategoryTimeout {
+			status = http.StatusGatewayTimeout
+			retryable = true
+		}
+
+		// 记录熔断器失败。客户端主动取消不计入渠道失败。
 		circuitbreaker.GetManager().RecordFailure(ch.Id, err.Error())
 
 		decision := state.OnFailure(ch.Id, status, retryable, err.Error())
@@ -240,8 +284,11 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 			r.logError(info, status, err.Error())
 			return
 		case DecisionRetrySameChannel:
-			if !state.SameChannelDelay(c.Request.Context()) {
-				return // 客户端取消
+			if !state.SameChannelDelay(relayContext(info)) {
+				if errors.Is(relayContext(info).Err(), context.Canceled) {
+					r.logError(info, statusClientClosedRequest, "client canceled")
+				}
+				return // 客户端取消或请求超时
 			}
 			// 同渠道重试不消耗切换预算
 		case DecisionSwitchChannel:
@@ -260,6 +307,15 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 // doOnce 对单个渠道执行一次完整转发。
 // 返回 (上游状态码, 是否可重试, error)；err==nil 表示成功。
 func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, out Outbound) (int, bool, error) {
+	if err := relayContext(info).Err(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return statusClientClosedRequest, false, err
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return http.StatusGatewayTimeout, true, err
+		}
+	}
+
 	upstreamReq, err := adp.ConvertRequest(info, ir)
 	if err != nil {
 		return http.StatusInternalServerError, false, fmt.Errorf("convert request: %w", err)
@@ -271,7 +327,14 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 
 	resp, err := adp.DoRequest(info, bytes.NewReader(reqBody))
 	if err != nil {
-		return http.StatusBadGateway, true, fmt.Errorf("do request: %w", err)
+		switch classifyRelayError(relayContext(info), err) {
+		case ErrorCategoryClientCanceled:
+			return statusClientClosedRequest, false, fmt.Errorf("do request: %w", err)
+		case ErrorCategoryTimeout:
+			return http.StatusGatewayTimeout, true, fmt.Errorf("do request: %w", err)
+		default:
+			return http.StatusBadGateway, true, fmt.Errorf("do request: %w", err)
+		}
 	}
 	defer resp.Body.Close()
 
@@ -293,7 +356,14 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound) (int, bool, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return http.StatusBadGateway, true, fmt.Errorf("read upstream body: %w", err)
+		switch classifyRelayError(relayContext(info), err) {
+		case ErrorCategoryClientCanceled:
+			return statusClientClosedRequest, false, fmt.Errorf("read upstream body: %w", err)
+		case ErrorCategoryTimeout:
+			return http.StatusGatewayTimeout, true, fmt.Errorf("read upstream body: %w", err)
+		default:
+			return http.StatusBadGateway, true, fmt.Errorf("read upstream body: %w", err)
+		}
 	}
 	if len(body) == 0 {
 		return http.StatusBadGateway, true, errEmptyUpstreamResponse
@@ -327,13 +397,20 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adap
 		chunkCount++
 		return writer.WriteChunk(c, chunk)
 	})
-	
+
 	if err != nil {
-		// 已经开始写流，无法切换渠道
+		// 已经开始写流，无法切换渠道；客户端取消不计入渠道失败。
 		_ = writer.Finish(c)
+		category := classifyRelayError(relayContext(info), err)
+		if category == ErrorCategoryClientCanceled {
+			return statusClientClosedRequest, false, fmt.Errorf("stream: %w", err)
+		}
+		if category == ErrorCategoryTimeout {
+			return http.StatusGatewayTimeout, true, fmt.Errorf("stream: %w", err)
+		}
 		return http.StatusOK, false, fmt.Errorf("stream: %w", err)
 	}
-	
+
 	// 检测空流（没有收到任何 chunk）
 	if chunkCount == 0 {
 		_ = writer.Finish(c)
@@ -496,6 +573,13 @@ func statusOrDefault(s int) int {
 	return s
 }
 
+func relayContext(info *RelayInfo) context.Context {
+	if info != nil && info.Context != nil {
+		return info.Context
+	}
+	return context.Background()
+}
+
 func isRetryableStatus(status int) bool {
 	switch status {
 	case http.StatusTooManyRequests, // 429
@@ -507,6 +591,3 @@ func isRetryableStatus(status int) bool {
 	}
 	return false
 }
-
-// 占位：保证 context 包被引用（流式取消等后续扩展）
-var _ = context.Background

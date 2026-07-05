@@ -1,6 +1,8 @@
 package relaycommon
 
 import (
+	"context"
+
 	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/model"
 )
@@ -8,6 +10,9 @@ import (
 // RelayInfo 贯穿一次转发请求的上下文信息。
 // 放在独立子包，供 relay 主包与各 adaptor 子包共享，避免循环依赖。
 type RelayInfo struct {
+	// Context 绑定客户端取消与 relay.request_timeout，用于中止上游请求和重试等待。
+	Context context.Context
+
 	RequestID    string
 	EndpointType constant.EndpointType // 对外协议
 	ApiType      constant.APIType      // 上游协议

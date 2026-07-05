@@ -24,8 +24,7 @@ func GetProtocolRules(c *gin.Context) {
 // 保存全局协议正则规则。
 func UpdateProtocolRules(c *gin.Context) {
 	var rules []model.ProtocolRule
-	if err := c.ShouldBindJSON(&rules); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &rules) {
 		return
 	}
 	// 校验协议名合法
@@ -73,8 +72,7 @@ func GetModelPrices(c *gin.Context) {
 // 保存全局模型价格表。
 func UpdateModelPrices(c *gin.Context) {
 	var prices []model.ModelPrice
-	if err := c.ShouldBindJSON(&prices); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &prices) {
 		return
 	}
 	for i := range prices {

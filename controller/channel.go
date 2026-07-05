@@ -24,8 +24,7 @@ func ListChannels(c *gin.Context) {
 // CreateChannel POST /api/channels
 func CreateChannel(c *gin.Context) {
 	var ch model.Channel
-	if err := c.ShouldBindJSON(&ch); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &ch) {
 		return
 	}
 	if ch.Status == 0 {
@@ -53,8 +52,7 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	var in model.Channel
-	if err := c.ShouldBindJSON(&in); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &in) {
 		return
 	}
 	in.Id = existing.Id
@@ -86,8 +84,7 @@ func ReorderChannels(c *gin.Context) {
 	var req struct {
 		IDs []int `json:"ids"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &req) {
 		return
 	}
 	if len(req.IDs) == 0 {
@@ -122,8 +119,7 @@ func ProbeChannelModels(c *gin.Context) {
 // 在创建渠道前，按临时填写的 base_url/key/type 探测模型列表（无需先保存）。
 func ProbeModelsByConfig(c *gin.Context) {
 	var in model.Channel
-	if err := c.ShouldBindJSON(&in); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &in) {
 		return
 	}
 	models, err := relay.ProbeModels(&in)
@@ -156,8 +152,7 @@ func TestChannelModel(c *gin.Context) {
 	var req struct {
 		Model string `json:"model"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &req) {
 		return
 	}
 	if req.Model == "" {
@@ -174,8 +169,7 @@ func TestChannelByConfig(c *gin.Context) {
 		model.Channel
 		Model string `json:"model"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &req) {
 		return
 	}
 	if req.Model == "" {

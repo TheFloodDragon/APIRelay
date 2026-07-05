@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,14 +16,14 @@ import (
 
 // ModelTestResult 模型连通性测试结果。
 type ModelTestResult struct {
-	Success  bool   `json:"success"`
-	Model    string `json:"model"`     // 显示名
-	Upstream string `json:"upstream"`  // 上游真实模型名
-	Protocol string `json:"protocol"`  // 实际使用的上游协议名
-	Latency  int64  `json:"latency_ms"`
-	Reply    string `json:"reply"`     // 模型回复内容片段
+	Success  bool       `json:"success"`
+	Model    string     `json:"model"`    // 显示名
+	Upstream string     `json:"upstream"` // 上游真实模型名
+	Protocol string     `json:"protocol"` // 实际使用的上游协议名
+	Latency  int64      `json:"latency_ms"`
+	Reply    string     `json:"reply"` // 模型回复内容片段
 	Usage    *dto.Usage `json:"usage,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Error    string     `json:"error,omitempty"`
 }
 
 // TestModel 对某渠道的指定显示模型发起一次最小化非流式对话，验证连通性。
@@ -48,6 +49,7 @@ func TestModel(ch *model.Channel, displayModel string) *ModelTestResult {
 	}
 
 	info := &relaycommon.RelayInfo{
+		Context:       context.Background(),
 		EndpointType:  endpointForAPIType(apiType),
 		ApiType:       apiType,
 		Group:         ch.Group,

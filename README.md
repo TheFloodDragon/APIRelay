@@ -24,7 +24,19 @@ cp config.example.yaml config.yaml
 go run .          # 或 go build -o apirelay . && ./apirelay
 ```
 
-首次启动会创建管理员（admin/admin123）与一个 root 令牌，并打印在日志中。
+首次启动会创建管理员与一个 root 令牌。为兼容本地开发，未配置初始管理员密码时默认允许 `admin/admin123` 登录并写入 warning 日志；生产环境建议显式设置 `auth.initial_admin_password` 和 `auth.session_secret`，并将 `auth.allow_insecure_default_admin` 改为 `false`。root 令牌日志仅显示脱敏值。
+
+### 安全相关配置
+
+常用安全配置项位于 `config.yaml`：
+
+- `auth.allow_insecure_default_admin`：默认 `true`，兼容首次启动 `admin/admin123`；生产建议改为 `false`。
+- `auth.initial_admin_password`：首次启动管理员密码；生产建议显式配置。
+- `auth.session_secret`：管理后台 session HMAC 签名密钥；留空时会生成临时密钥，重启后需重新登录。
+- `auth.login_*`：管理后台登录失败限速与锁定窗口。
+- `server.cors_allowed_origins`：CORS allowlist；为空时不主动允许跨域，浏览器跨域调用请配置控制台域名。
+- `server.admin_max_body_bytes` / `relay.max_body_bytes`：管理 API 与 Relay API 请求体上限。
+- `relay.request_timeout`：上游完整请求级 timeout，`0` 表示不限。
 
 ### 配置一个渠道
 

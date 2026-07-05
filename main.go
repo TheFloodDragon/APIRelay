@@ -52,9 +52,14 @@ func main() {
 		ChannelMaxRetries:  cfg.Relay.ChannelMaxRetries,
 	})
 
-	bootstrap(cfg)
+	if err := bootstrap(cfg); err != nil {
+		logger.L().Fatal("bootstrap failed", zap.Error(err))
+	}
 
-	r := router.Setup(cfg)
+	r, err := router.Setup(cfg)
+	if err != nil {
+		logger.L().Fatal("setup router failed", zap.Error(err))
+	}
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	logger.L().Info("apirelay starting", zap.String("addr", addr))
 	if err := r.Run(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -63,24 +68,35 @@ func main() {
 }
 
 // bootstrap 首次启动时创建管理员；并在配置了固定 root token 时幂等确保其存在。
-func bootstrap(cfg *config.Config) {
+func bootstrap(cfg *config.Config) error {
 	count, err := model.CountUsers()
 	if err != nil {
-		logger.L().Error("count users failed", zap.Error(err))
-		return
+		return fmt.Errorf("count users: %w", err)
 	}
 
 	var adminID int
 	if count == 0 {
-		admin := &model.User{Username: "admin", Role: model.RoleAdmin}
-		pw := "admin123"
-		_ = admin.SetPassword(pw)
+		username := cfg.Auth.InitialAdminUsername
+		pw := cfg.Auth.InitialAdminPassword
+		if pw == "" {
+			if !cfg.Auth.AllowInsecureDefaultAdmin {
+				return fmt.Errorf("initial admin password is required; set APIRELAY_INITIAL_ADMIN_PASSWORD or auth.initial_admin_password")
+			}
+			pw = "admin123"
+			logger.L().Warn("using insecure default admin password; configure auth.initial_admin_password for production",
+				zap.String("username", username),
+			)
+		}
+
+		admin := &model.User{Username: username, Role: model.RoleAdmin}
+		if err := admin.SetPassword(pw); err != nil {
+			return fmt.Errorf("set admin password: %w", err)
+		}
 		if err := model.CreateUser(admin); err != nil {
-			logger.L().Error("create admin failed", zap.Error(err))
-			return
+			return fmt.Errorf("create admin: %w", err)
 		}
 		adminID = admin.Id
-		logger.L().Info("initial admin created", zap.String("username", "admin"), zap.String("password", pw))
+		logger.L().Info("initial admin created", zap.String("username", username), zap.String("password", common.MaskSecret(pw)))
 
 		// 首次启动：创建初始令牌（配置为空则自动生成）
 		plain := cfg.Auth.InitialRootToken
@@ -96,22 +112,25 @@ func bootstrap(cfg *config.Config) {
 		}
 		if err := model.CreateToken(tok, plain); err != nil {
 			if !errors.Is(err, gorm.ErrDuplicatedKey) {
-				logger.L().Error("create root token failed", zap.Error(err))
+				return fmt.Errorf("create root token: %w", err)
 			}
-			return
+			return nil
 		}
-		logger.L().Info("initial root token created", zap.String("key", plain))
-		return
+		logger.L().Info("initial root token created", zap.String("key", common.MaskSecret(plain)))
+		return nil
 	}
 
 	// 非首次启动：若配置了固定 root token，则幂等确保其存在且可用。
 	if cfg.Auth.InitialRootToken == "" {
-		return
+		return nil
 	}
 	if _, err := model.GetTokenByKey(cfg.Auth.InitialRootToken); err == nil {
-		return // 已存在
+		logger.L().Info("configured root token already exists", zap.String("key", common.MaskSecret(cfg.Auth.InitialRootToken)))
+		return nil
 	}
-	if admin, err := model.GetUserByUsername("admin"); err == nil {
+	if admin, err := model.GetUserByUsername(cfg.Auth.InitialAdminUsername); err == nil {
+		adminID = admin.Id
+	} else if admin, err := model.GetUserByUsername("admin"); err == nil {
 		adminID = admin.Id
 	} else {
 		adminID = 1
@@ -124,8 +143,8 @@ func bootstrap(cfg *config.Config) {
 		Unlimited: true,
 	}
 	if err := model.CreateToken(tok, cfg.Auth.InitialRootToken); err != nil {
-		logger.L().Error("ensure root token failed", zap.Error(err))
-		return
+		return fmt.Errorf("ensure root token: %w", err)
 	}
-	logger.L().Info("configured root token ensured", zap.String("key", cfg.Auth.InitialRootToken))
+	logger.L().Info("configured root token ensured", zap.String("key", common.MaskSecret(cfg.Auth.InitialRootToken)))
+	return nil
 }

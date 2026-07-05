@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/apirelay/apirelay/common/logger"
@@ -46,15 +47,52 @@ func AccessLog() gin.HandlerFunc {
 	}
 }
 
-// CORS 允许跨域（管理后台前后端分离/本地联调）。
-func CORS() gin.HandlerFunc {
+// CORS 按 allowlist 允许跨域；allowedOrigins 为空时不主动允许任何 Origin。
+func CORS(allowedOrigins []string) gin.HandlerFunc {
+	allowAll := false
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if origin == "*" {
+			allowAll = true
+			continue
+		}
+		allowed[origin] = struct{}{}
+	}
+
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, X-Request-Id")
+		origin := c.GetHeader("Origin")
+		h := c.Writer.Header()
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, X-Request-Id, X-Session-Token, x-api-key, anthropic-version")
+		h.Set("Access-Control-Max-Age", "86400")
+
+		switch {
+		case allowAll:
+			h.Set("Access-Control-Allow-Origin", "*")
+		case origin != "":
+			if _, ok := allowed[origin]; ok {
+				h.Set("Access-Control-Allow-Origin", origin)
+				h.Add("Vary", "Origin")
+			}
+		}
+
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
+		}
+		c.Next()
+	}
+}
+
+// BodySizeLimit 限制请求体大小。超限错误由实际读取方识别为 *http.MaxBytesError。
+func BodySizeLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if maxBytes > 0 && c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
 		}
 		c.Next()
 	}

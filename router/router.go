@@ -11,14 +11,18 @@ import (
 )
 
 // Setup 装配所有路由。
-func Setup(cfg *config.Config) *gin.Engine {
+func Setup(cfg *config.Config) (*gin.Engine, error) {
 	gin.SetMode(gin.ReleaseMode)
+	if err := controller.InitAuth(cfg.Auth); err != nil {
+		return nil, err
+	}
+
 	r := gin.New()
 
 	r.Use(middleware.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.AccessLog())
-	r.Use(middleware.CORS())
+	r.Use(middleware.CORS(cfg.Server.CORSAllowedOrigins))
 
 	// 健康检查
 	r.GET("/healthz", func(c *gin.Context) {
@@ -26,12 +30,12 @@ func Setup(cfg *config.Config) *gin.Engine {
 	})
 
 	registerRelayRoutes(r, cfg)
-	registerAdminRoutes(r)
+	registerAdminRoutes(r, cfg)
 
 	// 内嵌前端（SPA fallback）
 	web.Register(r)
 
-	return r
+	return r, nil
 }
 
 // registerRelayRoutes 注册对外协议端点（需 token 鉴权）。
@@ -39,27 +43,31 @@ func registerRelayRoutes(r *gin.Engine, cfg *config.Config) {
 	relayer := relay.NewRelayer(&cfg.Relay)
 
 	v1 := r.Group("/v1")
+	v1.Use(middleware.BodySizeLimit(cfg.Relay.MaxBodyBytes))
 	v1.Use(middleware.TokenAuth())
 	{
 		// OpenAI 兼容端点
 		v1.GET("/models", relayer.HandleListModels)
 		v1.POST("/chat/completions", relayer.HandleOpenAIChat)
-		
+
 		// Anthropic 端点
 		v1.POST("/messages", relayer.HandleAnthropicMessages)
-		
+
 		// OpenAI Responses 端点
 		v1.POST("/responses", relayer.HandleResponses)
 	}
 }
 
 // registerAdminRoutes 注册管理后台 API。
-func registerAdminRoutes(r *gin.Engine) {
+func registerAdminRoutes(r *gin.Engine, cfg *config.Config) {
+	adminBodyLimit := middleware.BodySizeLimit(cfg.Server.AdminMaxBodyBytes)
+
 	// 公开：登录
-	r.POST("/api/auth/login", controller.AdminLogin)
+	r.POST("/api/auth/login", adminBodyLimit, controller.AdminLogin)
 
 	// 受保护：需会话鉴权
 	api := r.Group("/api")
+	api.Use(adminBodyLimit)
 	api.Use(controller.AdminAuth())
 	{
 		api.POST("/auth/logout", controller.AdminLogout)

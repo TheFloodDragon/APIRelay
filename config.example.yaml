@@ -1,6 +1,9 @@
 server:
   host: 0.0.0.0
   port: 3000
+  admin_max_body_bytes: 2097152 # 管理 API 请求体上限（2 MiB）
+  # CORS 允许的 Origin；生产建议配置为控制台域名。为空时不返回跨域允许头；本地开发可临时使用 ["*"]。
+  cors_allowed_origins: []
 
 database:
   driver: sqlite        # sqlite | mysql | postgres
@@ -15,7 +18,8 @@ relay:
   max_retries: 3           # 跨渠道总重试次数
   channel_max_retries: 1   # 单个渠道重试次数
   cooldown_seconds: 60     # 渠道故障冷却时间
-  request_timeout: 0       # 秒，0 表示不限（流式）
+  request_timeout: 0       # 秒，0 表示不限（完整请求级 timeout；流式默认建议保持 0）
+  max_body_bytes: 20971520 # Relay API 请求体上限（20 MiB）
   default_group: default
 
   # 熔断器配置
@@ -27,5 +31,11 @@ relay:
     min_requests: 10           # 统计窗口最小请求数
 
 auth:
-  session_secret: ""    # 管理后台会话密钥（留空自动）
-  initial_root_token: "" # 首次启动创建的 root 令牌，留空自动生成并打印
+  session_secret: ""            # 管理后台会话签名密钥；留空时会生成临时密钥，重启后需重新登录
+  initial_root_token: ""        # 首次启动创建的 root 令牌，留空自动生成；日志仅打印脱敏值
+  initial_admin_username: admin
+  initial_admin_password: ""    # 首次启动管理员密码；留空且 allow_insecure_default_admin=true 时回退 admin123
+  allow_insecure_default_admin: true # 兼容旧体验：允许 admin/admin123 和临时 session_secret；生产建议改为 false 并显式配置密码/密钥
+  login_max_failures: 5
+  login_failure_window_seconds: 600
+  login_lockout_seconds: 900

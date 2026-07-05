@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,11 +35,11 @@ func TestExtractUpstreamErrorMessage(t *testing.T) {
 
 func TestStripInternalPrefix(t *testing.T) {
 	cases := map[string]string{
-		"upstream status 502: bad gateway":            "bad gateway",
-		"stream: connection reset":                    "connection reset",
-		"do request: dial tcp timeout":                "dial tcp timeout",
+		"upstream status 502: bad gateway":               "bad gateway",
+		"stream: connection reset":                       "connection reset",
+		"do request: dial tcp timeout":                   "dial tcp timeout",
 		`upstream status 401: {"error":{"message":"x"}}`: `{"error":{"message":"x"}}`,
-		"plain error":                                 "plain error",
+		"plain error": "plain error",
 	}
 	for in, want := range cases {
 		if got := stripInternalPrefix(in); got != want {
@@ -103,6 +104,27 @@ func TestTruncateMessage(t *testing.T) {
 	}
 	if got := truncateMessage("ab", 5); got != "ab" {
 		t.Errorf("no-truncate = %q", got)
+	}
+}
+
+func TestClassifyRelayError(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := classifyRelayError(canceled, errors.New("anything")); got != ErrorCategoryClientCanceled {
+		t.Fatalf("canceled category = %s", got)
+	}
+
+	timedOut, cancelTimeout := context.WithTimeout(context.Background(), 0)
+	defer cancelTimeout()
+	if got := classifyRelayError(timedOut, errors.New("anything")); got != ErrorCategoryTimeout {
+		t.Fatalf("timeout category = %s", got)
+	}
+
+	if got := classifyRelayError(context.Background(), errors.New("write: broken pipe")); got != ErrorCategoryClientCanceled {
+		t.Fatalf("broken pipe category = %s", got)
+	}
+	if got := classifyRelayError(context.Background(), errors.New("i/o timeout")); got != ErrorCategoryTimeout {
+		t.Fatalf("i/o timeout category = %s", got)
 	}
 }
 

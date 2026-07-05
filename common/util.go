@@ -32,3 +32,14 @@ func TrimBearer(s string) string {
 	}
 	return s
 }
+
+// MaskSecret 返回适合日志展示的密钥脱敏值。
+func MaskSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 8 {
+		return "***"
+	}
+	return s[:4] + "..." + s[len(s)-4:]
+}

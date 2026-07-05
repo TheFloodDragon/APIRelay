@@ -7,7 +7,8 @@ import api from '../api'
 
 const router = useRouter()
 const toast = useToast()
-const username = ref('admin')
+const showDevHint = import.meta.env.DEV
+const username = ref(showDevHint ? 'admin' : '')
 const password = ref('')
 const loading = ref(false)
 
@@ -70,8 +71,8 @@ async function login() {
           </button>
         </form>
 
-        <div class="mt-6 pt-6 border-t border-border text-xs text-text-muted text-center">
-          默认账号：admin / admin123
+        <div v-if="showDevHint" class="mt-6 pt-6 border-t border-border text-xs text-text-muted text-center leading-relaxed">
+          开发提示：未配置初始密码时可使用 admin / admin123。<br />生产环境请使用初始化时配置的管理员账号。
         </div>
       </div>
     </div>

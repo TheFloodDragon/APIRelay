@@ -31,8 +31,7 @@ func CreateToken(c *gin.Context) {
 		QuotaUSD  float64 `json:"quota_usd"` // 额度（美元），unlimited=false 时生效
 		ExpiredAt int64   `json:"expired_at"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	if !bindJSON(c, &req) {
 		return
 	}
 	if req.Name == "" {

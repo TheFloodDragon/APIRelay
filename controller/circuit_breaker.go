@@ -72,8 +72,7 @@ func GetCircuitBreakerConfig(c *gin.Context) {
 // UpdateCircuitBreakerConfig 更新熔断器配置
 func UpdateCircuitBreakerConfig(c *gin.Context) {
 	var cfg circuitbreaker.Config
-	if err := c.ShouldBindJSON(&cfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &cfg) {
 		return
 	}
 

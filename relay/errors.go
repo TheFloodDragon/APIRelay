@@ -1,9 +1,11 @@
 package relay
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -13,7 +15,61 @@ import (
 // errEmptyUpstreamResponse 表示上游返回了空响应（常见于 base_url/模型/密钥配置错误）。
 var errEmptyUpstreamResponse = errors.New("empty upstream response")
 
-// noChannelError 生成「没有可用渠道」时的诊断性错误提示，尽可能指出原因与可用供应商。
+const statusClientClosedRequest = 499
+
+type RelayErrorCategory string
+
+const (
+	ErrorCategoryClientCanceled RelayErrorCategory = "client_canceled"
+	ErrorCategoryTimeout        RelayErrorCategory = "timeout"
+	ErrorCategoryUpstream       RelayErrorCategory = "upstream_error"
+	ErrorCategoryInternal       RelayErrorCategory = "internal_error"
+)
+
+// classifyRelayError 将客户端取消、请求超时和上游错误分开，避免客户端断开误伤渠道健康。
+func classifyRelayError(ctx context.Context, err error) RelayErrorCategory {
+	if ctx != nil {
+		switch ctx.Err() {
+		case context.Canceled:
+			return ErrorCategoryClientCanceled
+		case context.DeadlineExceeded:
+			return ErrorCategoryTimeout
+		}
+	}
+	if err == nil {
+		return ErrorCategoryUpstream
+	}
+	if errors.Is(err, context.Canceled) {
+		return ErrorCategoryClientCanceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrorCategoryTimeout
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return ErrorCategoryTimeout
+	}
+
+	msg := strings.ToLower(err.Error())
+	for _, part := range []string{
+		"client disconnected",
+		"client closed",
+		"connection reset by peer",
+		"broken pipe",
+		"context canceled",
+	} {
+		if strings.Contains(msg, part) {
+			return ErrorCategoryClientCanceled
+		}
+	}
+	for _, part := range []string{"context deadline exceeded", "i/o timeout", "timeout awaiting response headers"} {
+		if strings.Contains(msg, part) {
+			return ErrorCategoryTimeout
+		}
+	}
+	return ErrorCategoryUpstream
+}
+
 func noChannelError(group, modelName string) string {
 	diag := model.DiagnoseModel(group, modelName)
 
@@ -163,6 +219,8 @@ func emptyResponseHint(info *RelayInfo) string {
 // statusHint 根据状态码返回中文可操作提示。
 func statusHint(status int) string {
 	switch {
+	case status == statusClientClosedRequest:
+		return "客户端已取消请求"
 	case status == http.StatusUnauthorized:
 		return "鉴权失败，请检查供应商 API Key"
 	case status == http.StatusForbidden:
