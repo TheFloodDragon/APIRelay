@@ -67,3 +67,12 @@ func TestNormalizeSecurityDefaults(t *testing.T) {
 		t.Fatalf("login max failures = %d", cfg.Auth.LoginMaxFailures)
 	}
 }
+
+func TestNormalizeCircuitBreakerErrorRateCap(t *testing.T) {
+	cfg := Default()
+	cfg.Relay.CircuitBreaker.ErrorRateThreshold = 2
+	cfg.Normalize()
+	if cfg.Relay.CircuitBreaker.ErrorRateThreshold != 1 {
+		t.Fatalf("error rate threshold = %v", cfg.Relay.CircuitBreaker.ErrorRateThreshold)
+	}
+}

@@ -209,6 +209,9 @@ func (c *Config) Normalize() {
 	if c.Relay.CircuitBreaker.ErrorRateThreshold <= 0 {
 		c.Relay.CircuitBreaker.ErrorRateThreshold = 0.5
 	}
+	if c.Relay.CircuitBreaker.ErrorRateThreshold > 1 {
+		c.Relay.CircuitBreaker.ErrorRateThreshold = 1
+	}
 	if c.Relay.CircuitBreaker.MinRequests <= 0 {
 		c.Relay.CircuitBreaker.MinRequests = 10
 	}
