@@ -104,8 +104,14 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 			out.WriteError(c, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
-		if classifyRelayError(ctx, err) == ErrorCategoryClientCanceled {
+		category := classifyRelayError(ctx, err)
+		if category == ErrorCategoryClientCanceled {
 			r.logError(info, statusClientClosedRequest, "client canceled while reading request body")
+			return
+		}
+		if category == ErrorCategoryRelayTimeout {
+			out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
+			r.logError(info, http.StatusGatewayTimeout, "relay request timeout while reading request body")
 			return
 		}
 		out.WriteError(c, http.StatusBadRequest, "read body failed")
@@ -182,13 +188,14 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 	for iter := 0; iter < hardCap && switches < maxSwitches; iter++ {
 		if err := relayContext(info).Err(); err != nil {
-			if errors.Is(err, context.Canceled) {
+			category := classifyRelayError(relayContext(info), err)
+			if category == ErrorCategoryClientCanceled {
 				r.logError(info, statusClientClosedRequest, "client canceled")
 				return
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
+			if category == ErrorCategoryRelayTimeout {
 				out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
-				r.logError(info, http.StatusGatewayTimeout, "request timeout")
+				r.logError(info, http.StatusGatewayTimeout, "relay request timeout")
 				return
 			}
 		}
@@ -251,8 +258,18 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 			r.logError(info, statusClientClosedRequest, "client canceled")
 			return
 		}
-		if category == ErrorCategoryTimeout {
+		if category == ErrorCategoryRelayTimeout {
 			status = http.StatusGatewayTimeout
+			retryable = false
+			circuitbreaker.GetManager().RecordFailure(ch.Id, err.Error())
+			if !c.Writer.Written() {
+				out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
+			}
+			r.logError(info, http.StatusGatewayTimeout, timeoutLogMessage(category))
+			return
+		}
+		if isTimeoutCategory(category) {
+			status = timeoutStatus(category)
 			retryable = true
 		}
 
@@ -264,6 +281,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 			zap.Int("channel_id", ch.Id),
 			zap.String("channel", ch.Name),
 			zap.String("api_type", ad.ChannelTypeName()),
+			zap.String("error_category", string(category)),
 			zap.Int("status", status),
 			zap.Bool("retryable", retryable),
 			zap.Int("decision", int(decision)),
@@ -287,8 +305,11 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 			return
 		case DecisionRetrySameChannel:
 			if !state.SameChannelDelay(relayContext(info)) {
-				if errors.Is(relayContext(info).Err(), context.Canceled) {
+				category := classifyRelayError(relayContext(info), relayContext(info).Err())
+				if category == ErrorCategoryClientCanceled {
 					r.logError(info, statusClientClosedRequest, "client canceled")
+				} else if category == ErrorCategoryRelayTimeout {
+					r.logError(info, http.StatusGatewayTimeout, "relay request timeout")
 				}
 				return // 客户端取消或请求超时
 			}
@@ -310,11 +331,12 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 // 返回 (上游状态码, 是否可重试, error)；err==nil 表示成功。
 func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, out Outbound, billing *BillingSession) (int, bool, error) {
 	if err := relayContext(info).Err(); err != nil {
-		if errors.Is(err, context.Canceled) {
+		category := classifyRelayError(relayContext(info), err)
+		if category == ErrorCategoryClientCanceled {
 			return statusClientClosedRequest, false, err
 		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return http.StatusGatewayTimeout, true, err
+		if category == ErrorCategoryRelayTimeout {
+			return http.StatusGatewayTimeout, false, err
 		}
 	}
 
@@ -329,11 +351,13 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 
 	resp, err := adp.DoRequest(info, bytes.NewReader(reqBody))
 	if err != nil {
-		switch classifyRelayError(relayContext(info), err) {
+		switch category := classifyRelayError(relayContext(info), err); category {
 		case ErrorCategoryClientCanceled:
 			return statusClientClosedRequest, false, fmt.Errorf("do request: %w", err)
-		case ErrorCategoryTimeout:
-			return http.StatusGatewayTimeout, true, fmt.Errorf("do request: %w", err)
+		case ErrorCategoryRelayTimeout:
+			return http.StatusGatewayTimeout, false, fmt.Errorf("relay request timeout while contacting upstream: %w", err)
+		case ErrorCategoryUpstreamTimeout, ErrorCategoryTimeout:
+			return http.StatusGatewayTimeout, true, fmt.Errorf("upstream request timeout: %w", err)
 		default:
 			return http.StatusBadGateway, true, fmt.Errorf("do request: %w", err)
 		}
@@ -358,11 +382,13 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound, billing *BillingSession) (int, bool, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		switch classifyRelayError(relayContext(info), err) {
+		switch category := classifyRelayError(relayContext(info), err); category {
 		case ErrorCategoryClientCanceled:
 			return statusClientClosedRequest, false, fmt.Errorf("read upstream body: %w", err)
-		case ErrorCategoryTimeout:
-			return http.StatusGatewayTimeout, true, fmt.Errorf("read upstream body: %w", err)
+		case ErrorCategoryRelayTimeout:
+			return http.StatusGatewayTimeout, false, fmt.Errorf("relay request timeout while reading upstream body: %w", err)
+		case ErrorCategoryUpstreamTimeout, ErrorCategoryTimeout:
+			return http.StatusGatewayTimeout, true, fmt.Errorf("upstream read timeout: %w", err)
 		default:
 			return http.StatusBadGateway, true, fmt.Errorf("read upstream body: %w", err)
 		}
@@ -407,8 +433,14 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adap
 		if category == ErrorCategoryClientCanceled {
 			return statusClientClosedRequest, false, fmt.Errorf("stream: %w", err)
 		}
-		if category == ErrorCategoryTimeout {
-			return http.StatusGatewayTimeout, true, fmt.Errorf("stream: %w", err)
+		if category == ErrorCategoryRelayTimeout {
+			return http.StatusGatewayTimeout, false, fmt.Errorf("relay request timeout while streaming: %w", err)
+		}
+		if category == ErrorCategoryUpstreamTimeout || category == ErrorCategoryTimeout {
+			if firstByte {
+				return http.StatusGatewayTimeout, false, fmt.Errorf("upstream stream timeout after first byte: %w", err)
+			}
+			return http.StatusGatewayTimeout, true, fmt.Errorf("upstream stream timeout before first byte: %w", err)
 		}
 		return http.StatusOK, false, fmt.Errorf("stream: %w", err)
 	}

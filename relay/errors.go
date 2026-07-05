@@ -20,20 +20,23 @@ const statusClientClosedRequest = 499
 type RelayErrorCategory string
 
 const (
-	ErrorCategoryClientCanceled RelayErrorCategory = "client_canceled"
-	ErrorCategoryTimeout        RelayErrorCategory = "timeout"
-	ErrorCategoryUpstream       RelayErrorCategory = "upstream_error"
-	ErrorCategoryInternal       RelayErrorCategory = "internal_error"
+	ErrorCategoryClientCanceled  RelayErrorCategory = "client_canceled"
+	ErrorCategoryRelayTimeout    RelayErrorCategory = "relay_timeout"
+	ErrorCategoryUpstreamTimeout RelayErrorCategory = "upstream_timeout"
+	// ErrorCategoryTimeout 保留为兼容旧调用方的泛化超时分类，新代码应优先使用更具体的分类。
+	ErrorCategoryTimeout  RelayErrorCategory = "timeout"
+	ErrorCategoryUpstream RelayErrorCategory = "upstream_error"
+	ErrorCategoryInternal RelayErrorCategory = "internal_error"
 )
 
-// classifyRelayError 将客户端取消、请求超时和上游错误分开，避免客户端断开误伤渠道健康。
+// classifyRelayError 将客户端取消、请求总超时、上游超时和上游错误分开，避免客户端断开误伤渠道健康。
 func classifyRelayError(ctx context.Context, err error) RelayErrorCategory {
 	if ctx != nil {
 		switch ctx.Err() {
 		case context.Canceled:
 			return ErrorCategoryClientCanceled
 		case context.DeadlineExceeded:
-			return ErrorCategoryTimeout
+			return ErrorCategoryRelayTimeout
 		}
 	}
 	if err == nil {
@@ -43,11 +46,11 @@ func classifyRelayError(ctx context.Context, err error) RelayErrorCategory {
 		return ErrorCategoryClientCanceled
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return ErrorCategoryTimeout
+		return ErrorCategoryUpstreamTimeout
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return ErrorCategoryTimeout
+		return ErrorCategoryUpstreamTimeout
 	}
 
 	msg := strings.ToLower(err.Error())
@@ -62,12 +65,45 @@ func classifyRelayError(ctx context.Context, err error) RelayErrorCategory {
 			return ErrorCategoryClientCanceled
 		}
 	}
-	for _, part := range []string{"context deadline exceeded", "i/o timeout", "timeout awaiting response headers"} {
+	for _, part := range []string{
+		"context deadline exceeded",
+		"i/o timeout",
+		"timeout awaiting response headers",
+		"tls handshake timeout",
+		"client.timeout exceeded",
+	} {
 		if strings.Contains(msg, part) {
-			return ErrorCategoryTimeout
+			return ErrorCategoryUpstreamTimeout
 		}
 	}
 	return ErrorCategoryUpstream
+}
+
+func isTimeoutCategory(category RelayErrorCategory) bool {
+	switch category {
+	case ErrorCategoryRelayTimeout, ErrorCategoryUpstreamTimeout, ErrorCategoryTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func timeoutStatus(category RelayErrorCategory) int {
+	if isTimeoutCategory(category) {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusBadGateway
+}
+
+func timeoutLogMessage(category RelayErrorCategory) string {
+	switch category {
+	case ErrorCategoryRelayTimeout:
+		return "relay request timeout"
+	case ErrorCategoryUpstreamTimeout, ErrorCategoryTimeout:
+		return "upstream timeout"
+	default:
+		return "upstream error"
+	}
 }
 
 func noChannelError(group, modelName string) string {

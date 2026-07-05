@@ -116,15 +116,38 @@ func TestClassifyRelayError(t *testing.T) {
 
 	timedOut, cancelTimeout := context.WithTimeout(context.Background(), 0)
 	defer cancelTimeout()
-	if got := classifyRelayError(timedOut, errors.New("anything")); got != ErrorCategoryTimeout {
-		t.Fatalf("timeout category = %s", got)
+	if got := classifyRelayError(timedOut, errors.New("anything")); got != ErrorCategoryRelayTimeout {
+		t.Fatalf("relay timeout category = %s", got)
 	}
 
+	if got := classifyRelayError(context.Background(), context.DeadlineExceeded); got != ErrorCategoryUpstreamTimeout {
+		t.Fatalf("deadline error without relay ctx category = %s", got)
+	}
 	if got := classifyRelayError(context.Background(), errors.New("write: broken pipe")); got != ErrorCategoryClientCanceled {
 		t.Fatalf("broken pipe category = %s", got)
 	}
-	if got := classifyRelayError(context.Background(), errors.New("i/o timeout")); got != ErrorCategoryTimeout {
+	if got := classifyRelayError(context.Background(), errors.New("i/o timeout")); got != ErrorCategoryUpstreamTimeout {
 		t.Fatalf("i/o timeout category = %s", got)
+	}
+	if got := classifyRelayError(context.Background(), errors.New("net/http: timeout awaiting response headers")); got != ErrorCategoryUpstreamTimeout {
+		t.Fatalf("response header timeout category = %s", got)
+	}
+}
+
+func TestTimeoutHelpers(t *testing.T) {
+	for _, category := range []RelayErrorCategory{ErrorCategoryRelayTimeout, ErrorCategoryUpstreamTimeout, ErrorCategoryTimeout} {
+		if !isTimeoutCategory(category) {
+			t.Fatalf("%s should be timeout category", category)
+		}
+		if status := timeoutStatus(category); status != http.StatusGatewayTimeout {
+			t.Fatalf("timeout status for %s = %d", category, status)
+		}
+	}
+	if isTimeoutCategory(ErrorCategoryClientCanceled) {
+		t.Fatal("client canceled should not be timeout category")
+	}
+	if timeoutLogMessage(ErrorCategoryRelayTimeout) == timeoutLogMessage(ErrorCategoryUpstreamTimeout) {
+		t.Fatal("relay and upstream timeout log messages should differ")
 	}
 }
 
