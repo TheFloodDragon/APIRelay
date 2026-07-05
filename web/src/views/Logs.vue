@@ -3,7 +3,9 @@ import { ref, onMounted } from 'vue'
 import api from '../api'
 import ProtocolTag from '../components/ProtocolTag.vue'
 import SignalDot from '../components/SignalDot.vue'
+import { useToast } from '../composables/useToast'
 
+const toast = useToast()
 const logs = ref([])
 const page = ref(1)
 const pageSize = 20
@@ -16,6 +18,8 @@ const filters = ref({
   token_name: '',
   channel_id: '',
   status: '',
+  request_id: '',
+  upstream_request_id: '',
   range: '24h',
 })
 const logTypes = [
@@ -115,7 +119,7 @@ function applyFilters() {
   load()
 }
 function clearFilters() {
-  filters.value = { type: '', model: '', token_name: '', channel_id: '', status: '', range: '24h' }
+  filters.value = { type: '', model: '', token_name: '', channel_id: '', status: '', request_id: '', upstream_request_id: '', range: '24h' }
   page.value = 1
   load()
 }
@@ -144,7 +148,64 @@ function filterSummary() {
   if (filters.value.token_name) parts.push(`令牌 ${filters.value.token_name}`)
   if (filters.value.status) parts.push(`HTTP ${filters.value.status}`)
   if (filters.value.channel_id) parts.push(`节点 #${filters.value.channel_id}`)
+  if (filters.value.request_id) parts.push(`请求 ${filters.value.request_id}`)
+  if (filters.value.upstream_request_id) parts.push(`上游 ${filters.value.upstream_request_id}`)
   return parts.length ? parts.join(' · ') : '全部信号'
+}
+function buildDiagnosticPackage(l) {
+  const chain = l._failover_chain || []
+  const lines = [
+    '# APIRelay 调用诊断包',
+    '',
+    `- 时间: ${fmt(l.created_at)}`,
+    `- 日志 ID: ${l.id}`,
+    `- 请求 ID: ${l.request_id || '-'}`,
+    `- 上游请求 ID: ${l.upstream_request_id || '-'}`,
+    `- 类型: ${typeName(l.type)}`,
+    `- 状态: HTTP ${l.status || '-'}`,
+    `- 分组: ${l.group || '-'}`,
+    `- 令牌: ${l.token_name || '-'}`,
+    `- 节点: ${l.channel_name || (l.channel_id ? '#' + l.channel_id : '-')}`,
+    `- 协议: ${l.endpoint_type || '-'} -> ${l.api_type || '-'}`,
+    `- 模型: ${l.src_model || '-'}${l.mapped_model && l.mapped_model !== l.src_model ? ' -> ' + l.mapped_model : ''}`,
+    `- 流式: ${l.is_stream ? 'yes' : 'no'}`,
+    `- Tokens: prompt=${l.prompt_tokens || 0}, completion=${l.completion_tokens || 0}`,
+    `- 费用: ${cost(l.quota)}`,
+    `- 耗时: ${l.use_time_ms || 0}ms, 首字=${l.first_byte_ms || 0}ms`,
+  ]
+  if (l.error) {
+    lines.push('', '## Error', '```text', l.error, '```')
+  }
+  if (chain.length) {
+    lines.push('', '## Failover Track')
+    chain.forEach((a, idx) => {
+      lines.push(`${idx + 1}. [${decisionName(a.decision)}] ${a.channel_name || '#' + a.channel_id} · HTTP ${a.status || '-'} · ${a.api_type || '-'}`)
+      lines.push(`   model: ${a.origin_model || '-'}${a.upstream_model && a.upstream_model !== a.origin_model ? ' -> ' + a.upstream_model : ''}`)
+      if (a.error) lines.push(`   error: ${a.error_category ? a.error_category + ' · ' : ''}${a.error}`)
+    })
+    lines.push('', '```json', JSON.stringify(chain, null, 2), '```')
+  }
+  return lines.join('\n')
+}
+async function copyDiagnostic(l) {
+  const text = buildDiagnosticPackage(l)
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    toast.success('诊断包已复制')
+  } catch (e) {
+    toast.error('复制失败: ' + (e?.message || '浏览器拒绝访问剪贴板'))
+  }
 }
 
 async function load() {
@@ -191,7 +252,7 @@ onMounted(load)
           <button @click="clearFilters" class="btn-ghost btn-sm">清除</button>
         </div>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8 gap-3">
         <label>
           <span class="label !mb-1">类型</span>
           <select v-model="filters.type" class="input" @change="applyFilters">
@@ -215,6 +276,14 @@ onMounted(load)
         <label>
           <span class="label !mb-1">状态码</span>
           <input v-model="filters.status" class="input font-mono" placeholder="503" inputmode="numeric" @keyup.enter="applyFilters" />
+        </label>
+        <label>
+          <span class="label !mb-1">请求 ID</span>
+          <input v-model="filters.request_id" class="input font-mono" placeholder="req..." @keyup.enter="applyFilters" />
+        </label>
+        <label>
+          <span class="label !mb-1">上游 ID</span>
+          <input v-model="filters.upstream_request_id" class="input font-mono" placeholder="upstream..." @keyup.enter="applyFilters" />
         </label>
         <label>
           <span class="label !mb-1">节点 ID</span>
@@ -280,6 +349,10 @@ onMounted(load)
               <tr v-if="expandedId === l.id">
                 <td colspan="11" class="!p-0 border-b border-line">
                   <div class="bg-panel-2 px-4 py-3 animate-fade-in">
+                    <div class="flex items-center justify-between gap-3 mb-3">
+                      <span class="tick">DIAGNOSTIC PAYLOAD</span>
+                      <button @click.stop="copyDiagnostic(l)" class="btn-secondary btn-sm">复制诊断包</button>
+                    </div>
                     <div class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-xs">
                       <div><span class="tick">GROUP</span><div class="font-mono text-t1 mt-0.5">{{ l.group || '-' }}</div></div>
                       <div><span class="tick">TOKEN</span><div class="font-mono text-t1 mt-0.5">{{ l.token_name || '-' }}</div></div>

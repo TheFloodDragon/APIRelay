@@ -13,8 +13,10 @@ import (
 // ListLogs GET /api/logs 调用日志查询。
 func ListLogs(c *gin.Context) {
 	q := &model.LogQuery{
-		TokenName: c.Query("token_name"),
-		Model:     c.Query("model"),
+		TokenName:         c.Query("token_name"),
+		Model:             c.Query("model"),
+		RequestId:         c.Query("request_id"),
+		UpstreamRequestId: c.Query("upstream_request_id"),
 	}
 	q.Page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
 	q.PageSize, _ = strconv.Atoi(c.DefaultQuery("page_size", "20"))

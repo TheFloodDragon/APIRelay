@@ -60,16 +60,18 @@ func CreateLog(l *Log) error {
 
 // LogQuery 日志筛选条件。
 type LogQuery struct {
-	UserId    int
-	TokenName string
-	ChannelId int
-	Model     string
-	Type      int
-	Status    int
-	StartTime int64
-	EndTime   int64
-	Page      int
-	PageSize  int
+	UserId            int
+	TokenName         string
+	ChannelId         int
+	Model             string
+	RequestId         string
+	UpstreamRequestId string
+	Type              int
+	Status            int
+	StartTime         int64
+	EndTime           int64
+	Page              int
+	PageSize          int
 }
 
 // ListLogs 分页查询日志。
@@ -86,6 +88,12 @@ func ListLogs(q *LogQuery) ([]*Log, int64, error) {
 	}
 	if q.Model != "" {
 		tx = tx.Where("src_model = ?", q.Model)
+	}
+	if q.RequestId != "" {
+		tx = tx.Where("request_id LIKE ?", "%"+q.RequestId+"%")
+	}
+	if q.UpstreamRequestId != "" {
+		tx = tx.Where("upstream_request_id LIKE ?", "%"+q.UpstreamRequestId+"%")
 	}
 	if q.Type > 0 {
 		tx = tx.Where("type = ?", q.Type)
