@@ -52,10 +52,15 @@ func CreateToken(c *gin.Context) {
 		ExpiredAt: req.ExpiredAt,
 	}
 	if !req.Unlimited {
+		if req.QuotaUSD <= 0 {
+			fail(c, http.StatusBadRequest, "限额令牌的额度必须大于 0，或开启不限额")
+			return
+		}
 		// 美元 -> 微美元
 		in.Quota = int64(req.QuotaUSD * 1_000_000)
-		if in.Quota < 0 {
-			in.Quota = 0
+		if in.Quota <= 0 {
+			fail(c, http.StatusBadRequest, "限额令牌的额度过小，请提高额度或开启不限额")
+			return
 		}
 	}
 	plain := common.NewToken("sk-")

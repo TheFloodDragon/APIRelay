@@ -9,6 +9,7 @@ import (
 // Manager 管理所有渠道的熔断器实例
 type Manager struct {
 	cfg      Config
+	cfgMu    sync.RWMutex
 	breakers sync.Map // map[int]*CircuitBreaker
 }
 
@@ -45,7 +46,10 @@ func (m *Manager) GetBreaker(channelID int) *CircuitBreaker {
 		}
 	}
 
-	breaker := NewCircuitBreaker(channelID, m.cfg)
+	m.cfgMu.RLock()
+	cfg := m.cfg
+	m.cfgMu.RUnlock()
+	breaker := NewCircuitBreaker(channelID, cfg)
 	breaker.state = health.CircuitState
 	breaker.openedAt = health.CircuitOpenedAt
 	breaker.consecutiveFailures = health.ConsecutiveFailures
@@ -60,7 +64,9 @@ func (m *Manager) GetBreaker(channelID int) *CircuitBreaker {
 // UpdateConfig 更新全局配置（需重新加载所有熔断器）
 func (m *Manager) UpdateConfig(cfg Config) {
 	cfg = cfg.normalized()
+	m.cfgMu.Lock()
 	m.cfg = cfg
+	m.cfgMu.Unlock()
 	m.breakers.Range(func(key, value interface{}) bool {
 		breaker := value.(*CircuitBreaker)
 		breaker.mu.Lock()
@@ -78,9 +84,19 @@ func (m *Manager) UpdateConfig(cfg Config) {
 	})
 }
 
-// IsChannelAllowed 判断渠道是否允许请求
+// IsChannelAllowed 判断渠道是否允许请求，并在 half-open 状态占用一个探测名额。
 func (m *Manager) IsChannelAllowed(channelID int) bool {
 	return m.GetBreaker(channelID).IsAllowed()
+}
+
+// PeekChannelAllowed 判断渠道是否可能允许请求，但不占用 half-open 探测名额。
+func (m *Manager) PeekChannelAllowed(channelID int) bool {
+	return m.GetBreaker(channelID).PeekAllowed()
+}
+
+// ReleaseProbe 释放一次 half-open 探测名额。
+func (m *Manager) ReleaseProbe(channelID int) {
+	m.GetBreaker(channelID).ReleaseProbe()
 }
 
 // RecordSuccess 记录渠道成功

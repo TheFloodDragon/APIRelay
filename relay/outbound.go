@@ -54,19 +54,20 @@ func (openaiOutbound) WriteResponse(c *gin.Context, r *dto.UnifiedResponse, mode
 }
 
 func (openaiOutbound) NewStream(c *gin.Context, requestID, model string) StreamWriter {
-	setSSEHeaders(c)
 	return &openaiStreamWriter{state: apicompat.NewOpenAIStreamState(requestID, model)}
 }
 
 type openaiStreamWriter struct {
-	state *apicompat.OpenAIStreamState
-	raw   bool
+	state   *apicompat.OpenAIStreamState
+	raw     bool
+	started bool
 }
 
 func (w *openaiStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
 	// RawChunk 模式：逐行零改写透传（含 event:/空行/data:/[DONE]）
 	if chunk.IsRaw {
 		w.raw = true
+		w.ensureStarted(c)
 		return writeSSERaw(c, chunk.Raw+"\n")
 	}
 	// IR 模式：序列化
@@ -74,6 +75,7 @@ func (w *openaiStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStream
 	if data == nil {
 		return nil
 	}
+	w.ensureStarted(c)
 	return writeSSE(c, "", data)
 }
 
@@ -82,7 +84,15 @@ func (w *openaiStreamWriter) Finish(c *gin.Context) error {
 	if w.raw {
 		return nil
 	}
+	w.ensureStarted(c)
 	return writeSSERaw(c, "data: [DONE]\n\n")
+}
+
+func (w *openaiStreamWriter) ensureStarted(c *gin.Context) {
+	if !w.started {
+		setSSEHeaders(c)
+		w.started = true
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -103,23 +113,29 @@ func (anthropicOutbound) WriteResponse(c *gin.Context, r *dto.UnifiedResponse, m
 }
 
 func (anthropicOutbound) NewStream(c *gin.Context, requestID, model string) StreamWriter {
-	setSSEHeaders(c)
 	return &anthropicStreamWriter{state: apicompat.NewAnthropicStreamState(requestID, model)}
 }
 
 type anthropicStreamWriter struct {
-	state *apicompat.AnthropicStreamState
-	raw   bool
+	state   *apicompat.AnthropicStreamState
+	raw     bool
+	started bool
 }
 
 func (w *anthropicStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
 	// RawChunk 逐行零改写透传（含 event: 行与空行边界）
 	if chunk.IsRaw {
 		w.raw = true
+		w.ensureStarted(c)
 		return writeSSERaw(c, chunk.Raw+"\n")
 	}
 	// IR 模式
-	for _, ev := range w.state.Delta(chunk) {
+	events := w.state.Delta(chunk)
+	if len(events) == 0 {
+		return nil
+	}
+	w.ensureStarted(c)
+	for _, ev := range events {
 		if err := writeSSE(c, ev.Event, ev.Data); err != nil {
 			return err
 		}
@@ -132,12 +148,24 @@ func (w *anthropicStreamWriter) Finish(c *gin.Context) error {
 	if w.raw {
 		return nil
 	}
-	for _, ev := range w.state.End() {
+	events := w.state.End()
+	if len(events) == 0 {
+		return nil
+	}
+	w.ensureStarted(c)
+	for _, ev := range events {
 		if err := writeSSE(c, ev.Event, ev.Data); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (w *anthropicStreamWriter) ensureStarted(c *gin.Context) {
+	if !w.started {
+		setSSEHeaders(c)
+		w.started = true
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -155,23 +183,29 @@ func (responsesOutbound) WriteResponse(c *gin.Context, r *dto.UnifiedResponse, m
 }
 
 func (responsesOutbound) NewStream(c *gin.Context, requestID, model string) StreamWriter {
-	setSSEHeaders(c)
 	return &responsesStreamWriter{state: apicompat.NewResponsesStreamState(requestID, model)}
 }
 
 type responsesStreamWriter struct {
-	state *apicompat.ResponsesStreamState
-	raw   bool
+	state   *apicompat.ResponsesStreamState
+	raw     bool
+	started bool
 }
 
 func (w *responsesStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
 	// RawChunk 逐行零改写透传（含 event: 行与空行边界）
 	if chunk.IsRaw {
 		w.raw = true
+		w.ensureStarted(c)
 		return writeSSERaw(c, chunk.Raw+"\n")
 	}
 	// IR 模式
-	for _, ev := range w.state.Delta(chunk) {
+	events := w.state.Delta(chunk)
+	if len(events) == 0 {
+		return nil
+	}
+	w.ensureStarted(c)
+	for _, ev := range events {
 		if err := writeSSE(c, ev.Event, ev.Data); err != nil {
 			return err
 		}
@@ -184,12 +218,21 @@ func (w *responsesStreamWriter) Finish(c *gin.Context) error {
 	if w.raw {
 		return nil
 	}
-	for _, ev := range w.state.End() {
+	events := w.state.End()
+	w.ensureStarted(c)
+	for _, ev := range events {
 		if err := writeSSE(c, ev.Event, ev.Data); err != nil {
 			return err
 		}
 	}
 	return writeSSERaw(c, "data: [DONE]\n\n")
+}
+
+func (w *responsesStreamWriter) ensureStarted(c *gin.Context) {
+	if !w.started {
+		setSSEHeaders(c)
+		w.started = true
+	}
 }
 
 // ---------------------------------------------------------------------------

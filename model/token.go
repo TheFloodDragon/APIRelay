@@ -95,15 +95,6 @@ func DeleteToken(id, userID int) error {
 	return DB.Where("id = ? AND user_id = ?", id, userID).Delete(&Token{}).Error
 }
 
-// AddTokenUsage 异步累加令牌已用额度。
-func AddTokenUsage(id int, quota int64) {
-	if quota <= 0 {
-		return
-	}
-	DB.Model(&Token{}).Where("id = ?", id).
-		UpdateColumn("used_quota", gorm.Expr("used_quota + ?", quota))
-}
-
 // ErrQuotaInsufficient 额度不足。
 var ErrQuotaInsufficient = errors.New("quota insufficient")
 

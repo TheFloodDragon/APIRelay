@@ -142,7 +142,7 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 		return
 	}
 
-	// 模型白名单校验 + 额度预扣
+	// 模型白名单校验
 	var billing *BillingSession
 	if tok, ok := c.Get("token"); ok {
 		if t, _ := tok.(*model.Token); t != nil {
@@ -153,16 +153,32 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 				r.logError(info, http.StatusForbidden, "model not allowed: "+ir.Model)
 				return
 			}
-			// 预扣额度（基于全局价格表估算；未配置价格则为 0，不扣费）
-			reserved := EstimateQuota(ir)
-			if reserved > 0 {
-				if err := billing.Reserve(reserved); err != nil {
-					out.WriteError(c, http.StatusForbidden, "令牌额度不足，请充值或调整额度后重试")
-					r.logError(info, http.StatusForbidden, "quota insufficient: need "+strconv.FormatInt(reserved, 10))
-					return
-				}
-				info.ReservedQuota = billing.Reserved()
+		}
+	}
+
+	// 候选渠道预加载（本次请求复用），并用于预扣价格上界估算。
+	candidates, err := model.GetChannelCandidates(info.Group, ir.Model)
+	if err != nil {
+		out.WriteError(c, http.StatusInternalServerError, "select channel failed")
+		r.logError(info, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(candidates) == 0 {
+		out.WriteError(c, http.StatusServiceUnavailable, noChannelError(info.Group, ir.Model))
+		r.logError(info, http.StatusServiceUnavailable, "no available channel for model "+ir.Model+" in group "+info.Group)
+		return
+	}
+
+	// 预扣额度：基于候选渠道价格上界 + 全局价格表估算，避免渠道级价格高于全局价时少预扣。
+	if billing != nil {
+		reserved := EstimateQuotaForCandidates(ir, candidates)
+		if reserved > 0 {
+			if err := billing.Reserve(reserved); err != nil {
+				out.WriteError(c, http.StatusForbidden, "令牌额度不足，请充值或调整额度后重试")
+				r.logError(info, http.StatusForbidden, "quota insufficient: need "+strconv.FormatInt(reserved, 10))
+				return
 			}
+			info.ReservedQuota = billing.Reserved()
 		}
 	}
 	defer func() {
@@ -171,7 +187,7 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 		}
 	}()
 
-	r.relayWithFailover(c, info, ir, out, billing)
+	r.relayWithFailover(c, info, ir, out, billing, candidates)
 }
 
 // relayWithFailover 执行带故障转移的转发主循环。
@@ -181,7 +197,7 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 //   - 临时性错误（429/503/504）在同渠道有限次重试（带退避）；
 //   - 其它可重试错误冷却当前渠道并切换；高优先级耗尽后自动降级；
 //   - 请求成功后清除该渠道冷却。
-func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, out Outbound, billing *BillingSession) {
+func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, out Outbound, billing *BillingSession, candidates []model.ChannelCandidate) {
 	log := logger.FromContext(c.Request.Context())
 	channelMaxRetries := r.channelMaxRetries()
 	state := NewFailoverState(r.cfg.CooldownSeconds, channelMaxRetries)
@@ -212,12 +228,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 			}
 		}
 		nowMs := time.Now().UnixMilli()
-		ch, err := SelectChannel(info.Group, ir.Model, state.Excluded(), nowMs)
-		if err != nil {
-			out.WriteError(c, http.StatusInternalServerError, "select channel failed")
-			r.logError(info, http.StatusInternalServerError, err.Error())
-			return
-		}
+		ch := SelectFromCandidates(candidates, state.Excluded(), nowMs)
 		if ch == nil {
 			if switches == 0 && iter == 0 {
 				out.WriteError(c, http.StatusServiceUnavailable, noChannelError(info.Group, ir.Model))
@@ -233,6 +244,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 		ad := GetAdaptor(info.ApiType)
 		if ad == nil {
+			circuitbreaker.GetManager().ReleaseProbe(ch.Id)
 			state.FailedChannels[ch.Id] = struct{}{}
 			state.LastStatus, state.LastErr = http.StatusNotImplemented, "no adaptor for api type"
 			state.RecordAttempt(FailoverAttempt{
@@ -289,6 +301,7 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 
 		category := classifyRelayError(relayContext(info), err)
 		if category == ErrorCategoryClientCanceled {
+			circuitbreaker.GetManager().ReleaseProbe(ch.Id)
 			log.Warn("relay.client_canceled",
 				zap.Int("channel_id", ch.Id),
 				zap.String("channel", ch.Name),
@@ -444,12 +457,12 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 	}
 
 	if info.IsStream {
-		return r.handleStream(c, info, adp, resp, out, billing)
+		return r.handleStream(c, info, ir, adp, resp, out, billing)
 	}
-	return r.handleNonStream(c, info, adp, resp, out, billing)
+	return r.handleNonStream(c, info, ir, adp, resp, out, billing)
 }
 
-func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound, billing *BillingSession) (int, bool, error) {
+func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, resp *http.Response, out Outbound, billing *BillingSession) (int, bool, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		switch category := classifyRelayError(relayContext(info), err); category {
@@ -474,16 +487,16 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, adp adaptor.A
 	// 按对外协议序列化
 	out.WriteResponse(c, uniResp, info.OriginModel)
 
-	r.logConsume(info, &uniResp.Usage, billing)
+	r.logConsume(info, ir, &uniResp.Usage, billing)
 	return http.StatusOK, false, nil
 }
 
-func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adaptor, resp *http.Response, out Outbound, billing *BillingSession) (int, bool, error) {
+func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, resp *http.Response, out Outbound, billing *BillingSession) (int, bool, error) {
 	// 透传上游 request-id，便于排障（需在写出响应头之前设置）
 	if info.UpstreamRequestId != "" {
 		c.Writer.Header().Set("X-Request-Id", info.UpstreamRequestId)
 	}
-	writer := out.NewStream(c, info.RequestID, info.OriginModel)
+	var writer StreamWriter
 	firstByte := false
 	chunkCount := 0
 
@@ -492,13 +505,18 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adap
 			info.FirstByteMs = int(time.Now().UnixMilli() - info.StartAtMs)
 			firstByte = true
 		}
+		if writer == nil {
+			writer = out.NewStream(c, info.RequestID, info.OriginModel)
+		}
 		chunkCount++
 		return writer.WriteChunk(c, chunk)
 	})
 
 	if err != nil {
-		// 已经开始写流，无法切换渠道；客户端取消不计入渠道失败。
-		_ = writer.Finish(c)
+		// 已经开始写流则尝试完成协议尾；首包前失败时不写头，允许故障转移。
+		if writer != nil {
+			_ = writer.Finish(c)
+		}
 		category := classifyRelayError(relayContext(info), err)
 		if category == ErrorCategoryClientCanceled {
 			return statusClientClosedRequest, false, fmt.Errorf("stream: %w", err)
@@ -515,19 +533,20 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adap
 		return http.StatusOK, false, fmt.Errorf("stream: %w", err)
 	}
 
-	// 检测空流（没有收到任何 chunk）
+	// 检测空流（没有收到任何 chunk）。此时尚未写响应头，允许故障转移。
 	if chunkCount == 0 {
-		_ = writer.Finish(c)
 		return http.StatusBadGateway, true, errEmptyUpstreamResponse
 	}
 
-	_ = writer.Finish(c)
+	if writer != nil {
+		_ = writer.Finish(c)
+	}
 
 	u := dto.Usage{}
 	if usage != nil {
 		u = *usage
 	}
-	r.logConsume(info, &u, billing)
+	r.logConsume(info, ir, &u, billing)
 	return http.StatusOK, false, nil
 }
 
@@ -536,6 +555,7 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, adp adaptor.Adap
 func (r *Relayer) buildRelayInfo(c *gin.Context, ep constant.EndpointType) *RelayInfo {
 	info := &RelayInfo{
 		RequestID:    c.GetString(logger.RequestIDKey),
+		ClientIP:     c.ClientIP(),
 		EndpointType: ep,
 		Group:        r.cfg.DefaultGroup,
 		StartAtMs:    time.Now().UnixMilli(),
@@ -553,14 +573,23 @@ func (r *Relayer) buildRelayInfo(c *gin.Context, ep constant.EndpointType) *Rela
 	return info
 }
 
-func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage, billing *BillingSession) {
+func (r *Relayer) logConsume(info *RelayInfo, ir *dto.UnifiedRequest, usage *dto.Usage, billing *BillingSession) {
 	useTime := int(time.Now().UnixMilli() - info.StartAtMs)
+	effectiveUsage := dto.Usage{}
+	if usage != nil {
+		effectiveUsage = *usage
+	}
+	// 部分上游流式响应不返回 usage；至少按请求 prompt 粗略估算，避免成功流式请求完全零计费。
+	if info.IsStream && ir != nil && effectiveUsage.PromptTokens == 0 && effectiveUsage.CompletionTokens == 0 && effectiveUsage.TotalTokens == 0 {
+		effectiveUsage.PromptTokens = EstimateTokens(ir)
+		effectiveUsage.TotalTokens = effectiveUsage.PromptTokens
+	}
 
 	// 按实际渠道价格计算消耗额度（微美元）
 	var quota int64
 	if info.Channel != nil {
 		in, out := ResolvePrice(info.Channel, info.OriginModel)
-		quota = CalcQuota(usage.PromptTokens, usage.CompletionTokens, in, out)
+		quota = CalcQuota(effectiveUsage.PromptTokens, effectiveUsage.CompletionTokens, in, out)
 	}
 
 	l := &model.Log{
@@ -576,13 +605,14 @@ func (r *Relayer) logConsume(info *RelayInfo, usage *dto.Usage, billing *Billing
 		SrcModel:          info.OriginModel,
 		MappedModel:       info.UpstreamModel,
 		IsStream:          info.IsStream,
-		PromptTokens:      usage.PromptTokens,
-		CompletionTokens:  usage.CompletionTokens,
-		TotalTokens:       usage.TotalTokens,
+		PromptTokens:      effectiveUsage.PromptTokens,
+		CompletionTokens:  effectiveUsage.CompletionTokens,
+		TotalTokens:       effectiveUsage.TotalTokens,
 		Quota:             quota,
 		UseTimeMs:         useTime,
 		FirstByteMs:       info.FirstByteMs,
 		Status:            http.StatusOK,
+		Ip:                info.ClientIP,
 		Content:           info.FailoverChain,
 	}
 	if info.Channel != nil {
@@ -615,6 +645,7 @@ func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
 		IsStream:     info.IsStream,
 		UseTimeMs:    int(time.Now().UnixMilli() - info.StartAtMs),
 		Status:       status,
+		Ip:           info.ClientIP,
 		Error:        cleanErrorMessage(errMsg),
 		Content:      info.FailoverChain,
 	}
@@ -644,6 +675,7 @@ func (r *Relayer) logAttemptFailure(info *RelayInfo, ch *model.Channel, status i
 		IsStream:     info.IsStream,
 		UseTimeMs:    int(time.Now().UnixMilli() - info.StartAtMs),
 		Status:       status,
+		Ip:           info.ClientIP,
 		Error:        cleanErrorMessage(errMsg),
 		Content:      info.FailoverChain,
 	}
@@ -672,7 +704,9 @@ func setSSEHeaders(c *gin.Context) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
+	if !c.Writer.Written() {
+		c.Writer.WriteHeader(http.StatusOK)
+	}
 }
 
 func statusOrDefault(s int) int {

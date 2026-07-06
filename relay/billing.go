@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"math"
 	"sync"
 
 	"github.com/apirelay/apirelay/dto"
@@ -15,6 +16,10 @@ const (
 	microUSDPerUSD = 1_000_000.0
 	// tokensPerPriceUnit 价格以每 100 万 token 计。
 	tokensPerPriceUnit = 1_000_000.0
+	// reserveSafetyMultiplier 预扣安全上浮，降低实际渠道价/输出偏差导致结算补扣失败的概率。
+	reserveSafetyMultiplier = 1.2
+	// estimatedImageTokens 粗略估算单张图片输入消耗。
+	estimatedImageTokens = 1000
 )
 
 // BillingSession 管理一次请求的预扣、结算与失败退款，保证重复调用不会重复扣退。
@@ -160,10 +165,16 @@ func EstimateTokens(ir *dto.UnifiedRequest) int {
 		return 0
 	}
 	chars := len(ir.System)
+	imageCount := 0
 	for _, m := range ir.Messages {
 		chars += len(m.Content)
 		for _, p := range m.Parts {
 			chars += len(p.Text)
+			if p.Type == "image_url" && p.ImageURL != "" {
+				imageCount++
+				// URL 本身也有少量文本开销。
+				chars += len(p.ImageURL)
+			}
 		}
 		for _, tc := range m.ToolCalls {
 			chars += len(tc.Arguments) + len(tc.Name)
@@ -173,7 +184,7 @@ func EstimateTokens(ir *dto.UnifiedRequest) int {
 	for _, t := range ir.Tools {
 		chars += len(t.Name) + len(t.Description) + len(t.Parameters)
 	}
-	est := chars/4 + 8
+	est := chars/4 + imageCount*estimatedImageTokens + 8
 	if est < 1 {
 		est = 1
 	}
@@ -190,11 +201,54 @@ func estimateCompletionTokens(ir *dto.UnifiedRequest) int {
 }
 
 // EstimateQuota 预扣阶段估算需要冻结的额度（微美元）。
-// 价格基于全局价格表（请求前尚未选定渠道，故不含渠道级价格）。
+// 保留兼容旧调用方：仅基于全局价格表估算，并附加安全上浮。
 func EstimateQuota(ir *dto.UnifiedRequest) int64 {
+	if ir == nil {
+		return 0
+	}
 	in, out, hit := model.LookupGlobalModelPrice(ir.Model)
 	if !hit || (in <= 0 && out <= 0) {
 		return 0
 	}
-	return CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), in, out)
+	return applyReserveSafety(CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), in, out))
+}
+
+// EstimateQuotaForCandidates 基于候选渠道价格上界估算预扣额度。
+// 预扣发生在最终选定渠道之前，因此取所有候选渠道（含全局价格回退）的最大 input/output 价格，
+// 避免渠道级价格高于全局价格时少预扣，导致成功请求在异步结算阶段补扣失败。
+func EstimateQuotaForCandidates(ir *dto.UnifiedRequest, candidates []model.ChannelCandidate) int64 {
+	if ir == nil {
+		return 0
+	}
+	in, out := maxCandidatePrice(ir.Model, candidates)
+	if in <= 0 && out <= 0 {
+		return 0
+	}
+	return applyReserveSafety(CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), in, out))
+}
+
+func maxCandidatePrice(displayModel string, candidates []model.ChannelCandidate) (input, output float64) {
+	if in, out, hit := model.LookupGlobalModelPrice(displayModel); hit {
+		input, output = in, out
+	}
+	for _, cand := range candidates {
+		if cand.Channel == nil {
+			continue
+		}
+		in, out := ResolvePrice(cand.Channel, displayModel)
+		if in > input {
+			input = in
+		}
+		if out > output {
+			output = out
+		}
+	}
+	return input, output
+}
+
+func applyReserveSafety(quota int64) int64 {
+	if quota <= 0 {
+		return 0
+	}
+	return int64(math.Ceil(float64(quota) * reserveSafetyMultiplier))
 }

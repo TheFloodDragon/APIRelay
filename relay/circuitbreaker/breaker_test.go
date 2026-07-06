@@ -180,6 +180,29 @@ func TestCircuitBreakerHalfOpenFailureReopens(t *testing.T) {
 	}
 }
 
+func TestCircuitBreakerReleaseProbe(t *testing.T) {
+	cfg := testConfig()
+	cfg.FailureThreshold = 1
+	cfg.SuccessThreshold = 1
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	cb := NewCircuitBreaker(9993, cfg)
+	cb.now = func() time.Time { return now }
+
+	cb.RecordFailure("open immediately")
+	now = base.Add(time.Duration(cfg.TimeoutSeconds) * time.Second)
+	if !cb.IsAllowed() {
+		t.Fatal("超时后应允许第一个 half_open 试探")
+	}
+	if cb.IsAllowed() {
+		t.Fatal("探测名额被占用时不应允许第二个请求")
+	}
+	cb.ReleaseProbe()
+	if !cb.IsAllowed() {
+		t.Fatal("释放探测名额后应允许新的 half_open 试探")
+	}
+}
+
 func TestCircuitBreakerConcurrentRecords(t *testing.T) {
 	cfg := testConfig()
 	cfg.FailureThreshold = 1000

@@ -37,6 +37,10 @@ func TokenAuth() gin.HandlerFunc {
 			abortAuth(c, "token expired")
 			return
 		}
+		if !tok.Unlimited && tok.Quota <= 0 {
+			abortAuth(c, "token quota is not configured")
+			return
+		}
 		if !tok.Unlimited && tok.UsedQuota >= tok.Quota {
 			abortAuth(c, "quota exhausted")
 			return

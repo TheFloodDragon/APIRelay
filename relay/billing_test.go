@@ -71,6 +71,24 @@ func TestEstimateCompletionTokens(t *testing.T) {
 	}
 }
 
+func TestEstimateTokens_IncludesImages(t *testing.T) {
+	ir := &dto.UnifiedRequest{Messages: []dto.UnifiedMessage{{Role: dto.RoleUser, Parts: []dto.UnifiedContentPart{{Type: "image_url", ImageURL: "data:image/png;base64,abc"}}}}}
+	if got := EstimateTokens(ir); got < estimatedImageTokens {
+		t.Fatalf("image token estimate = %d, want at least %d", got, estimatedImageTokens)
+	}
+}
+
+func TestEstimateQuotaForCandidates_UsesChannelPriceCeiling(t *testing.T) {
+	mt := 100
+	ir := &dto.UnifiedRequest{Model: "gpt-test", MaxTokens: &mt, Messages: []dto.UnifiedMessage{{Role: dto.RoleUser, Content: "hello"}}}
+	candidates := []model.ChannelCandidate{{Channel: &model.Channel{ModelConfigs: `[{"name":"gpt-test","enabled":true,"input":2,"output":10}]`}}}
+	withoutSafety := CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), 2, 10)
+	want := applyReserveSafety(withoutSafety)
+	if got := EstimateQuotaForCandidates(ir, candidates); got != want {
+		t.Fatalf("estimate quota = %d, want %d", got, want)
+	}
+}
+
 func setupBillingSessionTestDB(t *testing.T) {
 	t.Helper()
 	if err := model.InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {

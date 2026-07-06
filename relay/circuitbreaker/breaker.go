@@ -40,30 +40,61 @@ func NewCircuitBreaker(channelID int, cfg Config) *CircuitBreaker {
 
 // IsAllowed 判断请求是否允许通过
 func (cb *CircuitBreaker) IsAllowed() bool {
+	return cb.acquireProbe(true)
+}
+
+// PeekAllowed 判断当前是否可能允许请求通过，但不占用 half-open 探测名额。
+// 调度层用它过滤候选渠道，避免仅检查候选就污染 halfOpenInFlight。
+func (cb *CircuitBreaker) PeekAllowed() bool {
+	return cb.acquireProbe(false)
+}
+
+func (cb *CircuitBreaker) acquireProbe(reserve bool) bool {
+	var health *model.ChannelHealth
+
 	cb.mu.Lock()
-	defer cb.mu.Unlock()
+	defer func() {
+		cb.mu.Unlock()
+		if health != nil {
+			go persistHealth(health)
+		}
+	}()
 
 	now := cb.currentTime()
 	switch cb.state {
 	case model.CircuitClosed:
 		return true
 	case model.CircuitOpen:
-		if cb.openedAt != nil && now.Sub(*cb.openedAt) >= time.Duration(cb.cfg.TimeoutSeconds)*time.Second {
-			cb.toHalfOpenLocked(now)
-			health := cb.stateSnapshotLocked()
-			go persistHealth(health)
-			return true
+		if cb.openedAt == nil || now.Sub(*cb.openedAt) < time.Duration(cb.cfg.TimeoutSeconds)*time.Second {
+			return false
 		}
-		return false
+		cb.toHalfOpenLocked(now)
+		health = cb.stateSnapshotLocked()
+		if !reserve {
+			return cb.halfOpenInFlight < cb.cfg.SuccessThreshold
+		}
+		fallthrough
 	case model.CircuitHalfOpen:
 		if cb.halfOpenInFlight >= cb.cfg.SuccessThreshold {
 			return false
 		}
-		cb.halfOpenInFlight++
+		if reserve {
+			cb.halfOpenInFlight++
+		}
 		return true
 	default:
 		return true
 	}
+}
+
+// ReleaseProbe 释放一次 half-open 探测名额。
+// 当请求已被放行但随后因客户端取消等原因未记录成功/失败时调用，避免 halfOpenInFlight 泄漏。
+func (cb *CircuitBreaker) ReleaseProbe() {
+	cb.mu.Lock()
+	if cb.state == model.CircuitHalfOpen && cb.halfOpenInFlight > 0 {
+		cb.halfOpenInFlight--
+	}
+	cb.mu.Unlock()
 }
 
 // RecordSuccess 记录成功请求
@@ -181,7 +212,7 @@ func (cb *CircuitBreaker) toHalfOpenLocked(now time.Time) {
 	cb.state = model.CircuitHalfOpen
 	cb.consecutiveFailures = 0
 	cb.consecutiveSuccesses = 0
-	cb.halfOpenInFlight = 1
+	cb.halfOpenInFlight = 0
 }
 
 func (cb *CircuitBreaker) currentTime() time.Time {

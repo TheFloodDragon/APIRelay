@@ -39,7 +39,9 @@ type RelayInfo struct {
 	// Context 绑定客户端取消与 relay.request_timeout，用于中止上游请求和重试等待。
 	Context context.Context
 
-	RequestID    string
+	RequestID string
+	ClientIP  string
+
 	EndpointType constant.EndpointType // 对外协议
 	ApiType      constant.APIType      // 上游协议
 	Group        string
