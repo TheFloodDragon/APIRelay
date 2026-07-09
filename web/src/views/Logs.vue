@@ -57,8 +57,8 @@ function parseFailoverChain(content) {
 function decisionName(d) {
   return {
     success: '命中',
-    retry_same_channel: '同频重试',
-    switch_channel: '切换航路',
+    retry_same_channel: '同渠道重试',
+    switch_channel: '切换渠道',
     fatal: '终止',
   }[d] || d || '-'
 }
@@ -150,7 +150,7 @@ function filterSummary() {
   if (filters.value.channel_id) parts.push(`节点 #${filters.value.channel_id}`)
   if (filters.value.request_id) parts.push(`请求 ${filters.value.request_id}`)
   if (filters.value.upstream_request_id) parts.push(`上游 ${filters.value.upstream_request_id}`)
-  return parts.length ? parts.join(' · ') : '全部信号'
+  return parts.length ? parts.join(' · ') : '全部'
 }
 function buildDiagnosticPackage(l) {
   const chain = l._failover_chain || []
@@ -233,7 +233,7 @@ onMounted(load)
   <div>
     <div class="flex items-center justify-between mb-5">
       <div>
-        <h2 class="page-title">信号流水</h2>
+        <h2 class="page-title">日志</h2>
         <p class="page-subtitle">API 调用历史 · 点击行展开详情</p>
       </div>
       <button @click="load" class="btn-secondary">刷新</button>
@@ -242,8 +242,8 @@ onMounted(load)
     <div class="panel p-4 mb-4">
       <div class="flex items-center justify-between gap-3 mb-3">
         <div>
-          <span class="tick">FILTER RADAR</span>
-          <p class="text-2xs text-t3 mt-0.5">缩小信号范围，快速定位异常节点与模型航迹</p>
+          <span class="tick">FILTER</span>
+          <p class="text-2xs text-t3 mt-0.5">缩小范围，快速定位异常渠道与模型</p>
         </div>
         <div class="flex flex-wrap items-center justify-end gap-2">
           <button @click="quickErrors" class="btn-ghost btn-sm">异常</button>
@@ -290,12 +290,12 @@ onMounted(load)
           <input v-model="filters.channel_id" class="input font-mono" placeholder="42" inputmode="numeric" @keyup.enter="applyFilters" />
         </label>
         <label class="flex items-end">
-          <button @click="applyFilters" class="btn-secondary w-full">扫描</button>
+          <button @click="applyFilters" class="btn-secondary w-full">查询</button>
         </label>
       </div>
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 font-mono text-2xs text-t3">
-        <span>LOCKED ON · {{ filterSummary() }}</span>
-        <span>{{ total }} 条匹配 · PAGE {{ page }}</span>
+        <span>筛选 · {{ filterSummary() }}</span>
+        <span>{{ total }} 条匹配 · 第 {{ page }} 页</span>
       </div>
     </div>
 
@@ -350,7 +350,7 @@ onMounted(load)
                 <td colspan="11" class="!p-0 border-b border-line">
                   <div class="bg-panel-2 px-4 py-3 animate-fade-in">
                     <div class="flex items-center justify-between gap-3 mb-3">
-                      <span class="tick">DIAGNOSTIC PAYLOAD</span>
+                      <span class="tick">诊断详情</span>
                       <button @click.stop="copyDiagnostic(l)" class="btn-secondary btn-sm">复制诊断包</button>
                     </div>
                     <div class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-xs">
@@ -363,16 +363,16 @@ onMounted(load)
                     </div>
                     <div v-if="l.error" class="mt-3">
                       <span class="tick">ERROR</span>
-                      <pre class="mt-1 p-2.5 rounded-md border text-2xs whitespace-pre-wrap break-all max-h-56 overflow-auto font-mono text-danger border-danger/30 bg-danger/10">{{ l.error }}</pre>
+                      <pre class="mt-1 p-2.5 rounded-md border text-2xs whitespace-pre-wrap break-all max-h-56 overflow-auto font-mono text-rust border-rust/30 bg-rust/10">{{ l.error }}</pre>
                     </div>
 
                     <div v-if="l._failover_chain?.length" class="mt-4">
                       <div class="flex items-center justify-between gap-3 mb-2">
                         <div>
-                          <span class="tick">FAILOVER TRACK</span>
+                          <span class="tick">故障转移轨迹</span>
                           <p class="text-2xs text-t3 mt-0.5">按实际尝试顺序记录渠道、状态与调度决策</p>
                         </div>
-                        <span class="badge badge-neutral font-mono !text-2xs">{{ l._failover_chain.length }} HOPS</span>
+                        <span class="badge badge-neutral font-mono !text-2xs">{{ l._failover_chain.length }} 跳</span>
                       </div>
 
                       <div class="rounded-lg border border-primary/20 bg-surface/70 overflow-hidden">

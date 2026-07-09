@@ -35,10 +35,10 @@ const iconMap = {
 
 // 信号语义色：左侧细条标识 + 等宽图标
 const accentMap = {
-  success: 'var(--c-online)',
-  error: 'var(--c-down)',
-  warning: 'var(--c-warn)',
-  info: 'var(--c-signal)',
+  success: 'var(--jade)',
+  error: 'var(--rust)',
+  warning: 'var(--amber)',
+  info: 'var(--brass)',
 }
 
 defineExpose({ add, remove })

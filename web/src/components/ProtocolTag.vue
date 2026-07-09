@@ -6,13 +6,13 @@ const props = defineProps({
 
 // 协议 → 信号色相位（用色相区分，但都保持低饱和、克制）
 const styleMap = {
-  openai:    { c: 'var(--c-online)' },
-  anthropic: { c: 'var(--c-warn)' },
-  responses: { c: 'var(--c-signal)' },
-  gemini:    { c: 'var(--c-signal)' },
+  openai:    { c: 'var(--jade)' },
+  anthropic: { c: 'var(--brass)' },
+  responses: { c: 'var(--electric)' },
+  gemini:    { c: 'var(--electric)' },
 }
 import { computed } from 'vue'
-const cssVar = computed(() => (styleMap[props.protocol?.toLowerCase()]?.c) || 'var(--c-t3)')
+const cssVar = computed(() => (styleMap[props.protocol?.toLowerCase()]?.c) || 'var(--t3)')
 </script>
 
 <template>

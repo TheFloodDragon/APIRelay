@@ -4,45 +4,36 @@
 
 @layer base {
   :root {
-    /* APIRelay Relay 控制台：机柜碳黑、面板墨蓝、信号青、配置琥珀、终端绿 */
-    --c-bg: 7 16 24;             /* carbon-bay #071018 */
-    --c-surface: 10 23 32;
-    --c-panel: 13 27 37;         /* panel-ink #0D1B25 */
-    --c-elevated: 18 42 55;
-    --c-border: 43 72 87;
-    --c-line: 37 63 77;
-    --c-line-strong: 62 94 108;
+    /* APIRelay 调度台 Patchbay：暖炭 + 黄铜 + 电蓝 */
+    --ink: 22 21 17;            /* #161511 暖炭底 */
+    --panel: 30 28 23;          /* #1E1C17 面板 */
+    --panel-2: 38 35 25;        /* #262319 抬升面 */
+    --line: 58 53 43;           /* #3A352B 发丝线 */
+    --line-2: 78 71 57;         /* 更亮描边 */
 
-    --c-text: 220 231 239;       /* paper-fog #DCE7EF */
-    --c-text-dim: 154 178 190;
-    --c-text-muted: 101 126 138;
-    --c-t1: 220 231 239;
-    --c-t2: 154 178 190;
-    --c-t3: 101 126 138;
+    --brass: 200 149 46;        /* #C8952E 黄铜信号色 */
+    --electric: 59 130 246;     /* #3B82F6 电蓝强调 */
+    --jade: 92 196 138;         /* 在线 */
+    --amber: 214 158 66;        /* 警告 / 冷却 */
+    --rust: 209 96 72;          /* 故障 */
 
-    --c-primary: 36 210 255;     /* trace-cyan #24D2FF */
-    --c-accent: 255 176 32;      /* relay-amber #FFB020 */
-    --c-success: 102 242 165;    /* terminal-green #66F2A5 */
-    --c-warning: 255 176 32;
-    --c-danger: 255 91 91;
-    --c-signal: 36 210 255;
-    --c-online: 102 242 165;
-    --c-warn: 255 176 32;
-    --c-down: 255 91 91;
+    --t1: 236 231 219;          /* #ECE7DB 暖白 */
+    --t2: 176 168 150;          /* 二级 */
+    --t3: 124 117 102;          /* 三级 */
 
     font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     color-scheme: dark;
   }
 
-  * { @apply border-border; }
-  html { @apply bg-bg text-text; }
+  * { @apply border-line; }
+  html { @apply bg-ink text-t1; }
   body {
     min-height: 100vh;
     background:
-      radial-gradient(circle at 15% -10%, rgb(var(--c-signal) / 0.16), transparent 34rem),
-      radial-gradient(circle at 88% 8%, rgb(var(--c-accent) / 0.10), transparent 30rem),
-      linear-gradient(135deg, rgb(var(--c-bg)) 0%, rgb(4 10 16) 100%);
+      radial-gradient(circle at 12% -8%, rgb(var(--brass) / 0.07), transparent 32rem),
+      radial-gradient(circle at 92% 4%, rgb(var(--electric) / 0.05), transparent 30rem),
+      linear-gradient(160deg, rgb(var(--ink)) 0%, rgb(16 15 12) 100%);
   }
   button, input, select, textarea { font: inherit; }
   code, pre, kbd, samp { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace; }
@@ -56,177 +47,169 @@
     }
   }
 
-  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
   ::-webkit-scrollbar-thumb { @apply rounded-full bg-line; }
-  ::-webkit-scrollbar-thumb:hover { @apply bg-line-strong; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-line-2; }
 
-  :focus-visible { @apply outline-none ring-2 ring-signal/40 ring-offset-2 ring-offset-bg; }
+  :focus-visible { @apply outline-none ring-2 ring-brass/45 ring-offset-2 ring-offset-ink; }
 }
 
 @layer components {
+  /* ===== Shell：机架侧栏 + 主区 ===== */
   .app-shell {
-    @apply min-h-screen flex bg-bg text-text;
+    @apply min-h-screen flex bg-ink text-t1;
   }
-  .relay-sidebar {
-    @apply relative w-72 shrink-0 flex flex-col border-r border-line overflow-hidden;
+  .rack-sidebar {
+    @apply relative w-64 shrink-0 flex flex-col border-r border-line overflow-hidden;
     background:
-      linear-gradient(180deg, rgb(var(--c-panel) / 0.94), rgb(5 14 22 / 0.98)),
-      repeating-linear-gradient(90deg, rgb(var(--c-signal) / 0.06) 0 1px, transparent 1px 34px);
-    box-shadow: inset -1px 0 0 rgb(var(--c-signal) / 0.10);
+      linear-gradient(180deg, rgb(var(--panel) / 0.96), rgb(18 17 13 / 0.98));
+    box-shadow: inset -1px 0 0 rgb(255 255 255 / 0.02);
   }
-  .relay-sidebar::before {
+  /* 机架竖轨：左侧螺孔导轨 */
+  .rack-sidebar::before {
     content: "";
     position: absolute;
-    inset: 0 auto 0 1.35rem;
+    top: 0; bottom: 0; left: 0.5rem;
     width: 1px;
-    background: linear-gradient(180deg, transparent, rgb(var(--c-signal) / 0.42), transparent);
+    background: repeating-linear-gradient(180deg, rgb(var(--line-2)) 0 2px, transparent 2px 12px);
+    opacity: 0.5;
     pointer-events: none;
   }
-  .relay-brand {
-    @apply relative h-20 px-6 flex items-center gap-3 border-b border-line;
+  .rack-brand {
+    @apply relative h-16 px-5 flex items-center gap-3 border-b border-line;
   }
-  .relay-logo {
-    @apply relative w-11 h-11 rounded-xl flex items-center justify-center text-bg shadow-signal;
-    background:
-      linear-gradient(135deg, rgb(var(--c-signal)), rgb(var(--c-online))),
-      rgb(var(--c-signal));
+  .rack-logo {
+    @apply relative w-10 h-10 rounded-lg flex items-center justify-center text-ink;
+    background: linear-gradient(135deg, rgb(var(--brass)), rgb(224 178 92));
+    box-shadow: 0 0 0 1px rgb(var(--brass) / 0.4), 0 4px 14px rgb(var(--brass) / 0.2);
   }
-  .relay-logo::after {
+  .rack-rail {
+    @apply flex-1 py-3 px-3 space-y-1 overflow-y-auto;
+  }
+  /* 端口式导航条 */
+  .rack-port {
+    @apply relative flex items-center gap-3 pl-5 pr-3 py-2.5 rounded-lg text-sm font-medium transition-all border border-transparent;
+  }
+  .rack-port::before {
     content: "";
-    position: absolute;
-    inset: -6px;
-    border: 1px solid rgb(var(--c-signal) / 0.18);
-    border-radius: 1rem;
+    @apply absolute rounded-full transition-all;
+    left: 0.15rem;
+    top: 50%;
+    margin-top: -0.28rem;
+    width: 0.56rem;
+    height: 0.56rem;
+    background: rgb(var(--line-2));
+    box-shadow: inset 0 0 0 2px rgb(var(--ink));
   }
-  .relay-bus {
-    @apply flex-1 p-4 space-y-2 overflow-y-auto;
+  .rack-port-active {
+    @apply text-t1 border-line-2;
+    background: linear-gradient(90deg, rgb(var(--brass) / 0.16), rgb(var(--panel-2) / 0.4));
   }
-  .nav-wire {
-    @apply relative flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all border border-transparent;
+  .rack-port-active::before {
+    background: rgb(var(--brass));
+    box-shadow: inset 0 0 0 2px rgb(var(--ink)), 0 0 10px rgb(var(--brass) / 0.85);
   }
-  .nav-wire::before {
-    content: "";
-    @apply absolute rounded-full;
-    left: -0.92rem;
-    width: 0.55rem;
-    height: 0.55rem;
-    background: rgb(var(--c-line-strong));
-    box-shadow: 0 0 0 4px rgb(var(--c-bg));
+  .rack-port-idle {
+    @apply text-t2 hover:text-t1 hover:border-line hover:bg-panel-2/50;
   }
-  .nav-wire-active {
-    @apply text-bg border-signal/40 shadow-signal;
-    background: linear-gradient(135deg, rgb(var(--c-signal)), rgb(125 232 255));
-  }
-  .nav-wire-active::before {
-    background: rgb(var(--c-online));
-    box-shadow: 0 0 0 4px rgb(var(--c-bg)), 0 0 18px rgb(var(--c-online) / 0.8);
-  }
-  .nav-wire-idle {
-    @apply text-t2 hover:text-t1 hover:border-line hover:bg-elevated/50;
-  }
-  .main-grid {
+  .rack-port-idle:hover::before { background: rgb(var(--t3)); }
+
+  .main-area {
     @apply relative flex-1 flex flex-col overflow-hidden;
-    background:
-      linear-gradient(rgb(var(--c-bg) / 0.82), rgb(var(--c-bg) / 0.92)),
-      linear-gradient(90deg, rgb(var(--c-signal) / 0.06) 1px, transparent 1px),
-      linear-gradient(0deg, rgb(var(--c-signal) / 0.045) 1px, transparent 1px);
-    background-size: auto, 48px 48px, 48px 48px;
   }
   .console-topbar {
-    @apply h-16 shrink-0 px-6 flex items-center justify-between border-b border-line bg-panel/70 backdrop-blur-xl;
-    box-shadow: 0 1px 0 rgb(var(--c-signal) / 0.08);
+    @apply h-14 shrink-0 px-6 flex items-center justify-between border-b border-line bg-panel/70 backdrop-blur-xl;
   }
   .console-title {
-    @apply font-mono text-sm font-semibold uppercase tracking-[0.18em] text-t1;
+    @apply font-mono text-sm font-semibold uppercase tracking-[0.14em] text-t1;
   }
   .console-frame {
     @apply flex-1 overflow-auto p-6;
   }
 
+  /* ===== 按钮 ===== */
   .btn {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm
            transition-all disabled:opacity-40 disabled:cursor-not-allowed;
   }
   .btn-primary {
-    @apply btn text-bg border border-signal/40 shadow-signal;
-    background: linear-gradient(135deg, rgb(var(--c-signal)), rgb(126 232 255));
+    @apply btn text-ink border border-brass/50;
+    background: linear-gradient(135deg, rgb(var(--brass)), rgb(216 168 78));
+    box-shadow: 0 2px 10px rgb(var(--brass) / 0.18);
   }
-  .btn-primary:hover { filter: brightness(1.06); }
+  .btn-primary:hover { filter: brightness(1.07); }
   .btn-secondary {
-    @apply btn bg-elevated/80 text-t1 hover:bg-elevated border border-line hover:border-line-strong;
+    @apply btn bg-panel-2/80 text-t1 hover:bg-panel-2 border border-line hover:border-line-2;
   }
   .btn-ghost {
-    @apply btn text-t2 hover:text-t1 hover:bg-elevated/50 border border-transparent hover:border-line;
+    @apply btn text-t2 hover:text-t1 hover:bg-panel-2/50 border border-transparent hover:border-line;
   }
   .btn-danger {
-    @apply btn bg-down/10 text-down border border-down/25 hover:bg-down/20;
+    @apply btn bg-rust/10 text-rust border border-rust/25 hover:bg-rust/20;
   }
   .btn-sm { @apply px-3 py-1.5 text-xs; }
+  .page-btn {
+    @apply px-3 py-1.5 rounded-md border border-line text-t2 bg-panel-2/60
+           hover:text-t1 hover:border-line-2 transition-colors
+           disabled:opacity-35 disabled:cursor-not-allowed;
+  }
 
+  /* ===== 表单 ===== */
   .input {
-    @apply w-full px-3 py-2.5 rounded-lg text-sm bg-bg/70 border border-line text-t1
+    @apply w-full px-3 py-2.5 rounded-lg text-sm bg-ink/60 border border-line text-t1
            placeholder:text-t3 transition-all
-           focus:outline-none focus:border-signal/60 focus:ring-2 focus:ring-signal/20
+           focus:outline-none focus:border-brass/60 focus:ring-2 focus:ring-brass/20
            disabled:opacity-40 disabled:cursor-not-allowed;
   }
   textarea.input { @apply leading-relaxed; }
   .label { @apply block text-xs font-medium text-t2 mb-1.5 uppercase tracking-wide; }
   .hint { @apply text-xs text-t3 mt-1; }
 
+  /* ===== 面板 ===== */
   .card, .panel {
     @apply bg-panel/90 border border-line rounded-xl shadow-panel overflow-hidden;
-    backdrop-filter: blur(14px);
   }
   .panel {
-    background:
-      linear-gradient(180deg, rgb(var(--c-panel) / 0.94), rgb(9 21 30 / 0.94));
+    background: linear-gradient(180deg, rgb(var(--panel) / 0.95), rgb(24 22 18 / 0.95));
   }
   .inset {
-    @apply rounded-xl border border-line bg-bg/50;
+    @apply rounded-lg border border-line bg-ink/50;
   }
 
+  /* ===== 徽标 ===== */
   .badge {
     @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border;
   }
-  .badge-primary, .badge-signal { @apply bg-signal/10 text-signal border-signal/30; }
-  .badge-success, .badge-online { @apply bg-online/10 text-online border-online/30; }
-  .badge-warning, .badge-warn { @apply bg-warn/10 text-warn border-warn/30; }
-  .badge-danger, .badge-down { @apply bg-down/10 text-down border-down/30; }
-  .badge-neutral { @apply bg-elevated/75 text-t2 border-line; }
+  .badge-primary, .badge-signal, .badge-brass { @apply bg-brass/10 text-brass border-brass/30; }
+  .badge-electric { @apply bg-electric/10 text-electric border-electric/35; }
+  .badge-success, .badge-online, .badge-jade { @apply bg-jade/10 text-jade border-jade/30; }
+  .badge-warning, .badge-warn, .badge-amber { @apply bg-amber/10 text-amber border-amber/30; }
+  .badge-danger, .badge-down, .badge-rust { @apply bg-rust/10 text-rust border-rust/30; }
+  .badge-neutral { @apply bg-panel-2/75 text-t2 border-line; }
 
+  /* ===== 信号灯 ===== */
   .status-dot { @apply w-2 h-2 rounded-full; }
-  .status-dot-online { @apply bg-online shadow-sm shadow-online/50; }
-  .status-dot-warning { @apply bg-warn shadow-sm shadow-warn/50; }
-  .status-dot-danger { @apply bg-down shadow-sm shadow-down/50; }
+  .status-dot-online { @apply bg-jade shadow-sm shadow-jade/50; }
+  .status-dot-warning { @apply bg-amber shadow-sm shadow-amber/50; }
+  .status-dot-danger { @apply bg-rust shadow-sm shadow-rust/50; }
 
-  .tick { @apply text-2xs font-medium text-t3 uppercase tracking-[0.16em]; }
-  .skeleton { @apply rounded-lg bg-elevated animate-pulse; }
+  .tick { @apply text-2xs font-mono font-medium text-t3 uppercase tracking-[0.16em]; }
+  .skeleton { @apply rounded-lg bg-panel-2 animate-pulse; }
   .empty-state { @apply flex flex-col items-center justify-center py-16 text-t3 text-sm gap-3; }
-
-  /* 兼容旧样式 / 语义别名 */
-  .t1 { @apply text-t1; }
-  .t2 { @apply text-t2; }
-  .t3 { @apply text-t3; }
-  .line { @apply border-line; }
-  .line-strong { @apply border-line-strong; }
-  .panel-2 { @apply bg-elevated/70; }
-  .signal { @apply text-signal; }
-  .online { @apply text-online; }
-  .warn { @apply text-warn; }
-  .down { @apply text-down; }
 
   .page-title { @apply text-2xl font-semibold text-t1 mb-1 tracking-tight; }
   .page-subtitle { @apply text-sm text-t3; }
 
+  /* ===== 模态 ===== */
   .modal-backdrop {
-    @apply fixed inset-0 z-50 flex items-center justify-center p-4 bg-bg/80 backdrop-blur-sm;
+    @apply fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/80 backdrop-blur-sm;
   }
   .modal {
-    @apply bg-panel border border-line rounded-xl w-full max-h-[90vh] overflow-auto shadow-2xl;
+    @apply bg-panel border border-line-2 rounded-xl w-full max-h-[90vh] overflow-auto shadow-pop;
   }
   .modal-header {
-    @apply flex items-center justify-between p-6 border-b border-line bg-bg/25;
+    @apply flex items-center justify-between p-6 border-b border-line bg-ink/25;
   }
   .modal-title { @apply text-lg font-semibold text-t1; }
   .modal > .grid { @apply p-4; }
@@ -234,23 +217,26 @@
   .modal > .mt-4 { @apply mx-5 mb-5; }
   .modal > .flex.justify-end { @apply mx-5 mb-5; }
 
+  /* ===== 表格 ===== */
   .dtable { @apply w-full text-sm; }
-  .dtable thead th { @apply px-4 py-3 text-left text-xs font-medium text-t3 uppercase tracking-wider border-b border-line bg-bg/50; }
+  .dtable thead th { @apply px-4 py-3 text-left text-xs font-mono font-medium text-t3 uppercase tracking-wider border-b border-line bg-ink/40; }
   .dtable tbody td { @apply px-4 py-3 text-t1 border-b border-line; }
-  .dtable tbody tr:hover { @apply bg-signal/5; }
+  .dtable tbody tr:hover { @apply bg-brass/5; }
   .dtable tbody tr:last-child td { @apply border-b-0; }
 
+  /* ===== 开关 ===== */
   .toggle {
-    @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer bg-line-strong;
+    @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer bg-line-2;
   }
-  .toggle-on { @apply bg-signal; }
+  .toggle-on { @apply bg-brass; }
   .toggle-knob {
-    @apply inline-block h-4 w-4 rounded-full bg-white transition-transform translate-x-1;
+    @apply inline-block h-4 w-4 rounded-full bg-ink transition-transform translate-x-1;
   }
-  .toggle-on .toggle-knob { @apply translate-x-6; }
+  .toggle-on .toggle-knob { @apply translate-x-6 bg-ink; }
 
+  /* ===== 端口码 / Key 芯片 ===== */
   .key-chip {
-    @apply inline-flex items-center gap-2 min-w-0 max-w-full px-2.5 py-1.5 rounded-lg border border-signal/25 bg-signal/10 text-signal font-mono text-xs;
+    @apply inline-flex items-center gap-2 min-w-0 max-w-full px-2.5 py-1.5 rounded-lg border border-brass/25 bg-brass/5 text-brass font-mono text-xs;
   }
   .key-chip code {
     @apply truncate;
@@ -263,11 +249,57 @@
     text-overflow: clip;
   }
   .config-textarea {
-    @apply w-full min-h-[420px] resize-y rounded-xl border border-line bg-bg/80 px-4 py-3 text-sm text-t1 font-mono leading-6
-           focus:outline-none focus:border-warn/70 focus:ring-2 focus:ring-warn/20 placeholder:text-t3;
+    @apply w-full min-h-[420px] resize-y rounded-xl border border-line bg-ink/80 px-4 py-3 text-sm text-t1 font-mono leading-6
+           focus:outline-none focus:border-electric/60 focus:ring-2 focus:ring-electric/20 placeholder:text-t3;
     tab-size: 2;
   }
-  .relay-callout {
-    @apply rounded-xl border border-warn/25 bg-warn/10 px-4 py-3 text-sm text-t2;
+  .callout {
+    @apply rounded-lg border border-amber/25 bg-amber/10 px-4 py-3 text-sm text-t2;
   }
+
+  /* ===== Patchbay 配线架 ===== */
+  /* 端口插孔：入站协议 / 上游渠道 */
+  .patch-jack {
+    @apply relative flex items-center gap-2.5 rounded-lg border border-line bg-ink/50 px-3 py-2 transition-colors;
+  }
+  .patch-jack-live { @apply border-brass/35 bg-brass/5; }
+  .patch-jack-cold { @apply opacity-55; }
+  /* 插孔孔眼 */
+  .patch-socket {
+    @apply relative w-3.5 h-3.5 rounded-full shrink-0;
+    background: radial-gradient(circle at 50% 50%, rgb(var(--ink)) 0 32%, rgb(var(--line-2)) 34% 100%);
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.5);
+  }
+  .patch-socket-live {
+    background: radial-gradient(circle at 50% 50%, rgb(var(--ink)) 0 30%, rgb(var(--brass)) 32% 100%);
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.5), 0 0 8px rgb(var(--brass) / 0.6);
+  }
+  .patch-socket-warn {
+    background: radial-gradient(circle at 50% 50%, rgb(var(--ink)) 0 30%, rgb(var(--amber)) 32% 100%);
+  }
+  .patch-socket-down {
+    background: radial-gradient(circle at 50% 50%, rgb(var(--ink)) 0 30%, rgb(var(--rust)) 32% 100%);
+  }
+  /* 中枢 IR 核 */
+  .patch-hub {
+    @apply relative rounded-xl border border-brass/40 flex flex-col items-center justify-center text-center px-4 py-5;
+    background: linear-gradient(160deg, rgb(var(--panel-2) / 0.9), rgb(var(--panel) / 0.9));
+    box-shadow: inset 0 0 0 1px rgb(var(--brass) / 0.12), 0 0 30px rgb(var(--brass) / 0.1);
+  }
+  /* 仪表读数卡 */
+  .meter-card {
+    @apply relative rounded-xl border border-line bg-panel/85 p-4 transition-colors hover:border-line-2;
+  }
+  .meter-card-accent { @apply border-brass/30; }
+
+  /* ===== 兼容旧别名 ===== */
+  .t1 { @apply text-t1; }
+  .t2 { @apply text-t2; }
+  .t3 { @apply text-t3; }
+  .line { @apply border-line; }
+  .line-strong { @apply border-line-2; }
+  .signal { @apply text-brass; }
+  .online { @apply text-jade; }
+  .warn { @apply text-amber; }
+  .down { @apply text-rust; }
 }

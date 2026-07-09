@@ -2,20 +2,20 @@
   <div>
     <div class="flex items-center justify-between mb-5">
       <div>
-        <h2 class="page-title">路由表</h2>
-        <p class="page-subtitle">上游供应商优先级、权重与模型信号配置</p>
+        <h2 class="page-title">渠道</h2>
+        <p class="page-subtitle">上游渠道的优先级、权重与模型协议配置</p>
       </div>
       <button class="btn-primary" @click="openCreate">
         <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg>
-        <span>新建节点</span>
+        <span>新建渠道</span>
       </button>
     </div>
 
     <div class="panel overflow-hidden">
       <div class="h-10 px-4 border-b border-line flex items-center justify-between">
         <div class="flex items-center gap-2">
-          <span class="font-mono text-sm font-medium text-t1">优先级队列</span>
-          <span class="tick">DRAG TO REORDER</span>
+          <span class="font-mono text-sm font-medium text-t1">渠道机架</span>
+          <span class="tick">拖动排序</span>
         </div>
         <span v-if="reordering" class="badge badge-signal">保存中…</span>
       </div>
@@ -23,10 +23,10 @@
       <div v-if="channels.length" class="divide-y divide-line">
         <div
           v-for="(ch, idx) in sortedChannels" :key="ch.id"
-          class="group grid grid-cols-[40px_54px_minmax(0,1fr)_82px_66px_120px] max-lg:grid-cols-[40px_54px_minmax(0,1fr)] gap-3 items-start px-4 py-3 transition-colors hover:bg-[rgb(var(--c-signal)/0.04)]"
+          class="group grid grid-cols-[40px_54px_minmax(0,1fr)_82px_66px_120px] max-lg:grid-cols-[40px_54px_minmax(0,1fr)] gap-3 items-start px-4 py-3 transition-colors hover:bg-[rgb(var(--brass)/0.04)]"
           :class="[
             dragIndex === idx ? 'opacity-40' : '',
-            dropIndex === idx && dragIndex !== null && dragIndex !== idx ? 'ring-1 ring-signal' : '',
+            dropIndex === idx && dragIndex !== null && dragIndex !== idx ? 'ring-1 ring-brass' : '',
             ch.status !== 1 ? 'opacity-60' : '',
           ]"
           draggable="true"
@@ -42,7 +42,7 @@
 
           <!-- 序位 -->
           <div class="flex items-center gap-2">
-            <span class="font-mono text-sm font-semibold" :class="idx === 0 ? 'text-signal' : 'text-t3'">{{ String(idx + 1).padStart(2, '0') }}</span>
+            <span class="font-mono text-sm font-semibold" :class="idx === 0 ? 'text-brass' : 'text-t3'">{{ String(idx + 1).padStart(2, '0') }}</span>
             <PriorityBar :level="idx" :total="channels.length" />
           </div>
 
@@ -92,7 +92,7 @@
 
       <div v-if="!channels.length" class="empty-state">
         <span class="font-mono text-3xl text-t3">∅</span>
-        <span>暂无供应商节点，点击右上角新建</span>
+        <span>暂无渠道，点击右上角新建</span>
       </div>
     </div>
 
@@ -101,7 +101,7 @@
       <div class="modal max-w-4xl">
         <div class="modal-header">
           <div>
-            <h3 class="modal-title">{{ form.id ? '配置路由节点' : '新建路由节点' }}</h3>
+            <h3 class="modal-title">{{ form.id ? '配置渠道' : '新建渠道' }}</h3>
             <p class="hint mt-0">模型、协议规则与上游凭据集中在此面板配置</p>
           </div>
           <button @click="showModal=false" class="text-t3 hover:text-t1 text-xl leading-none">×</button>
@@ -112,16 +112,16 @@
           <section class="space-y-4">
             <div class="panel p-4 space-y-3">
               <div class="flex items-center justify-between mb-1">
-                <span class="font-mono text-sm text-t1">节点参数</span>
-                <span class="tick">NODE</span>
+                <span class="font-mono text-sm text-t1">渠道参数</span>
+                <span class="tick">CHANNEL</span>
               </div>
               <div>
-                <label class="label">供应商名称 <span class="text-[rgb(var(--c-down))]">*</span></label>
+                <label class="label">渠道名称 <span class="text-[rgb(var(--rust))]">*</span></label>
                 <input v-model="form.name" class="input" placeholder="例：OpenAI 主账号" autocomplete="off" />
               </div>
               <div class="grid grid-cols-2 gap-3">
                 <div>
-                  <label class="label">默认协议 <span class="text-[rgb(var(--c-down))]">*</span></label>
+                  <label class="label">默认协议 <span class="text-[rgb(var(--rust))]">*</span></label>
                   <select v-model.number="form.type" class="input" @change="onTypeChange">
                     <option v-for="t in channelTypes" :key="t.value" :value="t.value">{{ t.name }}</option>
                   </select>
@@ -132,11 +132,11 @@
                 </div>
               </div>
               <div>
-                <label class="label">Base URL <span class="text-[rgb(var(--c-down))]">*</span></label>
+                <label class="label">Base URL <span class="text-[rgb(var(--rust))]">*</span></label>
                 <input v-model="form.base_url" class="input font-mono" placeholder="https://api.openai.com" autocomplete="off" />
               </div>
               <div>
-                <label class="label">API Key <span class="text-[rgb(var(--c-down))]">*</span></label>
+                <label class="label">API Key <span class="text-[rgb(var(--rust))]">*</span></label>
                 <input
                   v-model="form.key"
                   type="text"
@@ -151,7 +151,7 @@
                   data-lpignore="true"
                   data-form-type="other"
                 />
-                <p class="hint">供应商 / 上游站点 Key 会按明文保存并在路由表中直接显示。</p>
+                <p class="hint">上游站点 Key 会按明文保存并在渠道列表中直接显示。</p>
               </div>
             </div>
 
@@ -178,7 +178,7 @@
             <div class="panel p-4">
               <div class="flex items-start justify-between mb-3">
                 <div>
-                  <div class="font-mono text-sm text-t1">模型信号</div>
+                  <div class="font-mono text-sm text-t1">模型映射</div>
                   <p class="hint mt-0">每个模型可单独启用、覆盖协议、映射上游名</p>
                 </div>
                 <button class="btn-secondary btn-sm" :disabled="probing || !form.base_url || !form.key" @click="fetchModels">
@@ -193,7 +193,7 @@
 
               <div v-if="models.length" class="border border-line rounded-lg overflow-hidden">
                 <div class="max-h-80 overflow-y-auto divide-y divide-line">
-                  <div v-for="(m, i) in models" :key="i" class="p-2 bg-panel hover:bg-[rgb(var(--c-signal)/0.04)] transition-colors">
+                  <div v-for="(m, i) in models" :key="i" class="p-2 bg-panel hover:bg-[rgb(var(--brass)/0.04)] transition-colors">
                     <div class="grid grid-cols-[40px_minmax(120px,1fr)_104px_118px_70px_70px_40px_24px] max-xl:grid-cols-[40px_minmax(120px,1fr)_104px_40px_24px] gap-2 items-center">
                       <button type="button" class="toggle shrink-0" :class="{ 'toggle-on': m.enabled }" @click="m.enabled = !m.enabled"><span class="toggle-knob"></span></button>
                       <input v-model="m.name" class="input !py-1.5 !rounded-md font-mono text-xs" placeholder="显示名" />
@@ -205,10 +205,10 @@
                       <input v-model.number="m.input" type="number" step="0.01" min="0" class="input !py-1.5 !rounded-md text-xs text-right max-xl:hidden" placeholder="入价" title="输入价 $/1M" />
                       <input v-model.number="m.output" type="number" step="0.01" min="0" class="input !py-1.5 !rounded-md text-xs text-right max-xl:hidden" placeholder="出价" title="输出价 $/1M" />
                       <button type="button" class="btn-secondary btn-sm !px-2" :disabled="testing[m.name] || !m.name.trim()" @click="testModel(m)" title="发送一次测试对话">{{ testing[m.name] ? '…' : '测' }}</button>
-                      <button class="text-t3 hover:text-[rgb(var(--c-down))]" @click="removeModel(i, m)">×</button>
+                      <button class="text-t3 hover:text-[rgb(var(--rust))]" @click="removeModel(i, m)">×</button>
                     </div>
                     <div v-if="testResults[m.name]" class="mt-2 ml-10 text-xs rounded-md px-2 py-1 border"
-                      :class="testResults[m.name].success ? 'text-[rgb(var(--c-online))] border-[rgb(var(--c-online)/0.28)] bg-[rgb(var(--c-online)/0.08)]' : 'text-[rgb(var(--c-down))] border-[rgb(var(--c-down)/0.28)] bg-[rgb(var(--c-down)/0.08)]'">
+                      :class="testResults[m.name].success ? 'text-[rgb(var(--jade))] border-[rgb(var(--jade)/0.28)] bg-[rgb(var(--jade)/0.08)]' : 'text-[rgb(var(--rust))] border-[rgb(var(--rust)/0.28)] bg-[rgb(var(--rust)/0.08)]'">
                       <template v-if="testResults[m.name].success">
                         ✓ {{ testResults[m.name].latency_ms }}ms · {{ testResults[m.name].protocol }}
                         <span v-if="testResults[m.name].reply" class="text-t3"> · {{ testResults[m.name].reply }}</span>
@@ -221,12 +221,12 @@
               <div v-else class="empty-state !py-8 border border-line rounded-lg bg-panel-2">
                 <span>暂无模型，拉取或手动添加</span>
               </div>
-              <p class="hint">已启用 {{ enabledCount }} 个 · 协议「继承」走规则/供应商默认 · 价格 0 走全局价格表</p>
+              <p class="hint">已启用 {{ enabledCount }} 个 · 协议「继承」走规则/渠道默认 · 价格 0 走全局价格表</p>
             </div>
 
             <details class="panel overflow-hidden" open>
               <summary class="px-4 py-3 cursor-pointer font-medium text-sm text-t1 select-none flex items-center justify-between">
-                <span>节点协议规则</span><span class="tick">REGEX</span>
+                <span>渠道协议规则</span><span class="tick">REGEX</span>
               </summary>
               <div class="px-4 pb-4 pt-3 space-y-2 border-t border-line">
                 <p class="hint mt-0">按显示名正则匹配，命中则用指定协议（优先级低于模型显式协议）</p>
@@ -235,7 +235,7 @@
                   <select v-model="r.protocol" class="input !py-1.5 text-xs w-32 shrink-0">
                     <option v-for="p in protocols" :key="p.value" :value="p.value">{{ p.name }}</option>
                   </select>
-                  <button class="text-t3 hover:text-[rgb(var(--c-down))] px-1" @click="rules.splice(i, 1)">×</button>
+                  <button class="text-t3 hover:text-[rgb(var(--rust))] px-1" @click="rules.splice(i, 1)">×</button>
                 </div>
                 <button class="btn-ghost btn-sm" @click="rules.push({ pattern: '', protocol: 'anthropic' })">+ 添加规则</button>
               </div>
@@ -244,10 +244,10 @@
         </div>
 
         <div class="mt-4 pt-4 border-t border-line">
-          <div v-if="err" class="mb-3 p-3 rounded-lg text-sm border text-[rgb(var(--c-down))] border-[rgb(var(--c-down)/0.28)] bg-[rgb(var(--c-down)/0.08)]">{{ err }}</div>
+          <div v-if="err" class="mb-3 p-3 rounded-lg text-sm border text-[rgb(var(--rust))] border-[rgb(var(--rust)/0.28)] bg-[rgb(var(--rust)/0.08)]">{{ err }}</div>
           <div class="flex justify-end gap-2">
             <button @click="showModal=false" class="btn-secondary">取消</button>
-            <button class="btn-primary" :disabled="saving || !canSave" @click="save">{{ saving ? '保存中…' : '保存节点' }}</button>
+            <button class="btn-primary" :disabled="saving || !canSave" @click="save">{{ saving ? '保存中…' : '保存渠道' }}</button>
           </div>
         </div>
       </div>
@@ -314,7 +314,7 @@ async function copyKey(ch) {
   if (!ch.key) return
   try {
     await navigator.clipboard.writeText(ch.key)
-    toast.success(`已复制「${ch.name}」的供应商 Key`)
+    toast.success(`已复制「${ch.name}」的上游 Key`)
   } catch {
     toast.warning('浏览器阻止了剪贴板写入，请手动复制列表中的 Key')
   }
@@ -466,7 +466,7 @@ async function fetchModels() {
 
 async function save() {
   if (!canSave.value) {
-    err.value = '请填写供应商名称、Base URL、API Key，并至少启用一个模型'
+    err.value = '请填写渠道名称、Base URL、API Key，并至少启用一个模型'
     return
   }
   err.value = ''
@@ -505,7 +505,7 @@ async function save() {
 }
 
 async function remove(ch) {
-  if (!confirm(`确认删除供应商「${ch.name}」？\n\n此操作不可撤销。`)) return
+  if (!confirm(`确认删除渠道「${ch.name}」？\n\n此操作不可撤销。`)) return
   try {
     await api.delete(`/channels/${ch.id}`)
     toast.success('已删除')

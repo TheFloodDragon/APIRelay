@@ -15,23 +15,23 @@ const pct = computed(() => {
 })
 
 const barColor = computed(() => {
-  if (props.tone === 'signal') return 'var(--c-signal)'
-  if (pct.value >= 90) return 'var(--c-down)'
-  if (pct.value >= 70) return 'var(--c-warn)'
-  return 'var(--c-signal)'
+  if (props.tone === 'signal') return 'var(--brass)'
+  if (pct.value >= 90) return 'var(--rust)'
+  if (pct.value >= 70) return 'var(--amber)'
+  return 'var(--brass)'
 })
 </script>
 
 <template>
   <div class="w-full">
-    <div class="h-1 rounded-full bg-line-strong overflow-hidden">
+    <div class="h-1 rounded-full bg-line-2 overflow-hidden">
       <div
         v-if="!unlimited && max"
         class="h-full rounded-full transition-all duration-300"
         :style="{ width: pct + '%', backgroundColor: `rgb(${barColor})` }"
       ></div>
       <!-- 不限额度：信号色虚线脉冲表达 -->
-      <div v-else class="h-full w-full opacity-30" style="background: repeating-linear-gradient(90deg, rgb(var(--c-signal)) 0 6px, transparent 6px 12px)"></div>
+      <div v-else class="h-full w-full opacity-30" style="background: repeating-linear-gradient(90deg, rgb(var(--brass)) 0 6px, transparent 6px 12px)"></div>
     </div>
   </div>
 </template>

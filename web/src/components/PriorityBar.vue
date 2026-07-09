@@ -21,7 +21,7 @@ const filled = computed(() => {
     <span
       v-for="i in segments" :key="i"
       class="w-[3px] rounded-[1px] transition-colors"
-      :class="i <= filled ? 'bg-signal' : 'bg-line-strong'"
+      :class="i <= filled ? 'bg-brass' : 'bg-line-2'"
       :style="{ height: 4 + i * 1.5 + 'px' }"
     ></span>
   </span>

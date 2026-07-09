@@ -181,7 +181,7 @@ onMounted(load)
               <p class="hint">额度按模型价格（美元）扣减；不限额度仅统计用量不拦截。</p>
             </div>
           </div>
-          <div v-if="err" class="text-sm border rounded-lg px-3 py-2 text-[rgb(var(--c-down))] border-[rgb(var(--c-down)/0.28)] bg-[rgb(var(--c-down)/0.08)]">{{ err }}</div>
+          <div v-if="err" class="text-sm border rounded-lg px-3 py-2 text-[rgb(var(--rust))] border-[rgb(var(--rust)/0.28)] bg-[rgb(var(--rust)/0.08)]">{{ err }}</div>
         </div>
         <div class="flex justify-end gap-2 mt-5 pt-4 border-t border-line">
           <button @click="showModal=false" class="btn-secondary">取消</button>

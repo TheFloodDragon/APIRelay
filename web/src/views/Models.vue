@@ -2,7 +2,7 @@
   <div>
     <div class="flex items-center justify-between mb-5 gap-4">
       <div>
-        <h2 class="page-title">信号矩阵</h2>
+        <h2 class="page-title">模型</h2>
         <p class="page-subtitle">按模型显示名聚合的上游可达性与协议映射</p>
       </div>
       <div class="flex items-center gap-2">
@@ -16,9 +16,9 @@
 
     <!-- 概览 -->
     <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-5">
-      <StatDial label="AGG MODELS" :value="models.length" accent />
-      <StatDial label="ROUTABLE" :value="enabledModels" status="online" />
-      <StatDial label="BINDINGS" :value="totalBindings" />
+      <StatDial label="聚合模型" :value="models.length" accent />
+      <StatDial label="可路由" :value="enabledModels" status="online" />
+      <StatDial label="渠道绑定" :value="totalBindings" />
     </div>
 
     <div v-if="loading" class="space-y-2">
@@ -27,12 +27,12 @@
 
     <div v-else class="panel overflow-hidden">
       <div class="h-10 px-4 border-b border-line flex items-center justify-between">
-        <span class="font-mono text-sm font-medium text-t1">模型路由矩阵</span>
+        <span class="font-mono text-sm font-medium text-t1">模型聚合矩阵</span>
         <span class="tick">{{ filtered.length }} / {{ models.length }}</span>
       </div>
 
       <div v-if="filtered.length" class="divide-y divide-line">
-        <div v-for="m in filtered" :key="m.name" class="grid grid-cols-[minmax(180px,0.8fr)_1.6fr_70px] max-md:grid-cols-1 gap-3 px-4 py-3 hover:bg-[rgb(var(--c-signal)/0.04)] transition-colors">
+        <div v-for="m in filtered" :key="m.name" class="grid grid-cols-[minmax(180px,0.8fr)_1.6fr_70px] max-md:grid-cols-1 gap-3 px-4 py-3 hover:bg-[rgb(var(--brass)/0.04)] transition-colors">
           <div class="min-w-0 flex items-center gap-2">
             <SignalDot :status="anyEnabled(m) ? 'online' : 'idle'" />
             <span class="font-mono font-semibold text-sm text-t1 truncate" :title="m.name">{{ m.name }}</span>
@@ -60,7 +60,7 @@
 
       <div v-else class="empty-state">
         <span class="font-mono text-3xl text-t3">∅</span>
-        <span>{{ q ? '没有匹配的模型' : '暂无模型，先在路由表中添加' }}</span>
+        <span>{{ q ? '没有匹配的模型' : '暂无模型，先在渠道中添加' }}</span>
       </div>
     </div>
   </div>

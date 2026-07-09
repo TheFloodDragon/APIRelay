@@ -4,6 +4,7 @@ import api from '../api'
 import StatDial from '../components/StatDial.vue'
 import SignalDot from '../components/SignalDot.vue'
 import PriorityBar from '../components/PriorityBar.vue'
+import PatchRoute from '../components/PatchRoute.vue'
 
 const data = ref({ channel_count: 0, stat: {} })
 const modelCount = ref(0)
@@ -34,15 +35,15 @@ const fmt = (n) => (n || 0).toLocaleString()
 const usd = (micro) => '$' + ((micro || 0) / 1_000_000).toFixed(4)
 
 const dials = computed(() => [
-  { label: 'CHANNELS', value: fmt(data.value.channel_count), accent: true },
-  { label: 'MODELS', value: fmt(modelCount.value), accent: true },
-  { label: 'CIRCUIT OPEN', value: fmt(healthStats.value.open || 0), state: 'down' },
-  { label: 'REQUESTS · 7D', value: fmt(stat.value.total_requests) },
-  { label: 'PROMPT TK', value: fmt(stat.value.total_prompt_tokens), unit: 'tk' },
-  { label: 'SPEND · 7D', value: usd(stat.value.total_quota) },
+  { label: '渠道数', value: fmt(data.value.channel_count), accent: true },
+  { label: '模型数', value: fmt(modelCount.value), accent: true },
+  { label: '熔断中', value: fmt(healthStats.value.open || 0), state: 'down' },
+  { label: '请求·7日', value: fmt(stat.value.total_requests) },
+  { label: '输入TK', value: fmt(stat.value.total_prompt_tokens), unit: 'tk' },
+  { label: '消费·7日', value: usd(stat.value.total_quota) },
 ])
 
-// ===== 路由概览：按优先级排序的供应商信号条 =====
+// ===== 渠道优先级列表 =====
 const routeRows = computed(() => {
   return [...channels.value]
     .map(ch => ({
@@ -70,9 +71,16 @@ const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'onli
 <template>
   <div>
     <div class="mb-5">
-      <h2 class="page-title">信号总览</h2>
-      <p class="page-subtitle">流量路由与近 7 天读数</p>
+      <h2 class="page-title">总览</h2>
+      <p class="page-subtitle">路由配线架与近 7 天读数</p>
     </div>
+
+    <!-- ===== 签名配线架图 ===== -->
+    <div v-if="loading" class="panel p-4 mb-4">
+      <div class="skeleton h-3 w-24 mb-4"></div>
+      <div class="skeleton h-40 w-full"></div>
+    </div>
+    <PatchRoute v-else :channels="channels" class="mb-4" />
 
     <!-- ===== 仪表读数 ===== -->
     <div v-if="loading" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
@@ -86,12 +94,12 @@ const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'onli
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <!-- ===== 路由概览（签名区） ===== -->
+      <!-- ===== 渠道优先级列表 ===== -->
       <div class="lg:col-span-2 panel">
         <div class="px-4 h-11 flex items-center justify-between border-b border-line">
           <div class="flex items-center gap-2">
-            <span class="font-mono text-sm font-medium text-t1">路由概览</span>
-            <span class="tick">PRIORITY ROUTE</span>
+            <span class="font-mono text-sm font-medium text-t1">渠道优先级</span>
+            <span class="tick">PRIORITY</span>
           </div>
           <span class="font-mono text-2xs text-t3">{{ onlineCount }}/{{ routeRows.length }} 在线</span>
         </div>
@@ -102,7 +110,7 @@ const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'onli
 
         <div v-else-if="routeRows.length" class="divide-y divide-line">
           <div v-for="(r, i) in routeRows" :key="r.id"
-            class="flex items-center gap-3 px-4 py-2.5 hover:bg-[rgb(var(--c-signal)/0.04)] transition-colors">
+            class="flex items-center gap-3 px-4 py-2.5 hover:bg-brass/5 transition-colors">
             <!-- 优先级刻度 -->
             <span class="font-mono text-2xs text-t3 w-5 text-right">{{ String(i + 1).padStart(2, '0') }}</span>
             <PriorityBar :level="i" :total="routeRows.length" />
@@ -117,12 +125,12 @@ const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'onli
             <!-- 模型数 -->
             <div class="text-right shrink-0">
               <div class="font-mono text-sm text-t1">{{ r.modelN }}</div>
-              <div class="tick">models</div>
+              <div class="tick">模型</div>
             </div>
             <!-- 权重 -->
             <div class="text-right shrink-0 w-12 hidden sm:block">
               <div class="font-mono text-sm text-t2">×{{ r.weight }}</div>
-              <div class="tick">weight</div>
+              <div class="tick">权重</div>
             </div>
             <!-- 状态标签 -->
             <span class="shrink-0 w-12 text-right">
@@ -132,8 +140,8 @@ const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'onli
         </div>
 
         <div v-else class="empty-state">
-          <span class="font-mono text-2xs">暂无供应商节点</span>
-          <router-link to="/channels" class="btn-secondary btn-sm mt-1">配置路由表</router-link>
+          <span class="font-mono text-2xs">暂无渠道</span>
+          <router-link to="/channels" class="btn-secondary btn-sm mt-1">配置渠道</router-link>
         </div>
       </div>
 
@@ -145,19 +153,19 @@ const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'onli
           </div>
           <div class="p-4 space-y-3">
             <div class="flex items-center justify-between">
-              <span class="tick">STATUS</span>
+              <span class="tick">状态</span>
               <span class="flex items-center gap-1.5"><SignalDot status="online" /><span class="font-mono text-xs text-t1">运行中</span></span>
             </div>
             <div class="flex items-center justify-between">
-              <span class="tick">VERSION</span>
+              <span class="tick">版本</span>
               <span class="font-mono text-xs text-t1">v0.1.0</span>
             </div>
             <div class="flex items-center justify-between">
-              <span class="tick">PROTOCOLS</span>
+              <span class="tick">协议</span>
               <span class="font-mono text-2xs text-t2">OpenAI · Anthropic · Responses</span>
             </div>
             <div class="flex items-center justify-between">
-              <span class="tick">GROUP</span>
+              <span class="tick">分组</span>
               <span class="font-mono text-xs text-t1">default</span>
             </div>
           </div>
@@ -168,11 +176,11 @@ const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'onli
             <span class="font-mono text-sm font-medium text-t1">快捷操作</span>
           </div>
           <div class="p-3 grid grid-cols-2 gap-2">
-            <router-link to="/channels" class="btn-secondary btn-sm justify-start">路由表</router-link>
-            <router-link to="/models" class="btn-secondary btn-sm justify-start">信号矩阵</router-link>
+            <router-link to="/channels" class="btn-secondary btn-sm justify-start">渠道</router-link>
+            <router-link to="/models" class="btn-secondary btn-sm justify-start">模型</router-link>
             <router-link to="/tokens" class="btn-secondary btn-sm justify-start">新建令牌</router-link>
             <router-link to="/settings" class="btn-secondary btn-sm justify-start">协议规则</router-link>
-            <router-link to="/logs" class="btn-secondary btn-sm justify-start col-span-2">信号流水</router-link>
+            <router-link to="/logs" class="btn-secondary btn-sm justify-start col-span-2">调用日志</router-link>
           </div>
         </div>
       </div>

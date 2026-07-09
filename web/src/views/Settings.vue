@@ -52,7 +52,7 @@
         </div>
 
         <div class="p-4">
-          <p class="hint mb-3">按模型显示名正则匹配上游协议。优先级：模型显式 &gt; 供应商规则 &gt; <span class="font-medium text-t1">全局规则</span> &gt; 供应商默认。</p>
+          <p class="hint mb-3">按模型显示名正则匹配上游协议。优先级：模型显式 &gt; 渠道规则 &gt; <span class="font-medium text-t1">全局规则</span> &gt; 渠道默认。</p>
           <div class="space-y-2">
             <div v-for="(r, i) in rules" :key="i" class="flex gap-2 items-center">
               <span class="font-mono text-2xs text-t3 w-6 text-center shrink-0">{{ String(i + 1).padStart(2, '0') }}</span>
@@ -60,7 +60,7 @@
               <select v-model="r.protocol" class="input text-xs w-36 shrink-0">
                 <option v-for="p in protocols" :key="p.value" :value="p.value">{{ p.name }}</option>
               </select>
-              <button class="text-t3 hover:text-[rgb(var(--c-down))] px-2 shrink-0" @click="rules.splice(i, 1)">×</button>
+              <button class="text-t3 hover:text-[rgb(var(--rust))] px-2 shrink-0" @click="rules.splice(i, 1)">×</button>
             </div>
             <div v-if="!rules.length" class="empty-state inset !py-6">
               暂无全局规则
@@ -77,12 +77,12 @@
           <span class="tick ml-2">DRY RUN</span>
         </div>
         <div class="p-4">
-          <p class="hint mb-3">输入一个模型名，预览全局规则的首个命中结果（不含供应商级配置）</p>
+          <p class="hint mb-3">输入一个模型名，预览全局规则的首个命中结果（不含渠道级配置）</p>
           <div class="flex gap-2 items-center">
             <input v-model="testModel" class="input font-mono text-sm flex-1" placeholder="如 claude-3-5-sonnet" />
             <div class="shrink-0">
               <span v-if="testModel" class="badge font-mono" :class="testResult ? 'badge-signal' : 'badge-neutral'">
-                {{ testResult || '未命中（用供应商默认）' }}
+                {{ testResult || '未命中（用渠道默认）' }}
               </span>
             </div>
           </div>
@@ -101,7 +101,7 @@
       </div>
 
       <div class="p-4">
-        <p class="hint mb-3">单位：美元 / 100 万 tokens。模型名填 <code class="font-mono text-xs">default</code> 作为兜底价格。优先级：供应商模型价格 &gt; <span class="font-medium text-t1">全局价格</span> &gt; 不计费。</p>
+        <p class="hint mb-3">单位：美元 / 100 万 tokens。模型名填 <code class="font-mono text-xs">default</code> 作为兜底价格。优先级：渠道模型价格 &gt; <span class="font-medium text-t1">全局价格</span> &gt; 不计费。</p>
         <div class="space-y-2">
           <div class="hidden lg:grid grid-cols-[40px_minmax(0,1fr)_120px_120px_32px] gap-2 items-center tick px-1">
             <span></span>
@@ -115,7 +115,7 @@
             <input v-model="p.model" class="input font-mono text-xs" placeholder="模型名 或 default" />
             <input v-model.number="p.input" type="number" step="0.01" min="0" class="input text-xs text-right font-mono max-lg:hidden" placeholder="0" />
             <input v-model.number="p.output" type="number" step="0.01" min="0" class="input text-xs text-right font-mono max-lg:hidden" placeholder="0" />
-            <button class="text-t3 hover:text-[rgb(var(--c-down))] px-1" @click="prices.splice(i, 1)">×</button>
+            <button class="text-t3 hover:text-[rgb(var(--rust))] px-1" @click="prices.splice(i, 1)">×</button>
           </div>
           <div v-if="!prices.length" class="empty-state inset !py-6">
             暂无价格条目（未配置时不计费）
