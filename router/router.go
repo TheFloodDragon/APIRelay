@@ -85,7 +85,9 @@ func registerAdminRoutes(r *gin.Engine, cfg *config.Config) {
 		api.GET("/channels/:id/models", controller.ProbeChannelModels)
 		api.POST("/channels/probe-models", controller.ProbeModelsByConfig)
 		api.POST("/channels/:id/test", controller.TestChannelModel)
+		api.POST("/channels/:id/test-all", controller.TestChannelAllModels)
 		api.POST("/channels/test", controller.TestChannelByConfig)
+		api.POST("/channels/test-batch", controller.TestChannelBatchByConfig)
 		api.GET("/channels/:id/health", controller.GetChannelHealth)
 		api.POST("/channels/:id/health/reset", controller.ResetChannelHealth)
 

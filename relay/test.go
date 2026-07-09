@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/apirelay/apirelay/constant"
@@ -13,6 +14,12 @@ import (
 	"github.com/apirelay/apirelay/model"
 	"github.com/apirelay/apirelay/relay/relaycommon"
 )
+
+// defaultTestConcurrency 批量测试默认并发数。
+const defaultTestConcurrency = 5
+
+// defaultTestTimeout 单个模型测试的超时时间。
+const defaultTestTimeout = 30 * time.Second
 
 // ModelTestResult 模型连通性测试结果。
 type ModelTestResult struct {
@@ -30,11 +37,22 @@ type ModelTestResult struct {
 //
 // 复用统一转发链路：ResolveAPIType 选协议 -> Adaptor 转换/请求 -> ConvertResponse。
 // 不计费、不写调用日志，仅用于管理后台的「测试」按钮。
+//
+// 这是向后兼容的签名，等价于 TestModelWithContext(context.Background(), ...)。
 func TestModel(ch *model.Channel, displayModel string) *ModelTestResult {
+	return TestModelWithContext(context.Background(), ch, displayModel)
+}
+
+// TestModelWithContext 与 TestModel 相同，但使用调用方传入的 context，
+// 以便批量测试为每个模型施加独立超时/取消。
+func TestModelWithContext(ctx context.Context, ch *model.Channel, displayModel string) *ModelTestResult {
 	res := &ModelTestResult{Model: displayModel}
 	if ch == nil {
 		res.Error = "供应商不存在"
 		return res
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	apiType := ResolveAPIType(ch, displayModel)
@@ -49,7 +67,7 @@ func TestModel(ch *model.Channel, displayModel string) *ModelTestResult {
 	}
 
 	info := &relaycommon.RelayInfo{
-		Context:       context.Background(),
+		Context:       ctx,
 		EndpointType:  endpointForAPIType(apiType),
 		ApiType:       apiType,
 		Group:         ch.Group,
@@ -111,6 +129,43 @@ func TestModel(ch *model.Channel, displayModel string) *ModelTestResult {
 	}
 	res.Usage = &uniResp.Usage
 	return res
+}
+
+// TestModels 并发批量测试渠道下的多个显示模型。
+//
+// 使用带缓冲 channel 做并发限流（concurrency<=0 时用默认值），
+// 每个模型在独立的 30s 超时 context 下执行。结果按 models 的输入顺序返回。
+func TestModels(ctx context.Context, ch *model.Channel, models []string, concurrency int) []*ModelTestResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	results := make([]*ModelTestResult, len(models))
+	if len(models) == 0 {
+		return results
+	}
+	if concurrency <= 0 {
+		concurrency = defaultTestConcurrency
+	}
+	if concurrency > len(models) {
+		concurrency = len(models)
+	}
+
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for i, m := range models {
+		wg.Add(1)
+		go func(idx int, displayModel string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			mctx, cancel := context.WithTimeout(ctx, defaultTestTimeout)
+			defer cancel()
+			results[idx] = TestModelWithContext(mctx, ch, displayModel)
+		}(i, m)
+	}
+	wg.Wait()
+	return results
 }
 
 // endpointForAPIType 为测试构造一个与上游协议一致的对外端点类型，

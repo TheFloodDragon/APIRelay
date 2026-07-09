@@ -184,3 +184,72 @@ func TestChannelByConfig(c *gin.Context) {
 	ch := req.Channel
 	ok(c, relay.TestModel(&ch, req.Model))
 }
+
+// batchTestSummary 批量测试汇总。
+type batchTestSummary struct {
+	Total   int `json:"total"`
+	Success int `json:"success"`
+	Failed  int `json:"failed"`
+}
+
+// summarizeResults 统计批量测试结果。
+func summarizeResults(results []*relay.ModelTestResult) batchTestSummary {
+	s := batchTestSummary{Total: len(results)}
+	for _, r := range results {
+		if r != nil && r.Success {
+			s.Success++
+		} else {
+			s.Failed++
+		}
+	}
+	return s
+}
+
+// TestChannelAllModels POST /api/channels/:id/test-all
+// 对已保存渠道批量测试模型连通性。默认取该渠道的全部启用模型；
+// body 可选 {"models":[...]} 覆盖测试范围。
+func TestChannelAllModels(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	ch, err := model.GetChannelByID(id)
+	if err != nil {
+		fail(c, http.StatusNotFound, "供应商不存在")
+		return
+	}
+	var req struct {
+		Models []string `json:"models"`
+	}
+	// body 可选，绑定失败不阻断（使用默认启用模型）。
+	_ = c.ShouldBindJSON(&req)
+
+	models := req.Models
+	if len(models) == 0 {
+		models = ch.EnabledModelNames()
+	}
+	if len(models) == 0 {
+		fail(c, http.StatusBadRequest, "该渠道没有可测试的启用模型")
+		return
+	}
+
+	results := relay.TestModels(c.Request.Context(), ch, models, 0)
+	ok(c, gin.H{"results": results, "summary": summarizeResults(results)})
+}
+
+// TestChannelBatchByConfig POST /api/channels/test-batch
+// 用临时配置（未保存）批量测试模型连通性。
+// body 为渠道配置 + {"models":[...]}。
+func TestChannelBatchByConfig(c *gin.Context) {
+	var req struct {
+		model.Channel
+		Models []string `json:"models"`
+	}
+	if !bindJSON(c, &req) {
+		return
+	}
+	if len(req.Models) == 0 {
+		fail(c, http.StatusBadRequest, "缺少 models")
+		return
+	}
+	ch := req.Channel
+	results := relay.TestModels(c.Request.Context(), &ch, req.Models, 0)
+	ok(c, gin.H{"results": results, "summary": summarizeResults(results)})
+}

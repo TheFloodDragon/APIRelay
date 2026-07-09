@@ -81,6 +81,10 @@
 
           <!-- 操作 -->
           <div class="flex justify-end gap-2 max-lg:hidden">
+            <button @click="checkupChannel(ch)" :disabled="checkupLoadingId === ch.id" class="btn-ghost btn-sm" title="批量体检全部启用模型">
+              <svg v-if="checkupLoadingId !== ch.id" viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="currentColor"><path d="M19 3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V5a2 2 0 00-2-2zm-9 14l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+              <span v-else class="inline-block w-3.5 h-3.5 rounded-full border-2 border-t3 border-t-brass animate-spin"></span>
+            </button>
             <button @click="resetBreaker(ch)" class="btn-ghost btn-sm" title="重置熔断器">
               <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="currentColor"><path d="M12 5V2L8 6l4 4V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8zm-6 8c0-2.97 2.17-5.43 5-5.91V5.07C7.05 5.56 4 8.92 4 13c0 4.42 3.58 8 8 8v-3l4 4-4 4v-3c-4.42 0-8-3.58-8-8z"/></svg>
             </button>
@@ -181,9 +185,20 @@
                   <div class="font-mono text-sm text-t1">模型映射</div>
                   <p class="hint mt-0">每个模型可单独启用、覆盖协议、映射上游名</p>
                 </div>
-                <button class="btn-secondary btn-sm" :disabled="probing || !form.base_url || !form.key" @click="fetchModels">
-                  {{ probing ? '拉取中…' : '拉取模型' }}
-                </button>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button class="btn-secondary btn-sm" :disabled="batchTesting || !form.base_url || !form.key || enabledCount === 0" @click="testAllInModal">
+                    {{ batchTesting ? `测试中 ${batchDone}/${batchTotal}` : '测试全部' }}
+                  </button>
+                  <button class="btn-secondary btn-sm" :disabled="probing || !form.base_url || !form.key" @click="fetchModels">
+                    {{ probing ? '拉取中…' : '拉取模型' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="batchSummary" class="mb-3 flex items-center gap-2 text-xs font-mono">
+                <span class="badge badge-jade">成功 {{ batchSummary.success }}</span>
+                <span class="badge badge-rust">失败 {{ batchSummary.failed }}</span>
+                <span class="badge badge-neutral">共 {{ batchSummary.total }}</span>
               </div>
 
               <div class="flex gap-2 mb-3">
@@ -252,6 +267,45 @@
         </div>
       </div>
     </div>
+
+    <!-- 体检汇总面板 -->
+    <div v-if="showCheckup" class="modal-backdrop" @click.self="showCheckup=false">
+      <div class="modal max-w-2xl">
+        <div class="modal-header">
+          <div>
+            <h3 class="modal-title">渠道体检 · {{ checkupChannelName }}</h3>
+            <p class="hint mt-0">对全部启用模型逐一发起一次最小连通性测试</p>
+          </div>
+          <button @click="showCheckup=false" class="text-t3 hover:text-t1 text-xl leading-none">×</button>
+        </div>
+
+        <div v-if="checkupSummary" class="mb-3 flex items-center gap-2 text-xs font-mono">
+          <span class="badge badge-jade">成功 {{ checkupSummary.success }}</span>
+          <span class="badge badge-rust">失败 {{ checkupSummary.failed }}</span>
+          <span class="badge badge-neutral">共 {{ checkupSummary.total }}</span>
+          <span class="tick ml-1">成功率 {{ checkupRate }}%</span>
+        </div>
+
+        <div class="border border-line rounded-lg overflow-hidden">
+          <div class="max-h-[60vh] overflow-y-auto divide-y divide-line">
+            <div v-for="(r, i) in checkupResults" :key="i" class="px-3 py-2 bg-panel">
+              <div class="flex items-center gap-2 min-w-0">
+                <SignalDot :status="r.success ? 'online' : 'down'" />
+                <code class="font-mono text-xs text-t1 truncate flex-1" :title="r.model">{{ r.model }}</code>
+                <span v-if="r.protocol" class="badge badge-neutral shrink-0">{{ r.protocol }}</span>
+                <span v-if="r.success" class="font-mono text-2xs text-t3 shrink-0">{{ r.latency_ms }}ms</span>
+              </div>
+              <div v-if="r.success && r.reply" class="mt-1 ml-4 text-2xs text-t3 truncate">↳ {{ r.reply }}</div>
+              <div v-else-if="!r.success" class="mt-1 ml-4 text-2xs text-[rgb(var(--rust))] break-words">✕ {{ r.error }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-4 border-t border-line flex justify-end">
+          <button @click="showCheckup=false" class="btn-secondary">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -276,6 +330,24 @@ const newModelName = ref('')
 
 const testing = ref({})
 const testResults = ref({})
+
+// 弹窗内「测试全部」
+const batchTesting = ref(false)
+const batchDone = ref(0)
+const batchTotal = ref(0)
+const batchSummary = ref(null)
+
+// 列表行「体检」
+const checkupLoadingId = ref(null)
+const showCheckup = ref(false)
+const checkupChannelName = ref('')
+const checkupResults = ref([])
+const checkupSummary = ref(null)
+const checkupRate = computed(() => {
+  const s = checkupSummary.value
+  if (!s || !s.total) return 0
+  return Math.round((s.success / s.total) * 100)
+})
 
 const dragIndex = ref(null)
 const dropIndex = ref(null)
@@ -364,6 +436,7 @@ function openCreate() {
   err.value = ''
   testing.value = {}
   testResults.value = {}
+  batchSummary.value = null
   const t = channelTypes.value.find(x => x.value === form.value.type)
   if (t) form.value.base_url = t.default_base_url
   showModal.value = true
@@ -375,6 +448,7 @@ function openEdit(ch) {
   err.value = ''
   testing.value = {}
   testResults.value = {}
+  batchSummary.value = null
   showModal.value = true
 }
 function onTypeChange() {
@@ -432,6 +506,71 @@ async function testModel(m) {
     toast.error('测试失败: ' + e.message)
   } finally {
     testing.value = { ...testing.value, [name]: false }
+  }
+}
+
+// 弹窗内批量测试当前编辑渠道的全部启用模型（临时配置，未保存）。
+async function testAllInModal() {
+  if (!form.value.base_url) { toast.warning('请先填写 Base URL'); return }
+  if (!form.value.key) { toast.warning('请先填写 API Key'); return }
+  const enabled = models.value.filter(m => m.enabled && m.name.trim())
+  if (!enabled.length) { toast.warning('没有可测试的启用模型'); return }
+
+  batchTesting.value = true
+  batchTotal.value = enabled.length
+  batchDone.value = 0
+  batchSummary.value = null
+  try {
+    const res = await api.post('/channels/test-batch', {
+      type: form.value.type,
+      base_url: form.value.base_url,
+      key: form.value.key,
+      group: form.value.group || 'default',
+      model_configs: JSON.stringify(enabled.map(m => ({
+        name: m.name.trim(), enabled: true, protocol: m.protocol || '', upstream: m.upstream || '',
+      }))),
+      protocol_rules: JSON.stringify(rules.value.filter(r => r.pattern.trim() && r.protocol)),
+      header_override: form.value.header_override || '',
+      models: enabled.map(m => m.name.trim()),
+    })
+    const results = res.results || []
+    const merged = { ...testResults.value }
+    for (const r of results) {
+      if (r && r.model) merged[r.model] = r
+    }
+    testResults.value = merged
+    batchDone.value = results.length
+    batchSummary.value = res.summary || null
+    if (res.summary) {
+      const { success, failed } = res.summary
+      if (failed === 0) toast.success(`全部 ${success} 个模型连通正常`)
+      else toast.warning(`测试完成：成功 ${success} · 失败 ${failed}`)
+    }
+  } catch (e) {
+    toast.error('批量测试失败: ' + (e.message || '请求失败'))
+  } finally {
+    batchTesting.value = false
+  }
+}
+
+// 列表行体检：对已保存渠道的全部启用模型批量测试，弹出汇总面板。
+async function checkupChannel(ch) {
+  checkupLoadingId.value = ch.id
+  try {
+    const res = await api.post(`/channels/${ch.id}/test-all`, {})
+    checkupChannelName.value = ch.name
+    checkupResults.value = res.results || []
+    checkupSummary.value = res.summary || null
+    showCheckup.value = true
+    if (res.summary) {
+      const { success, failed } = res.summary
+      if (failed === 0) toast.success(`「${ch.name}」全部 ${success} 个模型连通正常`)
+      else toast.warning(`「${ch.name}」体检：成功 ${success} · 失败 ${failed}`)
+    }
+  } catch (e) {
+    toast.error('体检失败: ' + (e.message || '请求失败'))
+  } finally {
+    checkupLoadingId.value = null
   }
 }
 
