@@ -99,6 +99,70 @@ func ReplaceTopLevelModel(raw []byte, newModel string) ([]byte, error) {
 	return nil, errModelFieldNotFound
 }
 
+// ============================================================================
+// Body 复写（CC Switch 语义）
+//
+// 在协议转换之后、发往上游之前，把渠道配置的 patch 深合并进最终请求体：
+//   - object 与 object 递归合并（保留目标已有键）；
+//   - 其余情况（数组、标量、null、类型不一致）整体替换目标值；
+//   - 数组不逐项合并，整体替换；null 是普通值覆盖，不表示删除；
+//   - 顶层保护字段（stream）由 model.SafeBodyOverride 预先剔除，这里再兜底跳过。
+// ============================================================================
+
+// bodyOverrideProtectedTopLevel 顶层保护字段（与 model 层保持一致的兜底）。
+var bodyOverrideProtectedTopLevel = map[string]struct{}{
+	"stream": {},
+}
+
+// ApplyBodyOverride 把 patch 深合并进原始请求体 raw，返回合并后的 JSON 字节。
+//
+// raw 必须是 JSON 对象；patch 为空时原样返回 raw（不做解析开销）。
+// 若 raw 解析失败或不是对象，返回错误，调用方应保留原始 raw 不做改写。
+func ApplyBodyOverride(raw []byte, patch map[string]any) ([]byte, error) {
+	if len(patch) == 0 {
+		return raw, nil
+	}
+	var target any
+	if err := json.Unmarshal(raw, &target); err != nil {
+		return nil, fmt.Errorf("decode request body: %w", err)
+	}
+	targetMap, ok := target.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("request body is not a JSON object")
+	}
+	mergeJSONObject(targetMap, patch, true)
+	out, err := json.Marshal(targetMap)
+	if err != nil {
+		return nil, fmt.Errorf("encode merged body: %w", err)
+	}
+	return out, nil
+}
+
+// mergeJSONObject 将 patch 深合并进 target（就地修改 target）。
+// topLevel 为 true 时跳过受保护顶层字段。
+func mergeJSONObject(target, patch map[string]any, topLevel bool) {
+	for key, patchVal := range patch {
+		if topLevel {
+			if _, protected := bodyOverrideProtectedTopLevel[key]; protected {
+				continue
+			}
+		}
+		existing, ok := target[key]
+		if !ok {
+			target[key] = patchVal
+			continue
+		}
+		existingObj, eOK := existing.(map[string]any)
+		patchObj, pOK := patchVal.(map[string]any)
+		if eOK && pOK {
+			mergeJSONObject(existingObj, patchObj, false)
+			continue
+		}
+		// 非 object-object：整体替换（含数组、标量、null、类型不一致）。
+		target[key] = patchVal
+	}
+}
+
 // skipValue 消费 decoder 的下一个完整值（标量或嵌套结构），保持解析位置平衡。
 func skipValue(dec *json.Decoder) error {
 	tok, err := dec.Token()

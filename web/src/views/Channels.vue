@@ -4,6 +4,7 @@ import api, { copyText } from '../api'
 import Modal from '../components/Modal.vue'
 import PageState from '../components/PageState.vue'
 import HeaderOverrideEditor from '../components/HeaderOverrideEditor.vue'
+import BodyOverrideEditor from '../components/BodyOverrideEditor.vue'
 import ActionMenu from '../components/ActionMenu.vue'
 
 const { proxy } = getCurrentInstance()
@@ -22,6 +23,7 @@ const saving = ref(false)
 const editorError = ref('')
 const editorTab = ref('connection')
 const headerValidation = ref({ valid: true, error: '', allowedCount: 0, ignored: [] })
+const bodyValidation = ref({ valid: true, error: '', keyCount: 0, ignored: [] })
 const models = ref([])
 const rules = ref([])
 const newModelName = ref('')
@@ -54,6 +56,7 @@ const blank = () => ({
   key: '',
   group: 'default',
   header_override: '',
+  body_override: '',
   priority: 0,
   weight: 1,
   status: 1,
@@ -70,6 +73,7 @@ const canSave = computed(() => Boolean(
   && String(form.value.key || '').trim()
   && enabledCount.value > 0
   && headerValidation.value.valid
+  && bodyValidation.value.valid
 ))
 const customHeaderCount = computed(() => headerValidation.value.valid ? headerValidation.value.allowedCount : 0)
 const checkupRate = computed(() => {
@@ -111,11 +115,19 @@ function breakerText(channel) {
 }
 
 function validateHeaders(action) {
-  if (headerValidation.value.valid) return true
-  editorTab.value = 'routing'
-  editorError.value = `无法${action}：${headerValidation.value.error}`
-  notify(editorError.value, 'warn')
-  return false
+  if (!headerValidation.value.valid) {
+    editorTab.value = 'routing'
+    editorError.value = `无法${action}：${headerValidation.value.error}`
+    notify(editorError.value, 'warn')
+    return false
+  }
+  if (!bodyValidation.value.valid) {
+    editorTab.value = 'routing'
+    editorError.value = `无法${action}：${bodyValidation.value.error}`
+    notify(editorError.value, 'warn')
+    return false
+  }
+  return true
 }
 
 function updateSet(target, value, active) {
@@ -279,6 +291,7 @@ function testPayload() {
     group: form.value.group || 'default',
     protocol_rules: JSON.stringify(rules.value.filter((rule) => rule.pattern.trim() && rule.protocol)),
     header_override: form.value.header_override || '',
+    body_override: form.value.body_override || '',
   }
 }
 
@@ -1018,8 +1031,8 @@ onMounted(() => {
 
           <section class="border border-ink bg-white" aria-labelledby="advanced-heading">
             <div class="border-b border-ink bg-panel px-3 py-2">
-              <div id="advanced-heading" class="font-cond text-sm font-semibold tracking-wide">请求头与权重</div>
-              <div class="mt-0.5 text-[12px] text-soft">设置负载权重和上游自定义请求头。</div>
+              <div id="advanced-heading" class="font-cond text-sm font-semibold tracking-wide">权重与请求复写</div>
+              <div class="mt-0.5 text-[12px] text-soft">设置负载权重，并在协议转换后复写发往上游的请求头与请求体。</div>
             </div>
             <div class="grid gap-3 p-3">
               <div>
@@ -1027,10 +1040,16 @@ onMounted(() => {
                 <input id="channel-weight" v-model.number="form.weight" type="number" min="1" class="input input-mono" placeholder="1" />
                 <p class="mt-1 text-[12px] text-soft">同优先级条件下的负载分配比例；优先级可在渠道列表中拖动调整。</p>
               </div>
-              <div>
-                <label class="field-label" for="header-override">请求头覆盖 · JSON</label>
-                <textarea id="header-override" v-model="form.header_override" rows="4" class="input input-mono text-[12px]" placeholder='{"User-Agent":"..."}'></textarea>
-              </div>
+              <HeaderOverrideEditor
+                v-model="form.header_override"
+                :disabled="editorBusy"
+                @validation="headerValidation = $event"
+              />
+              <BodyOverrideEditor
+                v-model="form.body_override"
+                :disabled="editorBusy"
+                @validation="bodyValidation = $event"
+              />
             </div>
           </section>
         </div>

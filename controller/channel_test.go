@@ -67,6 +67,44 @@ func TestCreateChannelRejectsInvalidHeaderOverride(t *testing.T) {
 	assertHeaderOverrideFieldError(t, recorder)
 }
 
+func assertBodyOverrideFieldError(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Success || !strings.Contains(response.Message, "body_override:") {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestChannelEndpointsRejectInvalidBodyOverride(t *testing.T) {
+	// 非对象的 body_override 应被拒绝（数组 / 标量 / 非法 JSON）。
+	recorder := performChannelRequest(t, http.MethodPost, "/api/channels", `{"key":"k","body_override":"[]"}`, CreateChannel)
+	assertBodyOverrideFieldError(t, recorder)
+
+	recorder = performChannelRequest(t, http.MethodPost, "/api/channels/test", `{"key":"k","model":"m","body_override":"123"}`, TestChannelByConfig)
+	assertBodyOverrideFieldError(t, recorder)
+}
+
+func TestCreateChannelAcceptsValidBodyOverride(t *testing.T) {
+	if err := model.InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := performChannelRequest(t, http.MethodPost, "/api/channels",
+		`{"name":"ok","key":"k","models":"m","model_configs":"[{\"name\":\"m\",\"enabled\":true}]","body_override":"{\"reasoning\":{\"effort\":\"high\"}}"}`,
+		CreateChannel)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid body_override should be accepted, status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestSavedChannelEndpointsRejectInvalidHeaderOverride(t *testing.T) {
 	if err := model.InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {
 		t.Fatal(err)

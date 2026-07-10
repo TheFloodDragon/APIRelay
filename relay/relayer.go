@@ -442,6 +442,15 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 			reqBody = passthrough
 		}
 	}
+	// 渠道级 body 复写：协议转换/透传完成后，将配置的补丁深合并进最终请求体。
+	// 合并失败不阻断请求，保留改写前的 reqBody。
+	if info.Channel != nil {
+		if patch := info.Channel.SafeBodyOverride(); len(patch) > 0 {
+			if merged, perr := apicompat.ApplyBodyOverride(reqBody, patch); perr == nil {
+				reqBody = merged
+			}
+		}
+	}
 
 	resp, err := adp.DoRequest(info, bytes.NewReader(reqBody))
 	if err != nil {

@@ -111,3 +111,125 @@ func TestReplaceTopLevelModel_Errors(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyBodyOverride_EmptyPatch 空补丁原样返回。
+func TestApplyBodyOverride_EmptyPatch(t *testing.T) {
+	raw := []byte(`{"model":"m","stream":true}`)
+	out, err := ApplyBodyOverride(raw, nil)
+	if err != nil {
+		t.Fatalf("empty patch: %v", err)
+	}
+	if string(out) != string(raw) {
+		t.Fatalf("empty patch should return raw unchanged: %s", out)
+	}
+}
+
+// TestApplyBodyOverride_DeepMerge object 递归合并、数组整体替换、标量覆盖、新增字段。
+func TestApplyBodyOverride_DeepMerge(t *testing.T) {
+	raw := []byte(`{"model":"before","metadata":{"keep":true,"temperature":1},"messages":[{"role":"user","content":"hi"}]}`)
+	patch := map[string]any{
+		"model":    "after",
+		"metadata": map[string]any{"temperature": 0.2, "top_p": 0.9},
+		"messages": []any{},
+		"new_key":  "added",
+	}
+	out, err := ApplyBodyOverride(raw, patch)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("result not valid json: %v", err)
+	}
+	if got["model"] != "after" {
+		t.Errorf("model = %v, want after", got["model"])
+	}
+	if got["new_key"] != "added" {
+		t.Errorf("new_key = %v, want added", got["new_key"])
+	}
+	meta, ok := got["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata not object: %v", got["metadata"])
+	}
+	// 递归合并：保留 keep，覆盖 temperature，新增 top_p
+	if meta["keep"] != true {
+		t.Errorf("metadata.keep should be preserved, got %v", meta["keep"])
+	}
+	if meta["temperature"] != 0.2 {
+		t.Errorf("metadata.temperature = %v, want 0.2", meta["temperature"])
+	}
+	if meta["top_p"] != 0.9 {
+		t.Errorf("metadata.top_p = %v, want 0.9", meta["top_p"])
+	}
+	// 数组整体替换为空
+	arr, ok := got["messages"].([]any)
+	if !ok || len(arr) != 0 {
+		t.Errorf("messages should be replaced with [], got %v", got["messages"])
+	}
+}
+
+// TestApplyBodyOverride_ArrayReplacesObject 类型不一致时整体替换。
+func TestApplyBodyOverride_TypeMismatchReplaces(t *testing.T) {
+	raw := []byte(`{"a":{"nested":1},"b":[1,2]}`)
+	patch := map[string]any{
+		"a": []any{"now-array"},
+		"b": map[string]any{"now": "object"},
+	}
+	out, err := ApplyBodyOverride(raw, patch)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if _, ok := got["a"].([]any); !ok {
+		t.Errorf("a should be replaced by array, got %T", got["a"])
+	}
+	if _, ok := got["b"].(map[string]any); !ok {
+		t.Errorf("b should be replaced by object, got %T", got["b"])
+	}
+}
+
+// TestApplyBodyOverride_NullOverwrites null 是普通值覆盖，不表示删除。
+func TestApplyBodyOverride_NullOverwrites(t *testing.T) {
+	raw := []byte(`{"metadata":{"foo":"bar"}}`)
+	patch := map[string]any{"metadata": nil}
+	out, err := ApplyBodyOverride(raw, patch)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if v, ok := got["metadata"]; !ok || v != nil {
+		t.Errorf("metadata should be null, got %v (present=%v)", v, ok)
+	}
+}
+
+// TestApplyBodyOverride_ProtectedStream 顶层 stream 不可被合并覆盖（兜底）。
+func TestApplyBodyOverride_ProtectedStream(t *testing.T) {
+	raw := []byte(`{"stream":false,"nested":{"stream":false}}`)
+	patch := map[string]any{
+		"stream": true,
+		"nested": map[string]any{"stream": true},
+	}
+	out, err := ApplyBodyOverride(raw, patch)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["stream"] != false {
+		t.Errorf("top-level stream must stay false, got %v", got["stream"])
+	}
+	// 嵌套 stream 不受保护，可被覆盖
+	nested := got["nested"].(map[string]any)
+	if nested["stream"] != true {
+		t.Errorf("nested stream should be overwritten to true, got %v", nested["stream"])
+	}
+}
+
+// TestApplyBodyOverride_NonObjectBody 非对象请求体报错。
+func TestApplyBodyOverride_NonObjectBody(t *testing.T) {
+	if _, err := ApplyBodyOverride([]byte(`[1,2,3]`), map[string]any{"a": 1}); err == nil {
+		t.Error("expected error for non-object body")
+	}
+}

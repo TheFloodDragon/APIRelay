@@ -158,3 +158,67 @@ func TestHeaderOverrideMapCompatibility(t *testing.T) {
 		t.Fatal("invalid override should retain legacy nil behavior")
 	}
 }
+
+func TestParseBodyOverrideValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "empty"},
+		{name: "whitespace", value: "  \t\n"},
+		{name: "invalid json", value: `{`, wantErr: "合法的 JSON 对象"},
+		{name: "array", value: `[]`, wantErr: "JSON 对象"},
+		{name: "null", value: `null`, wantErr: "JSON 对象"},
+		{name: "string", value: `"x"`, wantErr: "JSON 对象"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj, err := ParseBodyOverride(tt.value)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if obj != nil {
+					t.Fatalf("empty override should return nil, got %v", obj)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSafeBodyOverride(t *testing.T) {
+	// 顶层保护字段 stream 被剔除，其余保留（含 null 值与嵌套对象）。
+	ch := &Channel{BodyOverride: `{"stream":true,"reasoning":{"effort":"high"},"service_tier":"priority","metadata":null}`}
+	patch := ch.SafeBodyOverride()
+	if _, ok := patch["stream"]; ok {
+		t.Fatalf("protected stream should be filtered: %v", patch)
+	}
+	if patch["service_tier"] != "priority" {
+		t.Errorf("service_tier missing: %v", patch)
+	}
+	if r, ok := patch["reasoning"].(map[string]any); !ok || r["effort"] != "high" {
+		t.Errorf("nested reasoning missing: %v", patch)
+	}
+	// null 是普通值，应保留键。
+	if v, ok := patch["metadata"]; !ok || v != nil {
+		t.Errorf("null-valued key should be kept: %v", patch)
+	}
+}
+
+func TestSafeBodyOverride_EmptyAndInvalid(t *testing.T) {
+	if (&Channel{}).SafeBodyOverride() != nil {
+		t.Error("empty body override should return nil")
+	}
+	if (&Channel{BodyOverride: `[]`}).SafeBodyOverride() != nil {
+		t.Error("invalid body override should return nil")
+	}
+	// 仅含保护字段时过滤后为空，返回 nil。
+	if (&Channel{BodyOverride: `{"stream":true}`}).SafeBodyOverride() != nil {
+		t.Error("body override with only protected fields should return nil")
+	}
+}

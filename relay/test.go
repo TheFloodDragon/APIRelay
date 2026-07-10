@@ -12,6 +12,7 @@ import (
 	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/dto"
 	"github.com/apirelay/apirelay/model"
+	"github.com/apirelay/apirelay/relay/apicompat"
 	"github.com/apirelay/apirelay/relay/relaycommon"
 )
 
@@ -98,6 +99,12 @@ func TestModelWithContext(ctx context.Context, ch *model.Channel, displayModel s
 	if err != nil {
 		res.Error = "序列化请求失败：" + err.Error()
 		return res
+	}
+	// Body 复写：与真实转发一致，在发往上游前深合并渠道配置的补丁。
+	if patch := ch.SafeBodyOverride(); len(patch) > 0 {
+		if merged, mErr := apicompat.ApplyBodyOverride(reqBody, patch); mErr == nil {
+			reqBody = merged
+		}
 	}
 
 	start := time.Now()

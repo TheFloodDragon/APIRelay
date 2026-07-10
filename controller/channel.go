@@ -22,9 +22,13 @@ func ListChannels(c *gin.Context) {
 	ok(c, list)
 }
 
-func validateHeaderOverride(c *gin.Context, ch *model.Channel) bool {
+func validateOverrides(c *gin.Context, ch *model.Channel) bool {
 	if _, err := ch.ParseHeaderOverride(); err != nil {
 		fail(c, http.StatusBadRequest, "header_override: "+err.Error())
+		return false
+	}
+	if _, err := ch.ParseBodyOverride(); err != nil {
+		fail(c, http.StatusBadRequest, "body_override: "+err.Error())
 		return false
 	}
 	return true
@@ -36,7 +40,7 @@ func CreateChannel(c *gin.Context) {
 	if !bindJSON(c, &ch) {
 		return
 	}
-	if !validateHeaderOverride(c, &ch) {
+	if !validateOverrides(c, &ch) {
 		return
 	}
 	if strings.TrimSpace(ch.Key) == "" {
@@ -71,7 +75,7 @@ func UpdateChannel(c *gin.Context) {
 	if !bindJSON(c, &in) {
 		return
 	}
-	if !validateHeaderOverride(c, &in) {
+	if !validateOverrides(c, &in) {
 		return
 	}
 	if strings.TrimSpace(in.Key) == "" {
@@ -126,7 +130,7 @@ func ProbeChannelModels(c *gin.Context) {
 		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
-	if !validateHeaderOverride(c, ch) {
+	if !validateOverrides(c, ch) {
 		return
 	}
 	models, err := relay.ProbeModels(ch)
@@ -144,7 +148,7 @@ func ProbeModelsByConfig(c *gin.Context) {
 	if !bindJSON(c, &in) {
 		return
 	}
-	if !validateHeaderOverride(c, &in) {
+	if !validateOverrides(c, &in) {
 		return
 	}
 	models, err := relay.ProbeModels(&in)
@@ -174,7 +178,7 @@ func TestChannelModel(c *gin.Context) {
 		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
-	if !validateHeaderOverride(c, ch) {
+	if !validateOverrides(c, ch) {
 		return
 	}
 	var req struct {
@@ -201,7 +205,7 @@ func TestChannelByConfig(c *gin.Context) {
 		return
 	}
 	ch := req.Channel
-	if !validateHeaderOverride(c, &ch) {
+	if !validateOverrides(c, &ch) {
 		return
 	}
 	if req.Model == "" {
@@ -241,7 +245,7 @@ func TestChannelAllModels(c *gin.Context) {
 		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
-	if !validateHeaderOverride(c, ch) {
+	if !validateOverrides(c, ch) {
 		return
 	}
 	var req struct {
@@ -275,7 +279,7 @@ func TestChannelBatchByConfig(c *gin.Context) {
 		return
 	}
 	ch := req.Channel
-	if !validateHeaderOverride(c, &ch) {
+	if !validateOverrides(c, &ch) {
 		return
 	}
 	if len(req.Models) == 0 {

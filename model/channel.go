@@ -35,6 +35,9 @@ type Channel struct {
 	ModelMapping string `json:"model_mapping" gorm:"type:text"`
 	// HeaderOverride JSON：附加/覆盖的上游请求头
 	HeaderOverride string `json:"header_override" gorm:"type:text"`
+	// BodyOverride JSON 对象：在协议转换后、发往上游前，深合并进最终请求体。
+	// object 与 object 递归合并，其余类型（数组/标量/null）整体替换；顶层 stream 受保护不可覆盖。
+	BodyOverride string `json:"body_override" gorm:"type:text"`
 	// CooldownUntil 冷却截止毫秒时间戳，0 表示未冷却（不持久化调度可放内存，这里持久化便于观察）
 	CooldownUntil int64 `json:"cooldown_until" gorm:"default:0"`
 	CreatedAt     int64 `json:"created_at"`
@@ -244,6 +247,56 @@ func (c *Channel) SafeHeaderOverrideMap() map[string]string {
 		return nil
 	}
 	return result.Headers
+}
+
+// bodyOverrideProtectedTopLevel 是顶层不可被 BodyOverride 覆盖的字段。
+// stream 决定响应传输方式，覆盖会破坏客户端与转发链路的流式契约。
+var bodyOverrideProtectedTopLevel = map[string]struct{}{
+	"stream": {},
+}
+
+// ParseBodyOverride 解析并校验 BodyOverride。
+// 空值合法（返回 nil）；非空时必须是 JSON 对象，否则报错。
+// 返回解码后的补丁（含 null 值语义），供协议转换后的深合并使用。
+func ParseBodyOverride(value string) (map[string]any, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	var raw any
+	if err := json.Unmarshal([]byte(value), &raw); err != nil {
+		return nil, fmt.Errorf("必须是合法的 JSON 对象: %w", err)
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("必须是 JSON 对象")
+	}
+	return obj, nil
+}
+
+// ParseBodyOverride 解析当前渠道的 BodyOverride。
+func (c *Channel) ParseBodyOverride() (map[string]any, error) {
+	if c == nil {
+		return nil, nil
+	}
+	return ParseBodyOverride(c.BodyOverride)
+}
+
+// SafeBodyOverride 返回过滤掉顶层保护字段后的 body 复写补丁。
+// 非法配置返回 nil（与 Header 复写的兼容行为一致）。
+func (c *Channel) SafeBodyOverride() map[string]any {
+	obj, err := c.ParseBodyOverride()
+	if err != nil || len(obj) == 0 {
+		return nil
+	}
+	for k := range obj {
+		if _, protected := bodyOverrideProtectedTopLevel[strings.ToLower(strings.TrimSpace(k))]; protected {
+			delete(obj, k)
+		}
+	}
+	if len(obj) == 0 {
+		return nil
+	}
+	return obj
 }
 
 func splitComma(s string) []string {

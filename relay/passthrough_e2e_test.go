@@ -113,6 +113,72 @@ func TestB1_AnthropicPassthrough_ByteDiff(t *testing.T) {
 	}
 }
 
+// mustChannelWithBodyOverride 创建一个带 body 复写的同协议渠道。
+func mustChannelWithBodyOverride(t *testing.T, name, baseURL string, chType int, display, upstream, bodyOverride string) *model.Channel {
+	t.Helper()
+	ch := &model.Channel{
+		Name: name, Type: chType, Status: model.ChannelStatusEnabled,
+		BaseURL: baseURL, Key: "k", Group: "default",
+		Models:       display,
+		ModelConfigs: `[{"name":"` + display + `","enabled":true,"upstream":"` + upstream + `"}]`,
+		BodyOverride: bodyOverride,
+		Priority:     10, Weight: 1,
+	}
+	if err := model.CreateChannel(ch); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	return ch
+}
+
+// TestBodyOverride_MergedIntoUpstream body 复写在协议透传后深合并进最终上游请求：
+// 新增字段注入、嵌套对象递归合并、顶层 stream 受保护不被覆盖。
+func TestBodyOverride_MergedIntoUpstream(t *testing.T) {
+	setupTestDB(t)
+
+	var captured string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		captured = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer upstream.Close()
+
+	// 复写：注入 service_tier、递归合并 metadata、尝试覆盖顶层 stream（应被保护）。
+	override := `{"service_tier":"priority","metadata":{"trace":"override"},"stream":true}`
+	mustChannelWithBodyOverride(t, "oai", upstream.URL, constant.ChannelTypeOpenAI, "gpt-4o", "gpt-4o-real", override)
+
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":false,"metadata":{"keep":"yes"}}`
+	r := NewRelayer(&config.RelayConfig{MaxRetries: 1, DefaultGroup: "default"})
+	c, rec := newRelayContextWith(t, "/v1/chat/completions", body)
+	r.handle(c, constant.EndpointOpenAI, apicompat.ParseOpenAIRequest)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(captured), &got); err != nil {
+		t.Fatalf("upstream body not valid json: %v; body=%s", err, captured)
+	}
+	// 模型透传映射生效
+	if got["model"] != "gpt-4o-real" {
+		t.Errorf("model = %v, want gpt-4o-real", got["model"])
+	}
+	// 新增字段注入
+	if got["service_tier"] != "priority" {
+		t.Errorf("service_tier = %v, want priority", got["service_tier"])
+	}
+	// 递归合并：保留 keep，新增 trace
+	meta, ok := got["metadata"].(map[string]any)
+	if !ok || meta["keep"] != "yes" || meta["trace"] != "override" {
+		t.Errorf("metadata merge failed: %v", got["metadata"])
+	}
+	// 顶层 stream 受保护，保持原始 false
+	if got["stream"] != false {
+		t.Errorf("top-level stream must stay false, got %v", got["stream"])
+	}
+}
+
 // TestB1_CrossProtocolStillRebuilds 跨协议时不透传：对外 OpenAI、上游 Anthropic，
 // 上游应收到 Anthropic 结构（非原始 OpenAI body）。
 func TestB1_CrossProtocolStillRebuilds(t *testing.T) {
