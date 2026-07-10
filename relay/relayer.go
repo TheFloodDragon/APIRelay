@@ -434,6 +434,14 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 	if err != nil {
 		return http.StatusInternalServerError, false, fmt.Errorf("marshal request: %w", err)
 	}
+	// B1 同协议零改写透传：对外协议与上游协议一致时，基于原始请求体仅改写顶层
+	// model 字段整体透传，保留 IR 未建模字段（tool_choice/metadata/thinking 等）。
+	// 任一步失败则回退上面的 IR 重建结果。
+	if apicompat.SameProtocol(info.EndpointType, info.ApiType) && len(ir.Raw) > 0 {
+		if passthrough, perr := apicompat.ReplaceTopLevelModel(ir.Raw, info.UpstreamModel); perr == nil {
+			reqBody = passthrough
+		}
+	}
 
 	resp, err := adp.DoRequest(info, bytes.NewReader(reqBody))
 	if err != nil {
