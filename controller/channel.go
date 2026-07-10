@@ -22,10 +22,21 @@ func ListChannels(c *gin.Context) {
 	ok(c, list)
 }
 
+func validateHeaderOverride(c *gin.Context, ch *model.Channel) bool {
+	if _, err := ch.ParseHeaderOverride(); err != nil {
+		fail(c, http.StatusBadRequest, "header_override: "+err.Error())
+		return false
+	}
+	return true
+}
+
 // CreateChannel POST /api/channels
 func CreateChannel(c *gin.Context) {
 	var ch model.Channel
 	if !bindJSON(c, &ch) {
+		return
+	}
+	if !validateHeaderOverride(c, &ch) {
 		return
 	}
 	if strings.TrimSpace(ch.Key) == "" {
@@ -58,6 +69,9 @@ func UpdateChannel(c *gin.Context) {
 	}
 	var in model.Channel
 	if !bindJSON(c, &in) {
+		return
+	}
+	if !validateHeaderOverride(c, &in) {
 		return
 	}
 	if strings.TrimSpace(in.Key) == "" {
@@ -112,6 +126,9 @@ func ProbeChannelModels(c *gin.Context) {
 		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
+	if !validateHeaderOverride(c, ch) {
+		return
+	}
 	models, err := relay.ProbeModels(ch)
 	if err != nil {
 		fail(c, http.StatusBadGateway, "拉取模型失败: "+err.Error())
@@ -125,6 +142,9 @@ func ProbeChannelModels(c *gin.Context) {
 func ProbeModelsByConfig(c *gin.Context) {
 	var in model.Channel
 	if !bindJSON(c, &in) {
+		return
+	}
+	if !validateHeaderOverride(c, &in) {
 		return
 	}
 	models, err := relay.ProbeModels(&in)
@@ -154,6 +174,9 @@ func TestChannelModel(c *gin.Context) {
 		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
+	if !validateHeaderOverride(c, ch) {
+		return
+	}
 	var req struct {
 		Model string `json:"model"`
 	}
@@ -177,11 +200,14 @@ func TestChannelByConfig(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
+	ch := req.Channel
+	if !validateHeaderOverride(c, &ch) {
+		return
+	}
 	if req.Model == "" {
 		fail(c, http.StatusBadRequest, "缺少 model")
 		return
 	}
-	ch := req.Channel
 	ok(c, relay.TestModel(&ch, req.Model))
 }
 
@@ -215,6 +241,9 @@ func TestChannelAllModels(c *gin.Context) {
 		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
+	if !validateHeaderOverride(c, ch) {
+		return
+	}
 	var req struct {
 		Models []string `json:"models"`
 	}
@@ -245,11 +274,14 @@ func TestChannelBatchByConfig(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
+	ch := req.Channel
+	if !validateHeaderOverride(c, &ch) {
+		return
+	}
 	if len(req.Models) == 0 {
 		fail(c, http.StatusBadRequest, "缺少 models")
 		return
 	}
-	ch := req.Channel
 	results := relay.TestModels(c.Request.Context(), &ch, req.Models, 0)
 	ok(c, gin.H{"results": results, "summary": summarizeResults(results)})
 }

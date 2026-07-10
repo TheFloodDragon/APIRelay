@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fontsource/ibm-plex-mono": "^5.2.7",
-    "@fontsource/ibm-plex-sans": "^5.2.8",
+    "@fontsource/saira-semi-condensed": "^5.2.7",
+    "@fontsource/spline-sans-mono": "^5.2.8",
     "axios": "^1.7.0",
     "vue": "^3.4.0",
     "vue-router": "^4.3.0"

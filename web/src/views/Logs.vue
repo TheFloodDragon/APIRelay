@@ -1,17 +1,20 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import api from '../api'
-import ProtocolTag from '../components/ProtocolTag.vue'
-import SignalDot from '../components/SignalDot.vue'
-import { useToast } from '../composables/useToast'
+import { computed, getCurrentInstance, onMounted, ref } from 'vue'
+import api, { copyText, takeLatest } from '../api'
+import Drawer from '../components/Drawer.vue'
+import PageState from '../components/PageState.vue'
 
-const toast = useToast()
+const { proxy } = getCurrentInstance()
 const logs = ref([])
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
-const loading = ref(false)
-const expandedId = ref(null) // 行内展开的日志 id
+const loading = ref(true)
+const error = ref('')
+const selectedLog = ref(null)
+const showMoreFilters = ref(false)
+let loadSeq = 0
+
 const filters = ref({
   type: '',
   model: '',
@@ -22,12 +25,14 @@ const filters = ref({
   upstream_request_id: '',
   range: '24h',
 })
+
 const logTypes = [
   { value: '', label: '全部类型' },
   { value: '1', label: '消费' },
   { value: '2', label: '错误' },
   { value: '3', label: '管理' },
 ]
+
 const timeRanges = [
   { value: '', label: '全部时间', ms: 0 },
   { value: '1h', label: '最近 1 小时', ms: 60 * 60 * 1000 },
@@ -35,14 +40,28 @@ const timeRanges = [
   { value: '7d', label: '最近 7 天', ms: 7 * 24 * 60 * 60 * 1000 },
 ]
 
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+const pageStart = computed(() => total.value ? (page.value - 1) * pageSize + 1 : 0)
+const pageEnd = computed(() => Math.min(page.value * pageSize, total.value))
+const activeFilterCount = computed(() => Object.entries(filters.value).filter(([key, value]) => {
+  if (key === 'range') return value && value !== '24h'
+  return String(value || '').trim()
+}).length)
+const moreFilterCount = computed(() => ['request_id', 'upstream_request_id', 'channel_id']
+  .filter((key) => String(filters.value[key] || '').trim()).length)
+
+const fetchLogs = takeLatest((params) => api.get('/logs', { params }))
+
 function fmt(ms) {
-  if (!ms) return '-'
-  const d = new Date(ms)
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  if (!ms) return '—'
+  const date = new Date(ms)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
-const cost = (micro) => micro ? '$' + (micro / 1_000_000).toFixed(4) : '-'
+function cost(micro) {
+  return micro ? `$${(micro / 1_000_000).toFixed(4)}` : '—'
+}
 
 function parseFailoverChain(content) {
   if (!content || typeof content !== 'string') return []
@@ -54,57 +73,47 @@ function parseFailoverChain(content) {
   }
 }
 
-function decisionName(d) {
+function typeName(type) {
+  return { 1: '消费', 2: '错误', 3: '管理', 4: '系统' }[type] || '其他'
+}
+
+function typeChip(type) {
+  if (type === 1) return 'chip-run'
+  if (type === 2) return 'chip-trip'
+  if (type === 3) return 'chip-blue'
+  return ''
+}
+
+function statusChip(status) {
+  if (status >= 500) return 'chip-trip'
+  if (status >= 400) return 'chip-test'
+  if (status > 0) return 'chip-run'
+  return ''
+}
+
+function decisionName(decision) {
   return {
-    success: '命中',
+    success: '成功',
     retry_same_channel: '同渠道重试',
     switch_channel: '切换渠道',
     fatal: '终止',
-  }[d] || d || '-'
-}
-function decisionBadge(d) {
-  if (d === 'success') return 'badge-online'
-  if (d === 'retry_same_channel') return 'badge-warn'
-  if (d === 'switch_channel') return 'badge-signal'
-  if (d === 'fatal') return 'badge-down'
-  return 'badge-neutral'
-}
-function attemptStatusClass(status) {
-  if (!status) return 'text-t3'
-  if (status >= 500) return 'text-danger'
-  if (status >= 400) return 'text-warning'
-  return 'text-success'
-}
-function attemptTime(ms) {
-  if (!ms) return '-'
-  return fmt(ms)
+  }[decision] || decision || '未记录'
 }
 
-function typeName(t) {
-  return { 1: '消费', 2: '错误', 3: '管理', 4: '系统' }[t] || '其他'
-}
-function typeBadge(t) {
-  if (t === 1) return 'badge-online'
-  if (t === 2) return 'badge-down'
-  return 'badge-neutral'
-}
-function statusState(s) {
-  if (!s) return 'idle'
-  if (s >= 500) return 'down'
-  if (s >= 400) return 'warn'
-  return 'online'
-}
-
-function toggle(l) {
-  expandedId.value = expandedId.value === l.id ? null : l.id
+function decisionChip(decision) {
+  if (decision === 'success') return 'chip-run'
+  if (decision === 'fatal') return 'chip-trip'
+  if (decision === 'retry_same_channel') return 'chip-test'
+  if (decision === 'switch_channel') return 'chip-blue'
+  return ''
 }
 
 function logParams() {
   const params = { page: page.value, page_size: pageSize }
   for (const [key, value] of Object.entries(filters.value)) {
     if (key === 'range') continue
-    const v = String(value || '').trim()
-    if (v) params[key] = v
+    const normalized = String(value || '').trim()
+    if (normalized) params[key] = normalized
   }
   const range = timeRanges.find((item) => item.value === filters.value.range)
   if (range?.ms) {
@@ -114,324 +123,362 @@ function logParams() {
   }
   return params
 }
-function applyFilters() {
-  page.value = 1
-  load()
-}
-function clearFilters() {
-  filters.value = { type: '', model: '', token_name: '', channel_id: '', status: '', request_id: '', upstream_request_id: '', range: '24h' }
-  page.value = 1
-  load()
-}
-function quickErrors() {
-  filters.value.type = '2'
-  filters.value.status = ''
-  applyFilters()
-}
-function quickRateLimit() {
-  filters.value.type = '2'
-  filters.value.status = '429'
-  applyFilters()
-}
-function quickTimeouts() {
-  filters.value.type = '2'
-  filters.value.status = '504'
-  applyFilters()
-}
-function filterSummary() {
-  const parts = []
-  const type = logTypes.find((item) => item.value === filters.value.type)
-  const range = timeRanges.find((item) => item.value === filters.value.range)
-  if (type?.value) parts.push(type.label)
-  if (range?.value) parts.push(range.label)
-  if (filters.value.model) parts.push(`模型 ${filters.value.model}`)
-  if (filters.value.token_name) parts.push(`令牌 ${filters.value.token_name}`)
-  if (filters.value.status) parts.push(`HTTP ${filters.value.status}`)
-  if (filters.value.channel_id) parts.push(`节点 #${filters.value.channel_id}`)
-  if (filters.value.request_id) parts.push(`请求 ${filters.value.request_id}`)
-  if (filters.value.upstream_request_id) parts.push(`上游 ${filters.value.upstream_request_id}`)
-  return parts.length ? parts.join(' · ') : '全部'
-}
-function buildDiagnosticPackage(l) {
-  const chain = l._failover_chain || []
-  const lines = [
-    '# APIRelay 调用诊断包',
-    '',
-    `- 时间: ${fmt(l.created_at)}`,
-    `- 日志 ID: ${l.id}`,
-    `- 请求 ID: ${l.request_id || '-'}`,
-    `- 上游请求 ID: ${l.upstream_request_id || '-'}`,
-    `- 类型: ${typeName(l.type)}`,
-    `- 状态: HTTP ${l.status || '-'}`,
-    `- 分组: ${l.group || '-'}`,
-    `- 令牌: ${l.token_name || '-'}`,
-    `- 节点: ${l.channel_name || (l.channel_id ? '#' + l.channel_id : '-')}`,
-    `- 协议: ${l.endpoint_type || '-'} -> ${l.api_type || '-'}`,
-    `- 模型: ${l.src_model || '-'}${l.mapped_model && l.mapped_model !== l.src_model ? ' -> ' + l.mapped_model : ''}`,
-    `- 流式: ${l.is_stream ? 'yes' : 'no'}`,
-    `- Tokens: prompt=${l.prompt_tokens || 0}, completion=${l.completion_tokens || 0}`,
-    `- 费用: ${cost(l.quota)}`,
-    `- 耗时: ${l.use_time_ms || 0}ms, 首字=${l.first_byte_ms || 0}ms`,
-  ]
-  if (l.error) {
-    lines.push('', '## Error', '```text', l.error, '```')
-  }
-  if (chain.length) {
-    lines.push('', '## Failover Track')
-    chain.forEach((a, idx) => {
-      lines.push(`${idx + 1}. [${decisionName(a.decision)}] ${a.channel_name || '#' + a.channel_id} · HTTP ${a.status || '-'} · ${a.api_type || '-'}`)
-      lines.push(`   model: ${a.origin_model || '-'}${a.upstream_model && a.upstream_model !== a.origin_model ? ' -> ' + a.upstream_model : ''}`)
-      if (a.error) lines.push(`   error: ${a.error_category ? a.error_category + ' · ' : ''}${a.error}`)
-    })
-    lines.push('', '```json', JSON.stringify(chain, null, 2), '```')
-  }
-  return lines.join('\n')
-}
-async function copyDiagnostic(l) {
-  const text = buildDiagnosticPackage(l)
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-    } else {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-    }
-    toast.success('诊断包已复制')
-  } catch (e) {
-    toast.error('复制失败: ' + (e?.message || '浏览器拒绝访问剪贴板'))
-  }
-}
 
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
+  error.value = ''
   try {
-    const data = await api.get('/logs', { params: logParams() })
+    const data = await fetchLogs(logParams())
+    if (seq !== loadSeq || !data) return
     logs.value = (data.items || []).map((item) => ({
       ...item,
       _failover_chain: parseFailoverChain(item.content),
     }))
     total.value = data.total || 0
-    expandedId.value = null
+    selectedLog.value = null
+  } catch (err) {
+    if (seq === loadSeq) error.value = err.message || '日志读取失败'
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
-function prev() { if (page.value > 1) { page.value--; load() } }
-function next() { if (page.value * pageSize < total.value) { page.value++; load() } }
+function applyFilters() {
+  page.value = 1
+  load()
+}
+
+function clearFilters() {
+  filters.value = {
+    type: '', model: '', token_name: '', channel_id: '', status: '',
+    request_id: '', upstream_request_id: '', range: '24h',
+  }
+  showMoreFilters.value = false
+  page.value = 1
+  load()
+}
+
+function applyQuick(type, status = '') {
+  filters.value.type = type
+  filters.value.status = status
+  applyFilters()
+}
+
+function openDetails(log) {
+  selectedLog.value = log
+}
+
+function previousPage() {
+  if (page.value <= 1) return
+  page.value -= 1
+  load()
+}
+
+function nextPage() {
+  if (page.value >= pageCount.value) return
+  page.value += 1
+  load()
+}
+
+function buildDiagnosticPackage(log) {
+  const attempts = log._failover_chain || []
+  const lines = [
+    '# APIRelay 日志诊断包',
+    '',
+    `- 时间: ${fmt(log.created_at)}`,
+    `- 日志 ID: ${log.id}`,
+    `- 请求 ID: ${log.request_id || '—'}`,
+    `- 上游请求 ID: ${log.upstream_request_id || '—'}`,
+    `- 类型: ${typeName(log.type)}`,
+    `- 状态: HTTP ${log.status || '—'}`,
+    `- 分组: ${log.group || '—'}`,
+    `- 令牌: ${log.token_name || '—'}`,
+    `- 渠道: ${log.channel_name || (log.channel_id ? `#${log.channel_id}` : '—')}`,
+    `- 协议: ${log.endpoint_type || '—'} -> ${log.api_type || '—'}`,
+    `- 模型: ${log.src_model || '—'}${log.mapped_model && log.mapped_model !== log.src_model ? ` -> ${log.mapped_model}` : ''}`,
+    `- 流式: ${log.is_stream ? 'yes' : 'no'}`,
+    `- Tokens: prompt=${log.prompt_tokens || 0}, completion=${log.completion_tokens || 0}`,
+    `- 费用: ${cost(log.quota)}`,
+    `- 耗时: ${log.use_time_ms || 0}ms, 首字=${log.first_byte_ms || 0}ms`,
+  ]
+  if (log.error) lines.push('', '## Error', '```text', log.error, '```')
+  if (attempts.length) {
+    lines.push('', '## Failover Attempts')
+    attempts.forEach((attempt, index) => {
+      lines.push(`${index + 1}. [${decisionName(attempt.decision)}] ${attempt.channel_name || `#${attempt.channel_id || '—'}`} · HTTP ${attempt.status || '—'} · ${attempt.api_type || '—'}`)
+      lines.push(`   retryable=${attempt.retryable ? 'true' : 'false'} · time=${fmt(attempt.at_ms)}`)
+      if (attempt.error) lines.push(`   error: ${attempt.error_category ? `${attempt.error_category} · ` : ''}${attempt.error}`)
+    })
+    lines.push('', '```json', JSON.stringify(attempts, null, 2), '```')
+  }
+  return lines.join('\n')
+}
+
+async function copyDiagnostic(log) {
+  const copied = await copyText(buildDiagnosticPackage(log))
+  proxy.$toast.add(copied ? '诊断包已复制' : '复制失败，请检查浏览器剪贴板权限', copied ? 'success' : 'error')
+}
 
 onMounted(load)
 </script>
 
 <template>
-  <div>
-    <div class="flex items-center justify-between mb-5">
+  <div class="min-w-0 space-y-5">
+    <header class="page-header">
       <div>
-        <h2 class="page-title">日志</h2>
-        <p class="page-subtitle">API 调用历史 · 点击行展开详情</p>
+        <div class="eyebrow">请求日志</div>
+        <h1 class="page-title">日志</h1>
+        <p class="page-description">查看调用结果、协议转换和故障转移记录。</p>
       </div>
-      <button @click="load" class="btn-secondary">刷新</button>
-    </div>
+      <div class="page-actions">
+        <button class="btn" type="button" :disabled="loading" @click="load">刷新</button>
+      </div>
+    </header>
 
-    <div class="panel p-4 mb-4">
-      <div class="flex items-center justify-between gap-3 mb-3">
+    <section class="sheet min-w-0">
+      <div class="sheet-head">
         <div>
-          <span class="tick">FILTER</span>
-          <p class="text-2xs text-t3 mt-0.5">缩小范围，快速定位异常渠道与模型</p>
+          <div class="dim-title">筛选日志</div>
+          <div class="mt-1 text-xs text-soft">{{ activeFilterCount }} 个筛选条件已启用</div>
         </div>
-        <div class="flex flex-wrap items-center justify-end gap-2">
-          <button @click="quickErrors" class="btn-ghost btn-sm">异常</button>
-          <button @click="quickRateLimit" class="btn-ghost btn-sm">限流 429</button>
-          <button @click="quickTimeouts" class="btn-ghost btn-sm">超时 504</button>
-          <button @click="clearFilters" class="btn-ghost btn-sm">清除</button>
+        <div class="flex flex-wrap items-center gap-2">
+          <button class="btn btn-sm" type="button" @click="applyQuick('2')">异常</button>
+          <button class="btn btn-sm" type="button" @click="applyQuick('2', '429')">429</button>
+          <button class="btn btn-sm" type="button" @click="applyQuick('2', '504')">504</button>
+          <button class="btn btn-sm" type="button" @click="clearFilters">清除</button>
         </div>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8 gap-3">
-        <label>
-          <span class="label !mb-1">类型</span>
-          <select v-model="filters.type" class="input" @change="applyFilters">
-            <option v-for="t in logTypes" :key="t.value" :value="t.value">{{ t.label }}</option>
-          </select>
-        </label>
-        <label>
-          <span class="label !mb-1">时间窗</span>
-          <select v-model="filters.range" class="input" @change="applyFilters">
-            <option v-for="r in timeRanges" :key="r.value" :value="r.value">{{ r.label }}</option>
-          </select>
-        </label>
-        <label>
-          <span class="label !mb-1">模型</span>
-          <input v-model="filters.model" class="input font-mono" placeholder="gpt-4o" @keyup.enter="applyFilters" />
-        </label>
-        <label>
-          <span class="label !mb-1">令牌</span>
-          <input v-model="filters.token_name" class="input font-mono" placeholder="token name" @keyup.enter="applyFilters" />
-        </label>
-        <label>
-          <span class="label !mb-1">状态码</span>
-          <input v-model="filters.status" class="input font-mono" placeholder="503" inputmode="numeric" @keyup.enter="applyFilters" />
-        </label>
-        <label>
-          <span class="label !mb-1">请求 ID</span>
-          <input v-model="filters.request_id" class="input font-mono" placeholder="req..." @keyup.enter="applyFilters" />
-        </label>
-        <label>
-          <span class="label !mb-1">上游 ID</span>
-          <input v-model="filters.upstream_request_id" class="input font-mono" placeholder="upstream..." @keyup.enter="applyFilters" />
-        </label>
-        <label>
-          <span class="label !mb-1">节点 ID</span>
-          <input v-model="filters.channel_id" class="input font-mono" placeholder="42" inputmode="numeric" @keyup.enter="applyFilters" />
-        </label>
-        <label class="flex items-end">
-          <button @click="applyFilters" class="btn-secondary w-full">查询</button>
-        </label>
-      </div>
-      <div class="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 font-mono text-2xs text-t3">
-        <span>筛选 · {{ filterSummary() }}</span>
-        <span>{{ total }} 条匹配 · 第 {{ page }} 页</span>
-      </div>
-    </div>
 
-    <div class="panel overflow-hidden">
-      <div class="overflow-x-auto">
-        <table class="dtable">
-          <thead>
-            <tr>
-              <th class="w-32">时间</th>
-              <th>类型</th>
-              <th>节点</th>
-              <th>协议</th>
-              <th>模型</th>
-              <th class="text-center">流</th>
-              <th class="text-right">Tokens</th>
-              <th class="text-right">费用</th>
-              <th class="text-right">耗时</th>
-              <th class="text-right">首字</th>
-              <th class="text-center">状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="l in logs" :key="l.id">
-              <tr class="cursor-pointer" @click="toggle(l)">
-                <td class="whitespace-nowrap font-mono text-2xs text-t2">{{ fmt(l.created_at) }}</td>
-                <td><span class="badge" :class="typeBadge(l.type)">{{ typeName(l.type) }}</span></td>
-                <td class="text-t2 text-xs truncate max-w-[120px]">{{ l.channel_name || (l.channel_id ? '#'+l.channel_id : '-') }}</td>
-                <td>
-                  <div class="flex gap-1">
-                    <ProtocolTag :protocol="l.endpoint_type" />
-                    <ProtocolTag v-if="l.api_type && l.api_type !== l.endpoint_type" :protocol="l.api_type" />
-                  </div>
-                </td>
-                <td class="whitespace-nowrap font-mono text-2xs text-t1">
-                  {{ l.src_model }}
-                  <span v-if="l.mapped_model && l.mapped_model !== l.src_model" class="text-t3">→ {{ l.mapped_model }}</span>
-                </td>
-                <td class="text-center">
-                  <span v-if="l.is_stream" class="badge badge-signal !px-1.5">流</span>
-                  <span v-else class="text-t3">—</span>
-                </td>
-                <td class="text-right whitespace-nowrap font-mono text-2xs text-t2 tabular-nums">{{ l.prompt_tokens }}<span class="text-t3">/</span>{{ l.completion_tokens }}</td>
-                <td class="text-right whitespace-nowrap font-mono text-2xs text-t1 tabular-nums">{{ cost(l.quota) }}</td>
-                <td class="text-right font-mono text-2xs text-t2 tabular-nums">{{ l.use_time_ms }}ms</td>
-                <td class="text-right font-mono text-2xs text-t3 tabular-nums">{{ l.first_byte_ms ? l.first_byte_ms + 'ms' : '-' }}</td>
-                <td class="text-center">
-                  <span class="font-mono text-2xs tabular-nums" :class="l.status >= 400 ? 'text-danger' : 'text-t2'">{{ l.status }}</span>
-                </td>
-              </tr>
-              <!-- 行内展开详情 -->
-              <tr v-if="expandedId === l.id">
-                <td colspan="11" class="!p-0 border-b border-line">
-                  <div class="bg-panel-2 px-4 py-3 animate-fade-in">
-                    <div class="flex items-center justify-between gap-3 mb-3">
-                      <span class="tick">诊断详情</span>
-                      <button @click.stop="copyDiagnostic(l)" class="btn-secondary btn-sm">复制诊断包</button>
-                    </div>
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-xs">
-                      <div><span class="tick">GROUP</span><div class="font-mono text-t1 mt-0.5">{{ l.group || '-' }}</div></div>
-                      <div><span class="tick">TOKEN</span><div class="font-mono text-t1 mt-0.5">{{ l.token_name || '-' }}</div></div>
-                      <div><span class="tick">STATUS</span><div class="font-mono mt-0.5 flex items-center gap-1.5"><SignalDot :status="statusState(l.status)" :size="6" :pulse="false" />{{ l.status }}</div></div>
-                      <div><span class="tick">TOTAL TK</span><div class="font-mono text-t1 mt-0.5">{{ (l.prompt_tokens || 0) + (l.completion_tokens || 0) }}</div></div>
-                      <div v-if="l.request_id" class="col-span-2 md:col-span-2"><span class="tick">REQUEST ID</span><div class="font-mono text-t2 mt-0.5 break-all">{{ l.request_id }}</div></div>
-                      <div v-if="l.upstream_request_id" class="col-span-2 md:col-span-2"><span class="tick">UPSTREAM ID</span><div class="font-mono text-t2 mt-0.5 break-all">{{ l.upstream_request_id }}</div></div>
-                    </div>
-                    <div v-if="l.error" class="mt-3">
-                      <span class="tick">ERROR</span>
-                      <pre class="mt-1 p-2.5 rounded-md border text-2xs whitespace-pre-wrap break-all max-h-56 overflow-auto font-mono text-rust border-rust/30 bg-rust/10">{{ l.error }}</pre>
-                    </div>
+      <form class="space-y-3 p-4" @submit.prevent="applyFilters">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <label>
+            <span class="field-label">类型</span>
+            <select v-model="filters.type" class="input" @change="applyFilters">
+              <option v-for="item in logTypes" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+          </label>
+          <label>
+            <span class="field-label">时间范围</span>
+            <select v-model="filters.range" class="input" @change="applyFilters">
+              <option v-for="item in timeRanges" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+          </label>
+          <label>
+            <span class="field-label">模型</span>
+            <input v-model="filters.model" class="input input-mono" placeholder="gpt-4o" />
+          </label>
+          <label>
+            <span class="field-label">令牌</span>
+            <input v-model="filters.token_name" class="input input-mono" placeholder="token name" />
+          </label>
+          <label>
+            <span class="field-label">状态码</span>
+            <input v-model="filters.status" class="input input-mono" inputmode="numeric" placeholder="503" />
+          </label>
+        </div>
 
-                    <div v-if="l._failover_chain?.length" class="mt-4">
-                      <div class="flex items-center justify-between gap-3 mb-2">
-                        <div>
-                          <span class="tick">故障转移轨迹</span>
-                          <p class="text-2xs text-t3 mt-0.5">按实际尝试顺序记录渠道、状态与调度决策</p>
-                        </div>
-                        <span class="badge badge-neutral font-mono !text-2xs">{{ l._failover_chain.length }} 跳</span>
-                      </div>
+        <div>
+          <button
+            class="btn btn-sm"
+            type="button"
+            :aria-expanded="showMoreFilters"
+            aria-controls="log-more-filters"
+            @click="showMoreFilters = !showMoreFilters"
+          >
+            更多筛选<span v-if="moreFilterCount">（{{ moreFilterCount }}）</span>
+          </button>
+        </div>
 
-                      <div class="rounded-lg border border-primary/20 bg-surface/70 overflow-hidden">
-                        <div v-for="(a, idx) in l._failover_chain" :key="idx" class="relative grid grid-cols-[2rem_1fr] gap-3 px-3 py-3 border-b border-border/70 last:border-b-0">
-                          <div class="relative flex justify-center">
-                            <div v-if="idx < l._failover_chain.length - 1" class="absolute top-7 bottom-[-0.75rem] w-px bg-primary/25"></div>
-                            <div class="relative z-10 h-7 w-7 rounded-full border flex items-center justify-center font-mono text-2xs"
-                                 :class="a.decision === 'success' ? 'border-success/50 bg-success/15 text-success' : a.decision === 'fatal' ? 'border-danger/50 bg-danger/15 text-danger' : 'border-primary/40 bg-primary/10 text-primary'">
-                              {{ idx + 1 }}
-                            </div>
-                          </div>
+        <div v-show="showMoreFilters" id="log-more-filters" class="grid gap-3 rounded-lg border border-line bg-ghost/40 p-3 sm:grid-cols-3">
+          <label>
+            <span class="field-label">请求 ID</span>
+            <input v-model="filters.request_id" class="input input-mono" placeholder="req..." />
+          </label>
+          <label>
+            <span class="field-label">上游请求 ID</span>
+            <input v-model="filters.upstream_request_id" class="input input-mono" placeholder="upstream..." />
+          </label>
+          <label>
+            <span class="field-label">渠道 ID</span>
+            <input v-model="filters.channel_id" class="input input-mono" inputmode="numeric" placeholder="42" />
+          </label>
+        </div>
 
-                          <div class="min-w-0">
-                            <div class="flex flex-wrap items-center gap-2">
-                              <span class="font-mono text-xs text-t1 truncate max-w-[180px]">{{ a.channel_name || ('#' + a.channel_id) }}</span>
-                              <span class="badge !px-2 !py-0.5" :class="decisionBadge(a.decision)">{{ decisionName(a.decision) }}</span>
-                              <span class="font-mono text-2xs tabular-nums" :class="attemptStatusClass(a.status)">HTTP {{ a.status || '-' }}</span>
-                              <span v-if="a.retryable" class="badge badge-warning !px-2 !py-0.5">可重试</span>
-                            </div>
-                            <div class="mt-1.5 grid grid-cols-1 md:grid-cols-3 gap-1.5 text-2xs text-t3 font-mono">
-                              <span>API {{ a.api_type || '-' }}</span>
-                              <span>MODEL {{ a.origin_model || '-' }}<template v-if="a.upstream_model && a.upstream_model !== a.origin_model"> → {{ a.upstream_model }}</template></span>
-                              <span>T+ {{ attemptTime(a.at_ms) }}</span>
-                            </div>
-                            <div v-if="a.error" class="mt-2 rounded-md border border-border/80 bg-bg/40 px-2 py-1.5 font-mono text-2xs text-t2 break-all">
-                              <span v-if="a.error_category" class="text-t3">{{ a.error_category }} · </span>{{ a.error }}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </td>
-              </tr>
-            </template>
-            <tr v-if="!logs.length && !loading">
-              <td colspan="11" class="empty-state">
-                <span class="font-mono text-3xl text-t3">∅</span>
-                <span>暂无日志</span>
-              </td>
-            </tr>
-            <tr v-if="loading">
-              <td colspan="11" class="p-4">
-                <div class="space-y-2">
-                  <div v-for="i in 6" :key="i" class="skeleton h-6"></div>
+        <div class="flex justify-end">
+          <button class="btn btn-primary min-w-28" type="submit">查询</button>
+        </div>
+      </form>
+    </section>
+
+    <PageState :loading="loading" :error="error" @retry="load">
+      <section class="sheet min-w-0 overflow-hidden">
+        <div class="sheet-head">
+          <span class="dim-title">日志记录</span>
+          <span class="font-mono text-xs text-soft">{{ pageStart }}—{{ pageEnd }} / {{ total }}</span>
+        </div>
+
+        <div v-if="!logs.length" class="stamp-block">
+          <div>当前范围没有日志</div>
+          <p class="mt-2">可清除筛选，或重新读取最新记录。</p>
+          <div class="mt-3 flex justify-center gap-2">
+            <button class="btn" type="button" @click="clearFilters">清除筛选</button>
+            <button class="btn" type="button" @click="load">重新读取</button>
+          </div>
+        </div>
+
+        <div v-else>
+          <div class="hidden lg:block">
+            <table class="table-eng table-fixed">
+              <thead>
+                <tr>
+                  <th class="w-[13%]">时间</th>
+                  <th class="w-[9%]">类型</th>
+                  <th class="w-[20%]">渠道 / 协议</th>
+                  <th class="w-[16%]">模型 / 令牌</th>
+                  <th class="w-[15%] text-right">Tokens / 费用</th>
+                  <th class="w-[12%] text-right">耗时</th>
+                  <th class="w-[9%]">状态</th>
+                  <th class="w-[6%]">尝试</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="log in logs"
+                  :key="log.id"
+                  class="cursor-pointer focus-within:bg-canvas"
+                  tabindex="0"
+                  :aria-label="`查看日志 ${log.id} 详情`"
+                  @click="openDetails(log)"
+                  @keydown.enter.prevent="openDetails(log)"
+                  @keydown.space.prevent="openDetails(log)"
+                >
+                  <td class="whitespace-nowrap font-mono text-xs">{{ fmt(log.created_at) }}</td>
+                  <td><span class="chip" :class="typeChip(log.type)">{{ typeName(log.type) }}</span></td>
+                  <td>
+                    <div class="truncate text-sm">{{ log.channel_name || (log.channel_id ? `#${log.channel_id}` : '—') }}</div>
+                    <div class="mt-1 truncate text-xs text-soft">{{ log.endpoint_type || '—' }}<template v-if="log.api_type && log.api_type !== log.endpoint_type"> → {{ log.api_type }}</template></div>
+                  </td>
+                  <td>
+                    <div class="truncate font-mono text-xs">{{ log.src_model || '—' }}<template v-if="log.mapped_model && log.mapped_model !== log.src_model"> → {{ log.mapped_model }}</template></div>
+                    <div class="mt-1 truncate font-mono text-xs text-soft">{{ log.token_name || '—' }}</div>
+                  </td>
+                  <td class="num">
+                    <div>{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }}</div>
+                    <div class="text-xs text-soft">{{ cost(log.quota) }}</div>
+                  </td>
+                  <td class="num">
+                    <div>{{ log.use_time_ms || 0 }} ms</div>
+                    <div class="text-xs text-soft">首字 {{ log.first_byte_ms || 0 }} ms</div>
+                  </td>
+                  <td><span class="chip" :class="statusChip(log.status)">HTTP {{ log.status || '—' }}</span></td>
+                  <td><span class="chip" :class="log._failover_chain.length > 1 ? 'chip-test' : ''">{{ log._failover_chain.length }}</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="space-y-3 p-3 lg:hidden">
+            <article v-for="log in logs" :key="log.id" class="mobile-card">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="font-mono text-xs text-soft">{{ fmt(log.created_at) }}</div>
+                  <div class="mt-1 truncate font-medium">{{ log.channel_name || (log.channel_id ? `#${log.channel_id}` : '未知渠道') }}</div>
                 </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+                <span class="chip shrink-0" :class="statusChip(log.status)">HTTP {{ log.status || '—' }}</span>
+              </div>
+              <dl class="mt-3 space-y-2">
+                <div class="mobile-kv"><dt>类型</dt><dd><span class="chip" :class="typeChip(log.type)">{{ typeName(log.type) }}</span></dd></div>
+                <div class="mobile-kv"><dt>协议</dt><dd class="break-all">{{ log.endpoint_type || '—' }}<template v-if="log.api_type && log.api_type !== log.endpoint_type"> → {{ log.api_type }}</template></dd></div>
+                <div class="mobile-kv"><dt>模型</dt><dd class="break-all font-mono text-xs">{{ log.src_model || '—' }}<template v-if="log.mapped_model && log.mapped_model !== log.src_model"> → {{ log.mapped_model }}</template></dd></div>
+                <div class="mobile-kv"><dt>令牌</dt><dd class="break-all font-mono text-xs">{{ log.token_name || '—' }}</dd></div>
+                <div class="mobile-kv"><dt>Tokens / 费用</dt><dd class="font-mono text-xs">{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }} · {{ cost(log.quota) }}</dd></div>
+                <div class="mobile-kv"><dt>耗时</dt><dd class="font-mono text-xs">{{ log.use_time_ms || 0 }} ms · 首字 {{ log.first_byte_ms || 0 }} ms</dd></div>
+                <div class="mobile-kv"><dt>尝试</dt><dd>{{ log._failover_chain.length }} 次</dd></div>
+              </dl>
+              <div class="mt-4 flex flex-wrap justify-end gap-2">
+                <button class="btn btn-sm" type="button" @click="copyDiagnostic(log)">复制诊断包</button>
+                <button class="btn btn-primary btn-sm" type="button" @click="openDetails(log)">查看详情</button>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
 
-    <!-- 分页 -->
-    <div class="flex items-center justify-end gap-3 mt-4 font-mono text-2xs text-t2">
-      <button class="page-btn" :disabled="page<=1" @click="prev">上一页</button>
-      <span>PAGE {{ page }} · {{ total }} 条</span>
-      <button class="page-btn" :disabled="page*pageSize>=total" @click="next">下一页</button>
-    </div>
+      <nav class="flex flex-wrap items-center justify-between gap-3" aria-label="日志分页">
+        <span class="font-mono text-xs text-soft">第 {{ page }} / {{ pageCount }} 页 · 共 {{ total }} 条</span>
+        <div class="flex gap-2">
+          <button class="btn" type="button" :disabled="page <= 1" @click="previousPage">上一页</button>
+          <button class="btn" type="button" :disabled="page >= pageCount" @click="nextPage">下一页</button>
+        </div>
+      </nav>
+    </PageState>
+
+    <Drawer :open="!!selectedLog" title="日志详情" @close="selectedLog = null">
+      <div v-if="selectedLog" class="space-y-5">
+        <section>
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-base font-semibold">请求</h3>
+            <div class="flex flex-wrap gap-2">
+              <span class="chip" :class="typeChip(selectedLog.type)">{{ typeName(selectedLog.type) }}</span>
+              <span class="chip" :class="statusChip(selectedLog.status)">HTTP {{ selectedLog.status || '—' }}</span>
+            </div>
+          </div>
+          <dl class="grid gap-3 rounded-lg border border-line bg-ghost/40 p-3 sm:grid-cols-2">
+            <div><dt class="field-label">时间</dt><dd class="font-mono text-xs">{{ fmt(selectedLog.created_at) }}</dd></div>
+            <div><dt class="field-label">日志 ID</dt><dd class="break-all font-mono text-xs">{{ selectedLog.id || '—' }}</dd></div>
+            <div><dt class="field-label">请求 ID</dt><dd class="break-all font-mono text-xs">{{ selectedLog.request_id || '—' }}</dd></div>
+            <div><dt class="field-label">上游请求 ID</dt><dd class="break-all font-mono text-xs">{{ selectedLog.upstream_request_id || '—' }}</dd></div>
+            <div><dt class="field-label">分组</dt><dd class="break-all font-mono text-xs">{{ selectedLog.group || '—' }}</dd></div>
+            <div><dt class="field-label">流式</dt><dd>{{ selectedLog.is_stream ? '是' : '否' }}</dd></div>
+            <div><dt class="field-label">渠道</dt><dd class="break-all">{{ selectedLog.channel_name || (selectedLog.channel_id ? `#${selectedLog.channel_id}` : '—') }}</dd></div>
+            <div><dt class="field-label">协议</dt><dd class="break-all font-mono text-xs">{{ selectedLog.endpoint_type || '—' }} → {{ selectedLog.api_type || '—' }}</dd></div>
+            <div><dt class="field-label">模型</dt><dd class="break-all font-mono text-xs">{{ selectedLog.src_model || '—' }}<template v-if="selectedLog.mapped_model && selectedLog.mapped_model !== selectedLog.src_model"> → {{ selectedLog.mapped_model }}</template></dd></div>
+            <div><dt class="field-label">令牌</dt><dd class="break-all font-mono text-xs">{{ selectedLog.token_name || '—' }}</dd></div>
+            <div><dt class="field-label">Tokens / 费用</dt><dd class="font-mono text-xs">{{ selectedLog.prompt_tokens || 0 }} / {{ selectedLog.completion_tokens || 0 }} · {{ cost(selectedLog.quota) }}</dd></div>
+            <div><dt class="field-label">耗时</dt><dd class="font-mono text-xs">{{ selectedLog.use_time_ms || 0 }} ms · 首字 {{ selectedLog.first_byte_ms || 0 }} ms</dd></div>
+          </dl>
+        </section>
+
+        <section>
+          <h3 class="mb-3 text-base font-semibold">错误</h3>
+          <pre v-if="selectedLog.error" class="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-trip/30 bg-trip-wash p-3 text-xs text-trip">{{ selectedLog.error }}</pre>
+          <div v-else class="rounded-lg border border-dashed border-line p-4 text-sm text-soft">该日志没有错误信息。</div>
+        </section>
+
+        <section>
+          <div class="mb-3 flex items-center justify-between gap-2">
+            <h3 class="text-base font-semibold">故障转移步骤</h3>
+            <span class="chip">{{ selectedLog._failover_chain.length }} 次</span>
+          </div>
+          <ol v-if="selectedLog._failover_chain.length" class="space-y-3">
+            <li v-for="(attempt, index) in selectedLog._failover_chain" :key="`${selectedLog.id}-${index}`" class="rounded-lg border border-line p-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-medium">步骤 {{ index + 1 }} · {{ attempt.channel_name || (attempt.channel_id ? `#${attempt.channel_id}` : '未知渠道') }}</span>
+                <span class="chip" :class="decisionChip(attempt.decision)">{{ decisionName(attempt.decision) }}</span>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <span class="chip" :class="statusChip(attempt.status)">HTTP {{ attempt.status || '—' }}</span>
+                <span class="chip chip-blue">{{ attempt.api_type || '—' }}</span>
+                <span class="chip" :class="attempt.retryable ? 'chip-test' : ''">{{ attempt.retryable ? '可重试' : '不可重试' }}</span>
+              </div>
+              <dl class="mt-3 grid grid-cols-[88px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+                <dt class="text-soft">渠道 ID</dt><dd class="break-all font-mono">{{ attempt.channel_id || '—' }}</dd>
+                <dt class="text-soft">时间</dt><dd class="font-mono">{{ fmt(attempt.at_ms) }}</dd>
+                <dt class="text-soft">迭代 / 切换</dt><dd class="font-mono">{{ attempt.iter ?? '—' }} / {{ attempt.switches ?? '—' }}</dd>
+                <dt class="text-soft">模型</dt><dd class="break-all font-mono">{{ attempt.origin_model || '—' }}<template v-if="attempt.upstream_model && attempt.upstream_model !== attempt.origin_model"> → {{ attempt.upstream_model }}</template></dd>
+                <dt class="text-soft">错误</dt><dd class="break-all" :class="attempt.error ? 'text-trip' : 'text-soft'">{{ attempt.error_category ? `${attempt.error_category} · ` : '' }}{{ attempt.error || '—' }}</dd>
+              </dl>
+            </li>
+          </ol>
+          <div v-else class="rounded-lg border border-dashed border-line p-4 text-sm text-soft">该日志没有故障转移步骤。</div>
+        </section>
+      </div>
+      <template #footer>
+        <div class="flex justify-end">
+          <button v-if="selectedLog" class="btn btn-primary" type="button" @click="copyDiagnostic(selectedLog)">复制诊断包</button>
+        </div>
+      </template>
+    </Drawer>
   </div>
 </template>
-

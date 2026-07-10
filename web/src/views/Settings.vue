@@ -1,199 +1,33 @@
-<template>
-  <div>
-    <div class="mb-5">
-      <h2 class="page-title">设置</h2>
-      <p class="page-subtitle">配置文件、全局协议映射、模型定价与熔断参数</p>
-    </div>
-
-    <!-- ===== 当前配置文件 ===== -->
-    <div class="panel mb-4">
-      <div class="px-4 h-12 flex items-center justify-between border-b border-line">
-        <div class="min-w-0">
-          <span class="font-mono text-sm font-medium text-t1">配置文件</span>
-          <span class="tick ml-2">CONFIG.YAML</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <button class="btn-secondary btn-sm" :disabled="loadingConfig || savingConfig" @click="loadConfigFile">{{ loadingConfig ? '读取中…' : '重新加载文件' }}</button>
-          <button class="btn-primary btn-sm" :disabled="savingConfig" @click="saveConfigFile">{{ savingConfig ? '写入中…' : '保存配置文件' }}</button>
-        </div>
-      </div>
-      <div class="p-4 space-y-4">
-        <div class="grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-3 items-start">
-          <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="tick">PATH</span>
-              <span class="key-chip key-chip-full"><code>{{ configFile.path || 'config.yaml' }}</code></span>
-              <span class="badge" :class="configFile.exists ? 'badge-online' : 'badge-warn'">{{ configFile.exists ? '已存在' : '保存时创建' }}</span>
-            </div>
-            <p class="hint">这里编辑的是当前进程启动时使用的配置文件路径；保存会写入文件，不代表所有运行时参数立即热更新。</p>
-          </div>
-          <div class="relay-callout">
-            配置写入前会先按 APIRelay 配置结构解析 YAML。数据库、监听地址、认证初始化等参数通常需要重启后才会完整生效。
-          </div>
-        </div>
-        <textarea
-          v-model="configDraft"
-          class="config-textarea"
-          spellcheck="false"
-          placeholder="server:\n  port: 3000\n  host: 0.0.0.0\n"
-        ></textarea>
-      </div>
-    </div>
-
-    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      <!-- ===== 全局协议规则 ===== -->
-      <div class="panel">
-        <div class="px-4 h-11 flex items-center justify-between border-b border-line">
-          <div>
-            <span class="font-mono text-sm font-medium text-t1">全局协议规则</span>
-            <span class="tick ml-2">REGEX MATCH</span>
-          </div>
-          <button class="btn-primary btn-sm" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
-        </div>
-
-        <div class="p-4">
-          <p class="hint mb-3">按模型显示名正则匹配上游协议。优先级：模型显式 &gt; 渠道规则 &gt; <span class="font-medium text-t1">全局规则</span> &gt; 渠道默认。</p>
-          <div class="space-y-2">
-            <div v-for="(r, i) in rules" :key="i" class="flex gap-2 items-center">
-              <span class="font-mono text-2xs text-t3 w-6 text-center shrink-0">{{ String(i + 1).padStart(2, '0') }}</span>
-              <input v-model="r.pattern" class="input font-mono text-xs flex-1" placeholder="正则，如 ^claude- 或 gpt-.*" />
-              <select v-model="r.protocol" class="input text-xs w-36 shrink-0">
-                <option v-for="p in protocols" :key="p.value" :value="p.value">{{ p.name }}</option>
-              </select>
-              <button class="text-t3 hover:text-[rgb(var(--rust))] px-2 shrink-0" @click="rules.splice(i, 1)">×</button>
-            </div>
-            <div v-if="!rules.length" class="empty-state inset !py-6">
-              暂无全局规则
-            </div>
-          </div>
-          <button class="btn-ghost btn-sm mt-3" @click="rules.push({ pattern: '', protocol: 'anthropic' })">+ 添加规则</button>
-        </div>
-      </div>
-
-      <!-- ===== 规则测试器 ===== -->
-      <div class="panel">
-        <div class="px-4 h-11 flex items-center border-b border-line">
-          <span class="font-mono text-sm font-medium text-t1">规则测试器</span>
-          <span class="tick ml-2">DRY RUN</span>
-        </div>
-        <div class="p-4">
-          <p class="hint mb-3">输入一个模型名，预览全局规则的首个命中结果（不含渠道级配置）</p>
-          <div class="flex gap-2 items-center">
-            <input v-model="testModel" class="input font-mono text-sm flex-1" placeholder="如 claude-3-5-sonnet" />
-            <div class="shrink-0">
-              <span v-if="testModel" class="badge font-mono" :class="testResult ? 'badge-signal' : 'badge-neutral'">
-                {{ testResult || '未命中（用渠道默认）' }}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== 全局模型价格 ===== -->
-    <div class="panel mt-4">
-      <div class="px-4 h-11 flex items-center justify-between border-b border-line">
-        <div>
-          <span class="font-mono text-sm font-medium text-t1">全局模型价格</span>
-          <span class="tick ml-2">USD/1M TK</span>
-        </div>
-        <button class="btn-primary btn-sm" :disabled="savingPrices" @click="savePrices">{{ savingPrices ? '保存中…' : '保存' }}</button>
-      </div>
-
-      <div class="p-4">
-        <p class="hint mb-3">单位：美元 / 100 万 tokens。模型名填 <code class="font-mono text-xs">default</code> 作为兜底价格。优先级：渠道模型价格 &gt; <span class="font-medium text-t1">全局价格</span> &gt; 不计费。</p>
-        <div class="space-y-2">
-          <div class="hidden lg:grid grid-cols-[40px_minmax(0,1fr)_120px_120px_32px] gap-2 items-center tick px-1">
-            <span></span>
-            <span>模型名</span>
-            <span class="text-right pr-2">输入 $/1M</span>
-            <span class="text-right pr-2">输出 $/1M</span>
-            <span></span>
-          </div>
-          <div v-for="(p, i) in prices" :key="i" class="grid grid-cols-[40px_minmax(0,1fr)_120px_120px_32px] max-lg:grid-cols-[40px_minmax(0,1fr)_32px] gap-2 items-center">
-            <span class="font-mono text-2xs text-t3 text-center">{{ String(i + 1).padStart(2, '0') }}</span>
-            <input v-model="p.model" class="input font-mono text-xs" placeholder="模型名 或 default" />
-            <input v-model.number="p.input" type="number" step="0.01" min="0" class="input text-xs text-right font-mono max-lg:hidden" placeholder="0" />
-            <input v-model.number="p.output" type="number" step="0.01" min="0" class="input text-xs text-right font-mono max-lg:hidden" placeholder="0" />
-            <button class="text-t3 hover:text-[rgb(var(--rust))] px-1" @click="prices.splice(i, 1)">×</button>
-          </div>
-          <div v-if="!prices.length" class="empty-state inset !py-6">
-            暂无价格条目（未配置时不计费）
-          </div>
-        </div>
-        <button class="btn-ghost btn-sm mt-3" @click="prices.push({ model: '', input: 0, output: 0 })">+ 添加价格</button>
-      </div>
-    </div>
-
-    <!-- ===== 熔断器配置 ===== -->
-    <div class="panel mt-4">
-      <div class="px-4 h-11 flex items-center justify-between border-b border-line">
-        <div>
-          <span class="font-mono text-sm font-medium text-t1">熔断器配置</span>
-          <span class="tick ml-2">CIRCUIT BREAKER</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <button class="btn-ghost btn-sm" :disabled="savingBreaker" @click="resetBreakerDefaults">恢复默认</button>
-          <button class="btn-primary btn-sm" :disabled="savingBreaker" @click="saveBreaker">{{ savingBreaker ? '保存中…' : '保存' }}</button>
-        </div>
-      </div>
-
-      <div class="p-4">
-        <p class="hint mb-4">自动熔断故障渠道，防止级联失败。错误率只统计滑动窗口内的请求，过期失败不会长期误伤渠道；熔断后等待超时时间进入半开试探。</p>
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <div>
-            <label class="label">失败阈值</label>
-            <input v-model.number="breaker.failure_threshold" type="number" min="1" class="input" />
-            <p class="hint mt-1">连续失败多少次触发熔断</p>
-          </div>
-          <div>
-            <label class="label">恢复阈值</label>
-            <input v-model.number="breaker.success_threshold" type="number" min="1" class="input" />
-            <p class="hint mt-1">半开状态连续成功多少次恢复</p>
-          </div>
-          <div>
-            <label class="label">熔断超时（秒）</label>
-            <input v-model.number="breaker.timeout_seconds" type="number" min="1" class="input" />
-            <p class="hint mt-1">熔断后多久进入半开试探</p>
-          </div>
-          <div>
-            <label class="label">错误率阈值</label>
-            <input v-model.number="breaker.error_rate_threshold" type="number" min="0" max="1" step="0.01" class="input" />
-            <p class="hint mt-1">错误率超过此值触发熔断（0-1）</p>
-          </div>
-          <div>
-            <label class="label">最小请求数</label>
-            <input v-model.number="breaker.min_requests" type="number" min="1" class="input" />
-            <p class="hint mt-1">统计窗口最小请求数</p>
-          </div>
-          <div>
-            <label class="label">统计窗口（秒）</label>
-            <input v-model.number="breaker.window_seconds" type="number" min="1" class="input" />
-            <p class="hint mt-1">仅统计最近 N 秒内的错误率，默认 60 秒</p>
-          </div>
-          <div>
-            <label class="label">单渠道重试次数</label>
-            <input v-model.number="breaker.channel_max_retries" type="number" min="0" class="input" />
-            <p class="hint mt-1">同一渠道临时错误重试次数</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useToast } from '../composables/useToast'
+import { computed, getCurrentInstance, onMounted, ref } from 'vue'
 import api from '../api'
+import PageState from '../components/PageState.vue'
 
-const toast = useToast()
+const { proxy } = getCurrentInstance()
+
+const tabs = [
+  { id: 'config', label: '配置文件' },
+  { id: 'protocols', label: '协议规则' },
+  { id: 'prices', label: '模型价格' },
+  { id: 'breaker', label: '熔断器' },
+]
+const activeTab = ref('config')
 const rules = ref([])
 const protocols = ref([])
-const saving = ref(false)
-const testModel = ref('')
 const prices = ref([])
+const testModel = ref('')
+const loadingSettings = ref(true)
+const settingsError = ref('')
+const savingRules = ref(false)
 const savingPrices = ref(false)
+const savingBreaker = ref(false)
+
+const configFile = ref({ path: '', exists: false, content: '' })
+const configDraft = ref('')
+const loadingConfig = ref(true)
+const configError = ref('')
+const savingConfig = ref(false)
+
 const defaultBreaker = {
   failure_threshold: 5,
   success_threshold: 2,
@@ -204,32 +38,81 @@ const defaultBreaker = {
   channel_max_retries: 1,
 }
 const breaker = ref({ ...defaultBreaker })
-const savingBreaker = ref(false)
-const configFile = ref({ path: '', exists: false, content: '' })
-const configDraft = ref('')
-const loadingConfig = ref(false)
-const savingConfig = ref(false)
+const breakerError = ref('')
 
 const testResult = computed(() => {
-  const m = testModel.value.trim()
-  if (!m) return ''
-  for (const r of rules.value) {
-    if (!r.pattern || !r.protocol) continue
+  const model = testModel.value.trim()
+  if (!model) return { protocol: '', index: -1, invalid: false }
+  for (let index = 0; index < rules.value.length; index += 1) {
+    const rule = rules.value[index]
+    if (!rule.pattern || !rule.protocol) continue
     try {
-      if (new RegExp(r.pattern).test(m)) return r.protocol
-    } catch {}
+      if (new RegExp(rule.pattern).test(model)) return { protocol: rule.protocol, index, invalid: false }
+    } catch {
+      return { protocol: '', index, invalid: true }
+    }
   }
-  return ''
+  return { protocol: '', index: -1, invalid: false }
 })
+
+function notify(message, type = 'info') {
+  proxy.$toast.add(message, type)
+}
+
+function selectTab(id) {
+  activeTab.value = id
+}
+
+function onTabKeydown(event, index) {
+  let target = index
+  if (event.key === 'ArrowRight') target = (index + 1) % tabs.length
+  else if (event.key === 'ArrowLeft') target = (index - 1 + tabs.length) % tabs.length
+  else if (event.key === 'Home') target = 0
+  else if (event.key === 'End') target = tabs.length - 1
+  else return
+
+  event.preventDefault()
+  activeTab.value = tabs[target].id
+  event.currentTarget.parentElement?.querySelectorAll('[role="tab"]')[target]?.focus()
+}
+
+function protocolName(value) {
+  return protocols.value.find((item) => item.value === value)?.name || value || '未指定'
+}
+
+function addRule() {
+  rules.value.push({ pattern: '', protocol: protocols.value[0]?.value || 'anthropic' })
+}
+
+function moveRule(index, direction) {
+  const target = index + direction
+  if (target < 0 || target >= rules.value.length) return
+  const next = [...rules.value]
+  ;[next[index], next[target]] = [next[target], next[index]]
+  rules.value = next
+}
+
+function removeRule(index) {
+  rules.value.splice(index, 1)
+}
+
+function addPrice() {
+  prices.value.push({ model: '', input: 0, output: 0 })
+}
 
 async function loadConfigFile() {
   loadingConfig.value = true
+  configError.value = ''
   try {
     const data = await api.get('/settings/config-file')
-    configFile.value = { path: data?.path || 'config.yaml', exists: !!data?.exists, content: data?.content || '' }
+    configFile.value = {
+      path: data?.path || 'config.yaml',
+      exists: !!data?.exists,
+      content: data?.content || '',
+    }
     configDraft.value = data?.content || ''
-  } catch (e) {
-    toast.error('配置文件读取失败: ' + e.message)
+  } catch (error) {
+    configError.value = error.message || '配置文件读取失败'
   } finally {
     loadingConfig.value = false
   }
@@ -239,44 +122,61 @@ async function saveConfigFile() {
   savingConfig.value = true
   try {
     const data = await api.put('/settings/config-file', { content: configDraft.value })
-    configFile.value = { path: data?.path || configFile.value.path || 'config.yaml', exists: true, content: data?.content ?? configDraft.value }
+    configFile.value = {
+      path: data?.path || configFile.value.path || 'config.yaml',
+      exists: true,
+      content: data?.content ?? configDraft.value,
+    }
     configDraft.value = data?.content ?? configDraft.value
-    toast.success(data?.message || '配置文件已写入，部分配置需要重启后生效')
-  } catch (e) {
-    toast.error('配置文件保存失败: ' + e.message)
+    notify(data?.message || '配置文件已写入，部分配置需要重启后生效', 'success')
+  } catch (error) {
+    notify(`配置文件保存失败: ${error.message}`, 'error')
   } finally {
     savingConfig.value = false
   }
 }
 
-async function load() {
+async function loadSettings() {
+  loadingSettings.value = true
+  settingsError.value = ''
   try {
-    const [r, p, mp, cb] = await Promise.all([
+    const [ruleData, protocolData, priceData, breakerData] = await Promise.all([
       api.get('/settings/protocol-rules'),
       api.get('/protocols'),
       api.get('/settings/model-prices'),
       api.get('/settings/circuit-breaker'),
     ])
-    rules.value = (r || []).map(x => ({ pattern: x.pattern || '', protocol: x.protocol || 'anthropic' }))
-    protocols.value = p || []
-    prices.value = (mp || []).map(x => ({ model: x.model || '', input: x.input || 0, output: x.output || 0 }))
-    if (cb) breaker.value = { ...defaultBreaker, ...cb }
-  } catch (e) {
-    toast.error('加载失败: ' + e.message)
+    rules.value = (ruleData || []).map((item) => ({
+      pattern: item.pattern || '',
+      protocol: item.protocol || 'anthropic',
+    }))
+    protocols.value = protocolData || []
+    prices.value = (priceData || []).map((item) => ({
+      model: item.model || '',
+      input: item.input || 0,
+      output: item.output || 0,
+    }))
+    breaker.value = { ...defaultBreaker, ...(breakerData || {}) }
+  } catch (error) {
+    settingsError.value = error.message || '设置初始化失败'
+  } finally {
+    loadingSettings.value = false
   }
 }
 
-async function save() {
-  saving.value = true
+async function saveRules() {
+  savingRules.value = true
   try {
-    const clean = rules.value.filter(r => r.pattern.trim() && r.protocol)
+    const clean = rules.value
+      .filter((rule) => rule.pattern.trim() && rule.protocol)
+      .map((rule) => ({ pattern: rule.pattern.trim(), protocol: rule.protocol }))
     await api.put('/settings/protocol-rules', clean)
     rules.value = clean
-    toast.success('规则已保存')
-  } catch (e) {
-    toast.error('保存失败: ' + e.message)
+    notify('全局协议规则已保存', 'success')
+  } catch (error) {
+    notify(`协议规则保存失败: ${error.message}`, 'error')
   } finally {
-    saving.value = false
+    savingRules.value = false
   }
 }
 
@@ -284,13 +184,17 @@ async function savePrices() {
   savingPrices.value = true
   try {
     const clean = prices.value
-      .filter(p => p.model.trim())
-      .map(p => ({ model: p.model.trim(), input: Number(p.input) || 0, output: Number(p.output) || 0 }))
+      .filter((price) => price.model.trim())
+      .map((price) => ({
+        model: price.model.trim(),
+        input: Number(price.input) || 0,
+        output: Number(price.output) || 0,
+      }))
     await api.put('/settings/model-prices', clean)
     prices.value = clean
-    toast.success('价格已保存')
-  } catch (e) {
-    toast.error('保存失败: ' + e.message)
+    notify('全局模型价格已保存', 'success')
+  } catch (error) {
+    notify(`模型价格保存失败: ${error.message}`, 'error')
   } finally {
     savingPrices.value = false
   }
@@ -298,41 +202,351 @@ async function savePrices() {
 
 function resetBreakerDefaults() {
   breaker.value = { ...defaultBreaker }
-  toast.info('已填入推荐默认值，保存后生效')
+  breakerError.value = ''
+  notify('已恢复推荐默认值，保存后生效', 'info')
 }
 
-function breakerNumberOrDefault(value, fallback, { min = 1, max = null } = {}) {
-  if (value === '' || value === null || value === undefined) return fallback
-  const next = Number(value)
-  if (!Number.isFinite(next) || next < min) return fallback
-  return max === null ? next : Math.min(next, max)
+function validateBreaker() {
+  const checks = [
+    ['失败阈值', breaker.value.failure_threshold, 1],
+    ['恢复阈值', breaker.value.success_threshold, 1],
+    ['熔断超时', breaker.value.timeout_seconds, 1],
+    ['最小请求数', breaker.value.min_requests, 1],
+    ['统计窗口', breaker.value.window_seconds, 1],
+    ['单渠道重试次数', breaker.value.channel_max_retries, 0],
+  ]
+  for (const [label, value, min] of checks) {
+    const number = Number(value)
+    if (!Number.isFinite(number) || number < min) return `${label}必须大于或等于 ${min}`
+  }
+  const rate = Number(breaker.value.error_rate_threshold)
+  if (!Number.isFinite(rate) || rate < 0 || rate > 1) return '错误率阈值必须位于 0 到 1 之间'
+  return ''
 }
 
 async function saveBreaker() {
+  breakerError.value = validateBreaker()
+  if (breakerError.value) {
+    notify(breakerError.value, 'warn')
+    return
+  }
   savingBreaker.value = true
   try {
     const clean = {
       ...breaker.value,
-      failure_threshold: breakerNumberOrDefault(breaker.value.failure_threshold, defaultBreaker.failure_threshold),
-      success_threshold: breakerNumberOrDefault(breaker.value.success_threshold, defaultBreaker.success_threshold),
-      timeout_seconds: breakerNumberOrDefault(breaker.value.timeout_seconds, defaultBreaker.timeout_seconds),
-      error_rate_threshold: breakerNumberOrDefault(breaker.value.error_rate_threshold, defaultBreaker.error_rate_threshold, { max: 1 }),
-      min_requests: breakerNumberOrDefault(breaker.value.min_requests, defaultBreaker.min_requests),
-      window_seconds: breakerNumberOrDefault(breaker.value.window_seconds, defaultBreaker.window_seconds),
-      channel_max_retries: breakerNumberOrDefault(breaker.value.channel_max_retries, defaultBreaker.channel_max_retries, { min: 0 }),
+      failure_threshold: Number(breaker.value.failure_threshold),
+      success_threshold: Number(breaker.value.success_threshold),
+      timeout_seconds: Number(breaker.value.timeout_seconds),
+      error_rate_threshold: Number(breaker.value.error_rate_threshold),
+      min_requests: Number(breaker.value.min_requests),
+      window_seconds: Number(breaker.value.window_seconds),
+      channel_max_retries: Number(breaker.value.channel_max_retries),
     }
-    const resp = await api.put('/settings/circuit-breaker', clean)
-    breaker.value = { ...defaultBreaker, ...(resp?.config || clean) }
-    toast.success('熔断器配置已保存')
-  } catch (e) {
-    toast.error('保存失败: ' + e.message)
+    const response = await api.put('/settings/circuit-breaker', clean)
+    breaker.value = { ...defaultBreaker, ...(response?.config || clean) }
+    breakerError.value = ''
+    notify('熔断器配置已保存', 'success')
+  } catch (error) {
+    breakerError.value = error.message || '熔断器配置保存失败'
+    notify(`熔断器配置保存失败: ${breakerError.value}`, 'error')
   } finally {
     savingBreaker.value = false
   }
 }
 
 onMounted(() => {
-  load()
   loadConfigFile()
+  loadSettings()
 })
 </script>
+
+<template>
+  <div class="min-w-0 space-y-5">
+    <header>
+      <div class="eyebrow">系统设置</div>
+      <h1 class="page-title">设置</h1>
+      <p class="page-description">配置文件、协议规则、模型价格与熔断器分别保存。</p>
+    </header>
+
+    <nav class="min-w-0 overflow-x-auto" aria-label="设置分类">
+      <div class="segmented min-w-max" role="tablist" aria-label="设置分类">
+        <button
+          v-for="(tab, index) in tabs"
+          :id="`settings-tab-${tab.id}`"
+          :key="tab.id"
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === tab.id"
+          :aria-controls="`settings-panel-${tab.id}`"
+          :tabindex="activeTab === tab.id ? 0 : -1"
+          @click="selectTab(tab.id)"
+          @keydown="onTabKeydown($event, index)"
+        >
+          {{ tab.label }}
+        </button>
+      </div>
+    </nav>
+
+    <section
+      v-if="activeTab === 'config'"
+      id="settings-panel-config"
+      role="tabpanel"
+      aria-labelledby="settings-tab-config"
+      tabindex="0"
+      class="sheet"
+    >
+      <div class="sheet-head">
+        <div>
+          <div class="dim-title">配置文件</div>
+          <div class="mt-1 text-xs text-soft">编辑服务启动配置 YAML</div>
+        </div>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button class="btn btn-sm" type="button" :disabled="loadingConfig || savingConfig" @click="loadConfigFile">
+            {{ loadingConfig ? '读取中…' : '重新加载' }}
+          </button>
+          <button class="btn btn-primary btn-sm" type="button" :disabled="loadingConfig || savingConfig" @click="saveConfigFile">
+            {{ savingConfig ? '保存中…' : '保存 YAML' }}
+          </button>
+        </div>
+      </div>
+
+      <PageState :loading="loadingConfig" :error="configError" @retry="loadConfigFile">
+        <div class="space-y-4 p-4">
+          <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.65fr)]">
+            <div class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">当前配置文件路径</span>
+              <div class="flex flex-wrap items-center gap-2">
+                <code class="min-w-0 break-all text-sm">{{ configFile.path || 'config.yaml' }}</code>
+                <span class="chip" :class="configFile.exists ? 'chip-run' : 'chip-test'">
+                  {{ configFile.exists ? '文件存在' : '保存时创建' }}
+                </span>
+              </div>
+            </div>
+            <div class="rounded-lg border border-blue/20 bg-blue-wash p-3 text-xs leading-5 text-soft">
+              保存前由服务端校验 YAML。写入成功不代表全部运行时参数立即更新；数据库、监听地址、认证初始化等配置通常需要重启进程后生效。
+            </div>
+          </div>
+          <label>
+            <span class="field-label">YAML 内容</span>
+            <textarea
+              v-model="configDraft"
+              class="input input-mono min-h-[360px] resize-y whitespace-pre leading-5"
+              spellcheck="false"
+              placeholder="server:\n  port: 3000\n  host: 0.0.0.0\n"
+            ></textarea>
+          </label>
+          <p class="text-xs text-soft">重新加载会覆盖尚未保存的编辑内容。</p>
+        </div>
+      </PageState>
+    </section>
+
+    <section
+      v-else-if="activeTab === 'protocols'"
+      id="settings-panel-protocols"
+      role="tabpanel"
+      aria-labelledby="settings-tab-protocols"
+      tabindex="0"
+      class="sheet"
+    >
+      <div class="sheet-head">
+        <div>
+          <div class="dim-title">协议规则</div>
+          <div class="mt-1 text-xs text-soft">正则首个命中，列表顺序即优先级</div>
+        </div>
+        <button class="btn btn-primary btn-sm" type="button" :disabled="savingRules || loadingSettings" @click="saveRules">
+          {{ savingRules ? '保存中…' : '保存规则' }}
+        </button>
+      </div>
+
+      <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
+        <div class="grid gap-5 p-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
+          <div class="min-w-0">
+            <p class="mb-3 text-xs leading-5 text-soft">优先级：模型显式设置 → 渠道规则 → 全局规则 → 渠道默认。使用上移、下移按钮调整顺序。</p>
+            <div class="space-y-3">
+              <article v-for="(rule, index) in rules" :key="index" class="rounded-lg border border-line bg-white p-3">
+                <div class="mb-3 flex items-center justify-between gap-2">
+                  <span class="font-medium">规则 {{ index + 1 }}</span>
+                  <div class="flex flex-wrap gap-1">
+                    <button class="btn btn-sm" type="button" :disabled="index === 0" :aria-label="`上移规则 ${index + 1}`" @click="moveRule(index, -1)">上移</button>
+                    <button class="btn btn-sm" type="button" :disabled="index === rules.length - 1" :aria-label="`下移规则 ${index + 1}`" @click="moveRule(index, 1)">下移</button>
+                    <button class="btn btn-danger btn-sm" type="button" :aria-label="`删除规则 ${index + 1}`" @click="removeRule(index)">删除</button>
+                  </div>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+                  <label>
+                    <span class="field-label">模型正则</span>
+                    <input v-model="rule.pattern" class="input input-mono" placeholder="^claude- 或 gpt-.*" />
+                  </label>
+                  <label>
+                    <span class="field-label">上游协议</span>
+                    <select v-model="rule.protocol" class="input">
+                      <option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option>
+                    </select>
+                  </label>
+                </div>
+              </article>
+              <div v-if="!rules.length" class="rounded-lg border border-dashed border-line py-8 text-center text-sm text-soft">暂无全局协议规则</div>
+            </div>
+            <button class="btn mt-3" type="button" @click="addRule">添加规则</button>
+          </div>
+
+          <aside class="h-fit rounded-lg border border-line bg-ghost/40 p-4">
+            <div class="dim-title mb-3">测试规则</div>
+            <label>
+              <span class="field-label">模型显示名</span>
+              <input v-model="testModel" class="input input-mono" placeholder="claude-3-5-sonnet" />
+            </label>
+            <div class="mt-3 rounded-lg border border-line bg-white p-3">
+              <span class="field-label">首个命中结果</span>
+              <div v-if="!testModel.trim()" class="text-sm text-soft">输入模型名开始测试</div>
+              <div v-else-if="testResult.invalid" class="flex flex-wrap items-center gap-2">
+                <span class="chip chip-trip">正则无效</span>
+                <span class="text-xs text-soft">规则 {{ testResult.index + 1 }} 无法编译</span>
+              </div>
+              <div v-else-if="testResult.protocol" class="flex flex-wrap items-center gap-2">
+                <span class="chip chip-blue">{{ protocolName(testResult.protocol) }}</span>
+                <span class="text-xs text-soft">规则 {{ testResult.index + 1 }}</span>
+              </div>
+              <span v-else class="chip">未命中，使用渠道默认</span>
+            </div>
+            <div class="mt-3">
+              <span class="field-label">可用协议</span>
+              <div class="flex flex-wrap gap-1">
+                <span v-for="protocol in protocols" :key="protocol.value" class="chip chip-blue">{{ protocol.name }}</span>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </PageState>
+    </section>
+
+    <section
+      v-else-if="activeTab === 'prices'"
+      id="settings-panel-prices"
+      role="tabpanel"
+      aria-labelledby="settings-tab-prices"
+      tabindex="0"
+      class="sheet"
+    >
+      <div class="sheet-head">
+        <div>
+          <div class="dim-title">模型价格</div>
+          <div class="mt-1 text-xs text-soft">单位为 USD / 1M tokens，default 可作默认价格</div>
+        </div>
+        <button class="btn btn-primary btn-sm" type="button" :disabled="savingPrices || loadingSettings" @click="savePrices">
+          {{ savingPrices ? '保存中…' : '保存价格' }}
+        </button>
+      </div>
+
+      <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
+        <div class="p-4">
+          <p class="mb-3 text-xs leading-5 text-soft">优先级：渠道模型价格 → 全局价格 → 不计费。</p>
+          <div class="space-y-3">
+            <article v-for="(price, index) in prices" :key="index" class="rounded-lg border border-line bg-white p-3">
+              <div class="mb-3 flex items-center justify-between gap-2">
+                <span class="font-medium">价格 {{ index + 1 }}</span>
+                <button class="btn btn-danger btn-sm" type="button" :aria-label="`删除价格 ${index + 1}`" @click="prices.splice(index, 1)">删除</button>
+              </div>
+              <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_160px]">
+                <label>
+                  <span class="field-label">模型</span>
+                  <input v-model="price.model" class="input input-mono" placeholder="模型名或 default" />
+                </label>
+                <label>
+                  <span class="field-label">输入 $/1M</span>
+                  <input v-model.number="price.input" class="input input-mono text-right" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
+                  <span class="field-label">输出 $/1M</span>
+                  <input v-model.number="price.output" class="input input-mono text-right" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0" />
+                </label>
+              </div>
+            </article>
+            <div v-if="!prices.length" class="rounded-lg border border-dashed border-line py-8 text-center text-sm text-soft">暂无价格条目，未配置时不计费</div>
+          </div>
+          <button class="btn mt-3" type="button" @click="addPrice">添加价格</button>
+        </div>
+      </PageState>
+    </section>
+
+    <section
+      v-else
+      id="settings-panel-breaker"
+      role="tabpanel"
+      aria-labelledby="settings-tab-breaker"
+      tabindex="0"
+      class="sheet"
+    >
+      <div class="sheet-head">
+        <div>
+          <div class="dim-title">熔断器</div>
+          <div class="mt-1 text-xs text-soft">设置失败判断、恢复条件、统计窗口和重试次数</div>
+        </div>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button class="btn btn-sm" type="button" :disabled="savingBreaker || loadingSettings" @click="resetBreakerDefaults">恢复默认</button>
+          <button class="btn btn-primary btn-sm" type="button" :disabled="savingBreaker || loadingSettings" @click="saveBreaker">
+            {{ savingBreaker ? '保存中…' : '保存配置' }}
+          </button>
+        </div>
+      </div>
+
+      <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
+        <div class="space-y-4 p-4">
+          <p class="max-w-4xl text-xs leading-5 text-soft">错误率只统计滑动窗口内的请求。达到连续失败或错误率条件后暂停向该渠道发送请求；超时后进行恢复检查，连续成功达到恢复阈值后恢复正常。同渠道重试发生在切换渠道之前。</p>
+
+          <div v-if="breakerError" class="rounded-lg border border-trip/30 bg-trip-wash px-3 py-2 text-sm text-trip" role="alert">{{ breakerError }}</div>
+
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">失败阈值</span>
+              <input v-model.number="breaker.failure_threshold" class="input input-mono" type="number" min="1" step="1" />
+              <span class="field-help">连续失败达到此数量后暂停请求，至少为 1。</span>
+            </label>
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">恢复阈值</span>
+              <input v-model.number="breaker.success_threshold" class="input input-mono" type="number" min="1" step="1" />
+              <span class="field-help">恢复检查连续成功次数，至少为 1。</span>
+            </label>
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">熔断超时（秒）</span>
+              <input v-model.number="breaker.timeout_seconds" class="input input-mono" type="number" min="1" step="1" />
+              <span class="field-help">暂停后等待恢复检查的时间，至少为 1 秒。</span>
+            </label>
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">错误率阈值</span>
+              <input v-model.number="breaker.error_rate_threshold" class="input input-mono" type="number" min="0" max="1" step="0.01" />
+              <span class="field-help">允许范围为 0 到 1。</span>
+            </label>
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">最小请求数</span>
+              <input v-model.number="breaker.min_requests" class="input input-mono" type="number" min="1" step="1" />
+              <span class="field-help">启用错误率判断所需的最小样本数。</span>
+            </label>
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">统计窗口（秒）</span>
+              <input v-model.number="breaker.window_seconds" class="input input-mono" type="number" min="1" step="1" />
+              <span class="field-help">错误率统计的滑动窗口长度。</span>
+            </label>
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">单渠道重试次数</span>
+              <input v-model.number="breaker.channel_max_retries" class="input input-mono" type="number" min="0" step="1" />
+              <span class="field-help">临时错误在原渠道重试的次数，可为 0。</span>
+            </label>
+            <div class="rounded-lg border border-blue/20 bg-blue-wash p-3">
+              <span class="field-label text-blue">推荐默认值</span>
+              <dl class="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs text-blue">
+                <dt>失败阈值</dt><dd class="font-mono">5</dd>
+                <dt>恢复阈值</dt><dd class="font-mono">2</dd>
+                <dt>超时</dt><dd class="font-mono">30s</dd>
+                <dt>错误率</dt><dd class="font-mono">0.5</dd>
+                <dt>最小请求数</dt><dd class="font-mono">10</dd>
+                <dt>统计窗口</dt><dd class="font-mono">60s</dd>
+                <dt>重试次数</dt><dd class="font-mono">1</dd>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </PageState>
+    </section>
+  </div>
+</template>

@@ -1,189 +1,265 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import api from '../api'
-import StatDial from '../components/StatDial.vue'
-import SignalDot from '../components/SignalDot.vue'
-import PriorityBar from '../components/PriorityBar.vue'
-import PatchRoute from '../components/PatchRoute.vue'
+import { computed, onMounted, ref } from 'vue'
+import api, { usd } from '../api'
+import PageState from '../components/PageState.vue'
+import RouteHealthBar from '../components/RouteHealthBar.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 
-const data = ref({ channel_count: 0, stat: {} })
-const modelCount = ref(0)
-const channels = ref([])
-const healthStats = ref({})
 const loading = ref(true)
+const error = ref('')
+const stat = ref({})
+const dashboardChannelCount = ref(0)
+const models = ref([])
+const channels = ref([])
+const channelTypes = ref([])
+const channelHealth = ref({})
+const anomalies = ref([])
+const anomaliesError = ref('')
 
-onMounted(async () => {
+const fmt = (value) => (Number(value) || 0).toLocaleString()
+
+const availableModelCount = computed(() => models.value.filter((model) => {
+  if (!Array.isArray(model?.providers)) return true
+  return model.providers.some((provider) => provider.enabled !== false)
+}).length)
+
+const channelCount = computed(() => dashboardChannelCount.value || channels.value.length)
+const healthyChannelCount = computed(() => routeRows.value.filter((row) => row.status === 'healthy').length)
+
+const typeMap = computed(() => Object.fromEntries(channelTypes.value.map((item) => [item.value, item.name])))
+const latestErrorByChannel = computed(() => {
+  const result = {}
+  for (const item of anomalies.value) {
+    if (item?.channel_id && !result[item.channel_id]) result[item.channel_id] = item
+  }
+  return result
+})
+
+function modelCount(channel) {
+  if (channel.model_configs) {
+    try {
+      const list = JSON.parse(channel.model_configs)
+      if (Array.isArray(list)) return list.filter((model) => model?.enabled !== false && String(model?.name || '').trim()).length
+    } catch {
+      // 兼容旧渠道数据。
+    }
+  }
+  return String(channel.models || '').split(',').map((item) => item.trim()).filter(Boolean).length
+}
+
+function formatTime(value) {
+  if (!value) return '时间未知'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '时间未知'
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function shortText(value, fallback = '未提供错误详情') {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text) return fallback
+  return text.length > 120 ? `${text.slice(0, 117)}…` : text
+}
+
+function stateOf(channel, health) {
+  if (channel.status !== 1) return { status: 'disabled', label: '已停用' }
+  if (!health) return { status: 'unknown', label: '状态未知' }
+  if (health.circuit_state === 'open' || (channel.cooldown_until && channel.cooldown_until > Date.now())) {
+    return { status: 'error', label: '已熔断' }
+  }
+  if (health.circuit_state === 'half_open') return { status: 'warning', label: '恢复检查' }
+  if (Number(health.consecutive_failures) > 0) return { status: 'warning', label: '有失败' }
+  return { status: 'healthy', label: '可用' }
+}
+
+function recentOf(channel, health) {
+  const latestError = latestErrorByChannel.value[channel.id]
+  if (latestError) {
+    const latency = Number(latestError.use_time_ms) > 0 ? `${fmt(latestError.use_time_ms)} ms` : `HTTP ${latestError.status || '失败'}`
+    return {
+      primary: `${latency} · ${formatTime(latestError.created_at)}`,
+      secondary: shortText(latestError.error),
+    }
+  }
+  if (health?.last_error) {
+    return {
+      primary: `最近失败于 ${formatTime(health.last_failure_at || health.updated_at)}`,
+      secondary: shortText(health.last_error),
+    }
+  }
+  if (health?.last_success_at) {
+    return {
+      primary: '暂无延迟数据',
+      secondary: `最近成功于 ${formatTime(health.last_success_at)}`,
+    }
+  }
+  return { primary: '暂无延迟或错误记录', secondary: '' }
+}
+
+const routeRows = computed(() => channels.value.map((channel, index) => {
+  const health = channelHealth.value[channel.id]
+  const state = stateOf(channel, health)
+  const recent = recentOf(channel, health)
+  return {
+    id: channel.id,
+    priority: index + 1,
+    name: channel.name || `渠道 ${channel.id}`,
+    group: channel.group || 'default',
+    protocol: typeMap.value[channel.type] || ({ 1: 'OpenAI', 2: 'Anthropic', 3: 'Responses' }[channel.type] || '未识别'),
+    status: state.status,
+    statusLabel: state.label,
+    modelCount: modelCount(channel),
+    recentPrimary: recent.primary,
+    recentSecondary: recent.secondary,
+  }
+}))
+
+function dashboardAnomalies(dashboard) {
+  for (const key of ['anomalies', 'recent_anomalies', 'recent_errors', 'errors']) {
+    if (!Object.prototype.hasOwnProperty.call(dashboard, key)) continue
+    const value = dashboard[key]
+    if (Array.isArray(value)) return value
+    if (Array.isArray(value?.items)) return value.items
+    return []
+  }
+  return null
+}
+
+function anomalyStatus(item) {
+  const status = Number(item?.status)
+  if (status >= 500) return { tone: 'error', label: `HTTP ${status}` }
+  if (status >= 400) return { tone: 'warning', label: `HTTP ${status}` }
+  return { tone: 'error', label: '请求失败' }
+}
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  anomaliesError.value = ''
   try {
-    const [dash, models, chs, health] = await Promise.all([
+    const [dashboard, modelList, channelList, typeList] = await Promise.all([
       api.get('/dashboard'),
       api.get('/models').catch(() => []),
       api.get('/channels').catch(() => []),
-      api.get('/settings/health-stats').catch(() => ({})),
+      api.get('/channel-types').catch(() => []),
     ])
-    data.value = dash
-    modelCount.value = (models || []).length
-    channels.value = chs || []
-    healthStats.value = health || {}
+
+    stat.value = dashboard?.stat || {}
+    dashboardChannelCount.value = Number(dashboard?.channel_count) || 0
+    models.value = Array.isArray(modelList) ? modelList : []
+    channels.value = Array.isArray(channelList) ? channelList : []
+    channelTypes.value = Array.isArray(typeList) ? typeList : []
+
+    const suppliedAnomalies = dashboardAnomalies(dashboard || {})
+    const anomalyRequest = suppliedAnomalies === null
+      ? api.get('/logs', { params: { type: 2, page_size: 5 } })
+          .then((data) => Array.isArray(data?.items) ? data.items : [])
+          .catch((err) => {
+            anomaliesError.value = err.message || '近期异常暂时无法读取'
+            return []
+          })
+      : Promise.resolve(suppliedAnomalies.slice(0, 5))
+
+    const healthRequest = Promise.all(channels.value.map(async (channel) => {
+      try {
+        return [channel.id, await api.get(`/channels/${channel.id}/health`)]
+      } catch {
+        return [channel.id, null]
+      }
+    }))
+
+    const [recentItems, healthRows] = await Promise.all([anomalyRequest, healthRequest])
+    anomalies.value = recentItems.slice(0, 5)
+    channelHealth.value = Object.fromEntries(healthRows)
+  } catch (err) {
+    error.value = err.message || '总览加载失败'
   } finally {
     loading.value = false
   }
-})
-
-// ===== 仪表读数 =====
-const stat = computed(() => data.value.stat || {})
-const fmt = (n) => (n || 0).toLocaleString()
-const usd = (micro) => '$' + ((micro || 0) / 1_000_000).toFixed(4)
-
-const dials = computed(() => [
-  { label: '渠道数', value: fmt(data.value.channel_count), accent: true },
-  { label: '模型数', value: fmt(modelCount.value), accent: true },
-  { label: '熔断中', value: fmt(healthStats.value.open || 0), state: 'down' },
-  { label: '请求·7日', value: fmt(stat.value.total_requests) },
-  { label: '输入TK', value: fmt(stat.value.total_prompt_tokens), unit: 'tk' },
-  { label: '消费·7日', value: usd(stat.value.total_quota) },
-])
-
-// ===== 渠道优先级列表 =====
-const routeRows = computed(() => {
-  return [...channels.value]
-    .map(ch => ({
-      ...ch,
-      modelN: modelCountOf(ch),
-      state: stateOf(ch),
-    }))
-    .sort((a, b) => (a.priority - b.priority) || (a.id - b.id))
-})
-
-function modelCountOf(ch) {
-  if (Array.isArray(ch._models)) return ch._models.length
-  return (ch.models || '').split(',').map(s => s.trim()).filter(Boolean).length
 }
-function stateOf(ch) {
-  if (ch.status !== 1) return 'down'                    // 禁用
-  if (ch.cooldown_until && ch.cooldown_until > Date.now()) return 'warn' // 冷却
-  return 'online'
-}
-const stateLabel = { online: '在线', warn: '冷却', down: '禁用' }
 
-const onlineCount = computed(() => routeRows.value.filter(r => r.state === 'online').length)
+onMounted(load)
 </script>
 
 <template>
-  <div>
-    <div class="mb-5">
-      <h2 class="page-title">总览</h2>
-      <p class="page-subtitle">路由配线架与近 7 天读数</p>
-    </div>
-
-    <!-- ===== 签名配线架图 ===== -->
-    <div v-if="loading" class="panel p-4 mb-4">
-      <div class="skeleton h-3 w-24 mb-4"></div>
-      <div class="skeleton h-40 w-full"></div>
-    </div>
-    <PatchRoute v-else :channels="channels" class="mb-4" />
-
-    <!-- ===== 仪表读数 ===== -->
-    <div v-if="loading" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-      <div v-for="i in 6" :key="i" class="panel p-4">
-        <div class="skeleton h-3 w-16 mb-3"></div>
-        <div class="skeleton h-6 w-20"></div>
+  <div class="space-y-5">
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">总览</h1>
+        <p class="page-description">查看当前渠道与模型供给，以及最近 7 天的请求和费用。</p>
       </div>
-    </div>
-    <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-      <StatDial v-for="d in dials" :key="d.label" :label="d.label" :value="d.value" :unit="d.unit" :accent="d.accent" :status="d.state" />
-    </div>
+      <div class="page-actions">
+        <button class="btn" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button>
+      </div>
+    </header>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <!-- ===== 渠道优先级列表 ===== -->
-      <div class="lg:col-span-2 panel">
-        <div class="px-4 h-11 flex items-center justify-between border-b border-line">
-          <div class="flex items-center gap-2">
-            <span class="font-mono text-sm font-medium text-t1">渠道优先级</span>
-            <span class="tick">PRIORITY</span>
+    <PageState :loading="loading" :error="error" @retry="load">
+      <div class="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="核心指标">
+        <article class="metric-card">
+          <div class="metric-label">渠道</div>
+          <div class="metric-value">{{ fmt(channelCount) }}</div>
+          <div class="metric-hint">当前已配置渠道</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">可用模型</div>
+          <div class="metric-value">{{ fmt(availableModelCount) }}</div>
+          <div class="metric-hint">至少有一个可用渠道</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">近 7 日请求</div>
+          <div class="metric-value">{{ fmt(stat.total_requests) }}</div>
+          <div class="metric-hint">成功计费请求总数</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">近 7 日费用</div>
+          <div class="metric-value">{{ usd(stat.total_quota) }}</div>
+          <div class="metric-hint">按当前计价汇总</div>
+        </article>
+      </div>
+
+      <section class="mt-5 sheet" aria-labelledby="route-health-title">
+        <div class="sheet-head">
+          <div>
+            <h2 id="route-health-title" class="dim-title">路由健康</h2>
+            <p class="mt-1 text-xs text-soft">按当前优先级展示渠道状态；延迟缺失时显示最近错误或成功时间。</p>
           </div>
-          <span class="font-mono text-2xs text-t3">{{ onlineCount }}/{{ routeRows.length }} 在线</span>
+          <span class="text-xs text-soft">{{ healthyChannelCount }} / {{ channels.length }} 个渠道可用</span>
+        </div>
+        <RouteHealthBar :rows="routeRows" />
+      </section>
+
+      <section class="mt-5 sheet" aria-labelledby="recent-anomalies-title">
+        <div class="sheet-head">
+          <div>
+            <h2 id="recent-anomalies-title" class="dim-title">近期异常</h2>
+            <p class="mt-1 text-xs text-soft">最近记录的 5 条失败请求。</p>
+          </div>
+          <RouterLink class="btn btn-sm" to="/logs">查看全部日志</RouterLink>
         </div>
 
-        <div v-if="loading" class="p-4 space-y-2">
-          <div v-for="i in 4" :key="i" class="skeleton h-10"></div>
-        </div>
-
-        <div v-else-if="routeRows.length" class="divide-y divide-line">
-          <div v-for="(r, i) in routeRows" :key="r.id"
-            class="flex items-center gap-3 px-4 py-2.5 hover:bg-brass/5 transition-colors">
-            <!-- 优先级刻度 -->
-            <span class="font-mono text-2xs text-t3 w-5 text-right">{{ String(i + 1).padStart(2, '0') }}</span>
-            <PriorityBar :level="i" :total="routeRows.length" />
-            <!-- 名称 + 状态 -->
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <SignalDot :status="r.state" />
-                <span class="font-medium text-sm text-t1 truncate">{{ r.name }}</span>
-                <span class="font-mono text-2xs text-t3">#{{ r.id }}</span>
+        <div v-if="anomalies.length" class="divide-y divide-line">
+          <article v-for="item in anomalies" :key="item.id || item.request_id" class="grid gap-3 px-4 py-3 sm:grid-cols-[120px_minmax(0,1fr)_auto] sm:items-center">
+            <div>
+              <StatusBadge :status="anomalyStatus(item).tone" :label="anomalyStatus(item).label" />
+              <div class="mt-1 font-mono text-xs text-soft">{{ formatTime(item.created_at) }}</div>
+            </div>
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                <span class="font-medium text-ink">{{ item.channel_name || (item.channel_id ? `渠道 ${item.channel_id}` : '未知渠道') }}</span>
+                <span class="font-mono text-xs text-soft">{{ item.src_model || item.model || '未记录模型' }}</span>
               </div>
+              <p class="mt-1 break-words text-xs leading-5 text-soft">{{ shortText(item.error) }}</p>
             </div>
-            <!-- 模型数 -->
-            <div class="text-right shrink-0">
-              <div class="font-mono text-sm text-t1">{{ r.modelN }}</div>
-              <div class="tick">模型</div>
+            <div class="whitespace-nowrap text-right font-mono text-xs text-soft">
+              {{ Number(item.use_time_ms) > 0 ? `${fmt(item.use_time_ms)} ms` : '耗时未知' }}
             </div>
-            <!-- 权重 -->
-            <div class="text-right shrink-0 w-12 hidden sm:block">
-              <div class="font-mono text-sm text-t2">×{{ r.weight }}</div>
-              <div class="tick">权重</div>
-            </div>
-            <!-- 状态标签 -->
-            <span class="shrink-0 w-12 text-right">
-              <span class="badge" :class="{ 'badge-online': r.state === 'online', 'badge-warn': r.state === 'warn', 'badge-down': r.state === 'down' }">{{ stateLabel[r.state] }}</span>
-            </span>
-          </div>
+          </article>
         </div>
-
-        <div v-else class="empty-state">
-          <span class="font-mono text-2xs">暂无渠道</span>
-          <router-link to="/channels" class="btn-secondary btn-sm mt-1">配置渠道</router-link>
+        <div v-else class="px-4 py-10 text-center">
+          <p class="text-sm font-medium text-ink">{{ anomaliesError ? '近期异常暂不可用' : '近期没有异常记录' }}</p>
+          <p class="mt-1 text-xs text-soft">{{ anomaliesError || '系统暂未记录失败请求。' }}</p>
         </div>
-      </div>
-
-      <!-- ===== 系统状态 + 快捷 ===== -->
-      <div class="space-y-4">
-        <div class="panel">
-          <div class="px-4 h-11 flex items-center border-b border-line">
-            <span class="font-mono text-sm font-medium text-t1">系统状态</span>
-          </div>
-          <div class="p-4 space-y-3">
-            <div class="flex items-center justify-between">
-              <span class="tick">状态</span>
-              <span class="flex items-center gap-1.5"><SignalDot status="online" /><span class="font-mono text-xs text-t1">运行中</span></span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="tick">版本</span>
-              <span class="font-mono text-xs text-t1">v0.1.0</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="tick">协议</span>
-              <span class="font-mono text-2xs text-t2">OpenAI · Anthropic · Responses</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="tick">分组</span>
-              <span class="font-mono text-xs text-t1">default</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="px-4 h-11 flex items-center border-b border-line">
-            <span class="font-mono text-sm font-medium text-t1">快捷操作</span>
-          </div>
-          <div class="p-3 grid grid-cols-2 gap-2">
-            <router-link to="/channels" class="btn-secondary btn-sm justify-start">渠道</router-link>
-            <router-link to="/models" class="btn-secondary btn-sm justify-start">模型</router-link>
-            <router-link to="/tokens" class="btn-secondary btn-sm justify-start">新建令牌</router-link>
-            <router-link to="/settings" class="btn-secondary btn-sm justify-start">协议规则</router-link>
-            <router-link to="/logs" class="btn-secondary btn-sm justify-start col-span-2">调用日志</router-link>
-          </div>
-        </div>
-      </div>
-    </div>
+      </section>
+    </PageState>
   </div>
 </template>

@@ -5,11 +5,28 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/apirelay/apirelay/model"
 )
+
+func assertOverrideHeaders(t *testing.T, r *http.Request) {
+	t.Helper()
+	if got := r.Header.Get("X-Custom-Trace"); got != "trace-1" {
+		t.Errorf("X-Custom-Trace = %q, want trace-1", got)
+	}
+	if got := r.Header.Get("Authorization"); got != "Bearer k" {
+		t.Errorf("Authorization = %q, want Bearer k", got)
+	}
+	if got := r.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	if r.Host == "evil.example" {
+		t.Errorf("dangerous Host override was applied")
+	}
+}
 
 func TestTestModel_Success(t *testing.T) {
 	// 模拟 OpenAI 上游
@@ -41,6 +58,147 @@ func TestTestModel_Success(t *testing.T) {
 	}
 	if res.Usage == nil || res.Usage.TotalTokens != 6 {
 		t.Errorf("usage = %+v", res.Usage)
+	}
+}
+
+func TestTestModel_HeaderOverride(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertOverrideHeaders(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Name: "headers", Type: 1, BaseURL: srv.URL, Key: "k", Group: "default",
+		ModelConfigs: `[{"name":"gpt-4o","enabled":true}]`,
+		HeaderOverride: `{
+			"X-Custom-Trace":"trace-1",
+			"Authorization":"Bearer bad",
+			"Content-Type":"text/plain",
+			"Host":"evil.example"
+		}`,
+	}
+	res := TestModel(ch, "gpt-4o")
+	if !res.Success {
+		t.Fatalf("expected success, got error: %s", res.Error)
+	}
+}
+
+func TestTestModel_AnthropicProtocolHeadersCannotBeOverridden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Api-Key"); got != "k" {
+			t.Errorf("X-Api-Key = %q, want k", got)
+		}
+		if got := r.Header.Get("Anthropic-Version"); got != "2023-06-01" {
+			t.Errorf("Anthropic-Version = %q, want 2023-06-01", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Name: "anthropic-headers", Type: 2, BaseURL: srv.URL, Key: "k", Group: "default",
+		ModelConfigs:   `[{"name":"claude","enabled":true}]`,
+		HeaderOverride: `{"x-api-key":"bad","anthropic-version":"2024-01-01"}`,
+	}
+	if res := TestModel(ch, "claude"); !res.Success {
+		t.Fatalf("expected success, got error: %s", res.Error)
+	}
+}
+
+func TestTestModel_EmptyHeaderOverride(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer k" {
+			t.Errorf("Authorization = %q, want Bearer k", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Name: "empty-headers", Type: 1, BaseURL: srv.URL, Key: "k", Group: "default",
+		ModelConfigs: `[{"name":"gpt-4o","enabled":true}]`, HeaderOverride: "  ",
+	}
+	if res := TestModel(ch, "gpt-4o"); !res.Success {
+		t.Fatalf("empty header override should not fail: %s", res.Error)
+	}
+}
+
+func TestProbeModels_HeaderOverride(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Custom-Trace"); got != "trace-1" {
+			t.Errorf("X-Custom-Trace = %q, want trace-1", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer k" {
+			t.Errorf("Authorization = %q, want Bearer k", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "" {
+			t.Errorf("Content-Type = %q, want empty", got)
+		}
+		if r.Host == "evil.example" {
+			t.Errorf("dangerous Host override was applied")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o"}]}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Type: 1, BaseURL: srv.URL, Key: "k",
+		HeaderOverride: `{
+			"X-Custom-Trace":"trace-1",
+			"Authorization":"Bearer bad",
+			"Content-Type":"text/plain",
+			"Host":"evil.example"
+		}`,
+	}
+	models, err := ProbeModels(ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0] != "gpt-4o" {
+		t.Fatalf("models = %v", models)
+	}
+}
+
+func TestProbeModels_RetriesBearerForAnthropicCompatibleAggregator(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		if call == 1 {
+			if got := r.Header.Get("x-api-key"); got != "k" {
+				t.Errorf("first x-api-key = %q, want k", got)
+			}
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("first Authorization = %q, want empty", got)
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"missing token"}}`))
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer k" {
+			t.Errorf("retry Authorization = %q, want Bearer k", got)
+		}
+		if got := r.Header.Get("x-api-key"); got != "" {
+			t.Errorf("retry x-api-key = %q, want empty", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-compatible"}]}`))
+	}))
+	defer srv.Close()
+
+	models, err := ProbeModels(&model.Channel{Type: 2, BaseURL: srv.URL, Key: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2", calls.Load())
+	}
+	if len(models) != 1 || models[0] != "claude-compatible" {
+		t.Fatalf("models = %v", models)
 	}
 }
 
@@ -130,6 +288,32 @@ func TestTestModels_Batch(t *testing.T) {
 }
 
 // TestTestModels_Empty 空模型列表返回空结果。
+func TestTestModels_HeaderOverride(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertOverrideHeaders(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Name: "batch-headers", Type: 1, BaseURL: srv.URL, Key: "k", Group: "default",
+		ModelConfigs: `[{"name":"one","enabled":true},{"name":"two","enabled":true}]`,
+		HeaderOverride: `{
+			"X-Custom-Trace":"trace-1",
+			"Authorization":"Bearer bad",
+			"Content-Type":"text/plain",
+			"Host":"evil.example"
+		}`,
+	}
+	results := TestModels(context.Background(), ch, []string{"one", "two"}, 2)
+	for i, result := range results {
+		if result == nil || !result.Success {
+			t.Fatalf("result[%d] = %+v", i, result)
+		}
+	}
+}
+
 func TestTestModels_Empty(t *testing.T) {
 	ch := &model.Channel{Name: "e", Type: 1, BaseURL: "http://x", Key: "k"}
 	results := TestModels(context.Background(), ch, nil, 5)

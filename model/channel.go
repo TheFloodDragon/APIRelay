@@ -2,7 +2,9 @@ package model
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/apirelay/apirelay/constant"
@@ -155,9 +157,65 @@ func (c *Channel) MappedModel(display string) string {
 	return display
 }
 
+// HeaderOverrideResult 是 HeaderOverride 的解析、过滤结果。
+type HeaderOverrideResult struct {
+	Headers map[string]string
+	Ignored []string
+}
+
+// ParseHeaderOverride 解析并校验 HeaderOverride。
+// 空值合法；危险请求头会被过滤并通过 Ignored 返回。
+func ParseHeaderOverride(value string) (HeaderOverrideResult, error) {
+	if strings.TrimSpace(value) == "" {
+		return HeaderOverrideResult{}, nil
+	}
+
+	var raw any
+	if err := json.Unmarshal([]byte(value), &raw); err != nil {
+		return HeaderOverrideResult{}, fmt.Errorf("必须是合法的 JSON 对象: %w", err)
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return HeaderOverrideResult{}, fmt.Errorf("必须是 JSON 对象")
+	}
+
+	result := HeaderOverrideResult{Headers: make(map[string]string, len(obj))}
+	for k, rawValue := range obj {
+		v, ok := rawValue.(string)
+		if !ok {
+			return HeaderOverrideResult{}, fmt.Errorf("请求头 %q 的值必须是字符串", k)
+		}
+		name := strings.TrimSpace(k)
+		if name == "" {
+			result.Ignored = append(result.Ignored, k)
+			continue
+		}
+		canonicalName := http.CanonicalHeaderKey(name)
+		if _, denied := headerOverrideDenylist[strings.ToLower(name)]; denied {
+			result.Ignored = append(result.Ignored, canonicalName)
+			continue
+		}
+		result.Headers[canonicalName] = v
+	}
+	if len(result.Headers) == 0 {
+		result.Headers = nil
+	}
+	sort.Strings(result.Ignored)
+	return result, nil
+}
+
+// ParseHeaderOverride 解析当前渠道的 HeaderOverride。
+func (c *Channel) ParseHeaderOverride() (HeaderOverrideResult, error) {
+	if c == nil {
+		return HeaderOverrideResult{}, nil
+	}
+	return ParseHeaderOverride(c.HeaderOverride)
+}
+
 // HeaderOverrideMap 解析 HeaderOverride 为 map。
+// 为保持兼容，非法配置仍返回 nil，且这里返回未过滤的原始键值。
 func (c *Channel) HeaderOverrideMap() map[string]string {
-	if c.HeaderOverride == "" {
+	if c == nil || strings.TrimSpace(c.HeaderOverride) == "" {
 		return nil
 	}
 	var m map[string]string
@@ -179,26 +237,13 @@ var headerOverrideDenylist = map[string]struct{}{
 }
 
 // SafeHeaderOverrideMap 返回过滤后的 HeaderOverride，避免覆盖鉴权、协议与传输关键请求头。
+// 为保持兼容，非法配置仍返回 nil。
 func (c *Channel) SafeHeaderOverrideMap() map[string]string {
-	raw := c.HeaderOverrideMap()
-	if len(raw) == 0 {
+	result, err := c.ParseHeaderOverride()
+	if err != nil {
 		return nil
 	}
-	safe := make(map[string]string, len(raw))
-	for k, v := range raw {
-		name := strings.TrimSpace(k)
-		if name == "" {
-			continue
-		}
-		if _, denied := headerOverrideDenylist[strings.ToLower(name)]; denied {
-			continue
-		}
-		safe[http.CanonicalHeaderKey(name)] = v
-	}
-	if len(safe) == 0 {
-		return nil
-	}
-	return safe
+	return result.Headers
 }
 
 func splitComma(s string) []string {

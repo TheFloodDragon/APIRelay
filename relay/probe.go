@@ -19,12 +19,36 @@ import (
 //   - OpenAI / Responses: GET {base}/v1/models  -> {"data":[{"id":...}]}
 //   - Anthropic:          GET {base}/v1/models  -> {"data":[{"id":...}]}
 func ProbeModels(ch *model.Channel) ([]string, error) {
+	if ch == nil {
+		return nil, fmt.Errorf("channel is nil")
+	}
 	url := modelsURL(ch)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	status, body, err := probeModelsOnce(ch, url, false)
 	if err != nil {
 		return nil, err
 	}
-	setProbeAuth(ch, req.Header)
+
+	// 部分 OpenAI 兼容聚合服务的对话端点支持 Anthropic x-api-key，
+	// 但模型列表端点仍只接受 Authorization: Bearer。鉴权失败时换一种
+	// 标准鉴权方式重试一次，避免要求用户为了模型探测修改渠道协议。
+	if (status == http.StatusUnauthorized || status == http.StatusForbidden) && strings.TrimSpace(ch.Key) != "" {
+		status, body, err = probeModelsOnce(ch, url, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("upstream status %d: %s", status, truncate(string(body), 300))
+	}
+	return parseModelsBody(body)
+}
+
+func probeModelsOnce(ch *model.Channel, url string, alternateAuth bool) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	setProbeAuth(ch, req.Header, alternateAuth)
 	for k, v := range ch.SafeHeaderOverrideMap() {
 		req.Header.Set(k, v)
 	}
@@ -34,15 +58,11 @@ func ProbeModels(ch *model.Channel) ([]string, error) {
 	ctxClient.Timeout = 20 * time.Second
 	resp, err := ctxClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request upstream models: %w", err)
+		return 0, nil, fmt.Errorf("request upstream models: %w", err)
 	}
 	defer resp.Body.Close()
-
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("upstream status %d: %s", resp.StatusCode, truncate(string(body), 300))
-	}
-	return parseModelsBody(body)
+	return resp.StatusCode, body, nil
 }
 
 func modelsURL(ch *model.Channel) string {
@@ -61,17 +81,20 @@ func modelsURL(ch *model.Channel) string {
 	return base + "/v1/models"
 }
 
-func setProbeAuth(ch *model.Channel, h http.Header) {
+func setProbeAuth(ch *model.Channel, h http.Header, alternate bool) {
 	if ch.Key == "" {
 		return
 	}
-	switch ch.APIType() {
-	case constant.APITypeAnthropic:
+	useAPIKey := ch.APIType() == constant.APITypeAnthropic
+	if alternate {
+		useAPIKey = !useAPIKey
+	}
+	if useAPIKey {
 		h.Set("x-api-key", ch.Key)
 		h.Set("anthropic-version", "2023-06-01")
-	default:
-		h.Set("Authorization", "Bearer "+ch.Key)
+		return
 	}
+	h.Set("Authorization", "Bearer "+ch.Key)
 }
 
 // parseModelsBody 兼容多种返回结构：
