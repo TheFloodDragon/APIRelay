@@ -54,11 +54,12 @@ func classifyRelayError(ctx context.Context, err error) RelayErrorCategory {
 	}
 
 	msg := strings.ToLower(err.Error())
+	// 仅将「客户端主动断开」归为客户端取消，避免误伤渠道健康。
+	// 注意：connection reset by peer / broken pipe 属于上游/网络中断，
+	// 必须归 upstream 以触发故障转移与熔断计数（见下方默认分支）。
 	for _, part := range []string{
 		"client disconnected",
 		"client closed",
-		"connection reset by peer",
-		"broken pipe",
 		"context canceled",
 	} {
 		if strings.Contains(msg, part) {

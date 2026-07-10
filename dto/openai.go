@@ -1,6 +1,46 @@
 package dto
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
+
+// StopSequences 兼容 OpenAI stop 字段的两种形态：单个字符串 "x" 或字符串数组 ["x","y"]。
+// 反序列化时统一归一为 []string，序列化时原样输出为数组（或省略）。
+type StopSequences []string
+
+// UnmarshalJSON 兼容字符串与字符串数组两种输入。
+func (s *StopSequences) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*s = nil
+		return nil
+	}
+	// 数组形态
+	if data[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal(data, &arr); err != nil {
+			return err
+		}
+		*s = arr
+		return nil
+	}
+	// 单字符串形态
+	var single string
+	if err := json.Unmarshal(data, &single); err != nil {
+		return err
+	}
+	*s = StopSequences{single}
+	return nil
+}
+
+// MarshalJSON 原样输出为数组（nil/空时输出 null，配合 omitempty 会被省略）。
+func (s StopSequences) MarshalJSON() ([]byte, error) {
+	if len(s) == 0 {
+		return []byte("null"), nil
+	}
+	return json.Marshal([]string(s))
+}
 
 // ============================================================================
 // OpenAI Chat Completions 协议结构
@@ -14,7 +54,7 @@ type OpenAIChatRequest struct {
 	Temperature *float64        `json:"temperature,omitempty"`
 	TopP        *float64        `json:"top_p,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
-	Stop        []string        `json:"stop,omitempty"`
+	Stop        StopSequences   `json:"stop,omitempty"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 	// StreamOptions 用于在流式中请求 usage
 	StreamOptions *OpenAIStreamOptions `json:"stream_options,omitempty"`

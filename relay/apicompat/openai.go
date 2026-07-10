@@ -27,7 +27,7 @@ func ParseOpenAIRequest(body []byte) (*dto.UnifiedRequest, error) {
 		Temperature:    req.Temperature,
 		TopP:           req.TopP,
 		Stream:         req.Stream,
-		Stop:           req.Stop,
+		Stop:           []string(req.Stop),
 		SourceEndpoint: "openai",
 		Raw:            body,
 	}
@@ -110,7 +110,7 @@ func BuildOpenAIRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.OpenA
 		Temperature: ir.Temperature,
 		TopP:        ir.TopP,
 		Stream:      ir.Stream,
-		Stop:        ir.Stop,
+		Stop:        dto.StopSequences(ir.Stop),
 	}
 	if ir.Stream {
 		req.StreamOptions = &dto.OpenAIStreamOptions{IncludeUsage: true}

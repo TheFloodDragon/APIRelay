@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/apirelay/apirelay/common"
 	"github.com/apirelay/apirelay/common/config"
@@ -62,9 +66,35 @@ func main() {
 		logger.L().Fatal("setup router failed", zap.Error(err))
 	}
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	logger.L().Info("apirelay starting", zap.String("addr", addr))
-	if err := r.Run(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+
+	// 监听 SIGINT/SIGTERM，收到信号后优雅停机。
+	// defer 顺序（LIFO）：先 Shutdown 排水（在此函数体内显式执行）→ 再 StopAsyncWorker → 最后 logger.Sync，
+	// 确保 in-flight 请求先排水结算，避免预扣额度未归还。
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	server := &http.Server{Addr: addr, Handler: r}
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.L().Info("apirelay starting", zap.String("addr", addr))
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
 		logger.L().Fatal("server exited", zap.Error(err))
+	case <-ctx.Done():
+		logger.L().Info("shutdown signal received, draining in-flight requests")
+		stop() // 恢复默认信号处理，允许再次 Ctrl-C 强制退出
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.L().Error("graceful shutdown failed", zap.Error(err))
+		} else {
+			logger.L().Info("http server drained")
+		}
 	}
 }
 

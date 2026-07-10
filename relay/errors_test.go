@@ -123,7 +123,7 @@ func TestClassifyRelayError(t *testing.T) {
 	if got := classifyRelayError(context.Background(), context.DeadlineExceeded); got != ErrorCategoryUpstreamTimeout {
 		t.Fatalf("deadline error without relay ctx category = %s", got)
 	}
-	if got := classifyRelayError(context.Background(), errors.New("write: broken pipe")); got != ErrorCategoryClientCanceled {
+	if got := classifyRelayError(context.Background(), errors.New("write: broken pipe")); got != ErrorCategoryUpstream {
 		t.Fatalf("broken pipe category = %s", got)
 	}
 	if got := classifyRelayError(context.Background(), errors.New("i/o timeout")); got != ErrorCategoryUpstreamTimeout {
@@ -131,6 +131,36 @@ func TestClassifyRelayError(t *testing.T) {
 	}
 	if got := classifyRelayError(context.Background(), errors.New("net/http: timeout awaiting response headers")); got != ErrorCategoryUpstreamTimeout {
 		t.Fatalf("response header timeout category = %s", got)
+	}
+}
+
+// TestClassifyRelayError_Matrix 覆盖各类错误分类，重点验证网络中断（连接重置/断管）
+// 归为 upstream，从而触发故障转移与熔断计数，而非误判为客户端取消。
+func TestClassifyRelayError_Matrix(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want RelayErrorCategory
+	}{
+		{"client_disconnected", errors.New("client disconnected"), ErrorCategoryClientCanceled},
+		{"client_closed", errors.New("client closed request"), ErrorCategoryClientCanceled},
+		{"context_canceled_msg", errors.New("context canceled"), ErrorCategoryClientCanceled},
+		{"relay_timeout_wrapped", context.DeadlineExceeded, ErrorCategoryUpstreamTimeout},
+		{"upstream_timeout_deadline", errors.New("context deadline exceeded"), ErrorCategoryUpstreamTimeout},
+		{"io_timeout", errors.New("read tcp 1.2.3.4:443: i/o timeout"), ErrorCategoryUpstreamTimeout},
+		{"header_timeout", errors.New("net/http: timeout awaiting response headers"), ErrorCategoryUpstreamTimeout},
+		{"tls_timeout", errors.New("net/http: TLS handshake timeout"), ErrorCategoryUpstreamTimeout},
+		{"conn_reset", errors.New("read tcp: connection reset by peer"), ErrorCategoryUpstream},
+		{"broken_pipe", errors.New("write tcp: broken pipe"), ErrorCategoryUpstream},
+		{"eof", errors.New("unexpected EOF"), ErrorCategoryUpstream},
+		{"generic_upstream", errors.New("some upstream failure"), ErrorCategoryUpstream},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := classifyRelayError(context.Background(), c.err); got != c.want {
+				t.Fatalf("classifyRelayError(%q) = %s, want %s", c.err, got, c.want)
+			}
+		})
 	}
 }
 

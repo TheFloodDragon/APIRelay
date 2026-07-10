@@ -127,3 +127,24 @@ func TestValidateYAMLRejectsInvalidConfigShape(t *testing.T) {
 		t.Fatal("expected invalid config yaml to be rejected")
 	}
 }
+
+func TestTrustedProxiesEnvAndYAML(t *testing.T) {
+	// 环境变量覆盖并去重去空
+	t.Setenv("APIRELAY_TRUSTED_PROXIES", "10.0.0.0/8, 127.0.0.1 ,10.0.0.0/8")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.Server.TrustedProxies
+	if len(got) != 2 || got[0] != "10.0.0.0/8" || got[1] != "127.0.0.1" {
+		t.Fatalf("trusted proxies = %#v", got)
+	}
+}
+
+func TestTrustedProxiesDefaultEmpty(t *testing.T) {
+	cfg := Default()
+	cfg.Normalize()
+	if len(cfg.Server.TrustedProxies) != 0 {
+		t.Fatalf("default trusted proxies should be empty, got %#v", cfg.Server.TrustedProxies)
+	}
+}

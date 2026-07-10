@@ -19,6 +19,16 @@ func Setup(cfg *config.Config) (*gin.Engine, error) {
 
 	r := gin.New()
 
+	// 可信代理：非空时仅信任列表内代理的 X-Forwarded-For；为空时不信任任何代理，
+	// ClientIP 取 RemoteAddr，防止伪造 XFF 绕过登录限速等基于 IP 的策略。
+	if len(cfg.Server.TrustedProxies) > 0 {
+		if err := r.SetTrustedProxies(cfg.Server.TrustedProxies); err != nil {
+			return nil, err
+		}
+	} else {
+		_ = r.SetTrustedProxies(nil)
+	}
+
 	r.Use(middleware.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.AccessLog())

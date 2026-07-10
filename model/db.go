@@ -39,6 +39,16 @@ func InitDB(cfg *config.DatabaseConfig) error {
 	}
 	DB = db
 
+	// SQLite 专属调优：WAL 提升读写并发、NORMAL 同步在 WAL 下安全且更快、
+	// busy_timeout 缓解写锁竞争、foreign_keys 打开外键约束。
+	// 纯 Go 驱动的 sqlite 写并发需限制单连接，避免 database is locked。
+	// mysql/postgres 不受影响。
+	if cfg.Driver != "mysql" && cfg.Driver != "postgres" {
+		if err := tuneSQLite(db); err != nil {
+			return err
+		}
+	}
+
 	if err := migrate(); err != nil {
 		return err
 	}
@@ -62,6 +72,31 @@ func migrate() error {
 		&Setting{},
 		&ChannelHealth{},
 	)
+}
+
+// tuneSQLite 为 sqlite 连接应用 PRAGMA 调优并限制连接池。
+// 纯 Go sqlite 驱动在多写连接下易触发 "database is locked"，
+// 因此写并发安全下限是单连接（SetMaxOpenConns(1)）。
+func tuneSQLite(db *gorm.DB) error {
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+	}
+	for _, p := range pragmas {
+		if err := db.Exec(p).Error; err != nil {
+			return err
+		}
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+	return nil
 }
 
 // now 返回当前毫秒时间戳。

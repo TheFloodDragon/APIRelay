@@ -214,7 +214,10 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 	}
 	hardCap := maxSwitches + (maxSwitches+1)*maxRetries + 2
 
-	for iter := 0; iter < hardCap && switches < maxSwitches; iter++ {
+	// 语义：MaxRetries=N 表示最多切换 N 次，即最多尝试 N+1 个渠道。
+	// 因此循环守卫用 switches <= maxSwitches（此前用 < 会少尝试一个渠道，
+	// 导致 MaxRetries=1 时故障转移完全不生效）。
+	for iter := 0; iter < hardCap && switches <= maxSwitches; iter++ {
 		if err := relayContext(info).Err(); err != nil {
 			category := classifyRelayError(relayContext(info), err)
 			if category == ErrorCategoryClientCanceled {
@@ -530,6 +533,11 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 			}
 			return http.StatusGatewayTimeout, true, fmt.Errorf("upstream stream timeout before first byte: %w", err)
 		}
+		// 非超时错误：若尚未写出任何字节（writer == nil），说明响应头未写，
+		// 可安全故障转移到其它渠道；已开始写流则维持不可转移（协议尾已在上方 Finish）。
+		if writer == nil {
+			return http.StatusBadGateway, true, fmt.Errorf("stream: %w", err)
+		}
 		return http.StatusOK, false, fmt.Errorf("stream: %w", err)
 	}
 
@@ -725,7 +733,10 @@ func relayContext(info *RelayInfo) context.Context {
 
 func isRetryableStatus(status int) bool {
 	switch status {
-	case http.StatusTooManyRequests, // 429
+	case http.StatusUnauthorized, // 401 渠道级鉴权失败（key 失效）
+		http.StatusForbidden,           // 403 渠道级无权限/资源不可用
+		http.StatusNotFound,            // 404 渠道级模型/资源不存在
+		http.StatusTooManyRequests,     // 429
 		http.StatusInternalServerError, // 500
 		http.StatusBadGateway,          // 502
 		http.StatusServiceUnavailable,  // 503

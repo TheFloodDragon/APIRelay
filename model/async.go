@@ -1,8 +1,10 @@
 package model
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/apirelay/apirelay/common/logger"
 
@@ -81,7 +83,7 @@ func processAsyncTask(t asyncTask) {
 		}
 	}
 	if t.settle != nil {
-		if err := SettleQuota(t.settle.tokenID, t.settle.reserved, t.settle.actual); err != nil {
+		if err := settleWithRetry(t.settle.tokenID, t.settle.reserved, t.settle.actual); err != nil {
 			logger.L().Error("async settle quota failed",
 				zap.Int("token_id", t.settle.tokenID),
 				zap.Int64("reserved", t.settle.reserved),
@@ -90,6 +92,44 @@ func processAsyncTask(t asyncTask) {
 			)
 		}
 	}
+}
+
+const (
+	settleMaxRetries = 3
+	settleRetryDelay = 50 * time.Millisecond
+)
+
+// settleWithRetry 对 SettleQuota 进行有限次退避重试，仅针对 SQLite BUSY/locked 类瞬时错误。
+// 非锁冲突错误（如额度不足）立即返回，不重试。
+func settleWithRetry(tokenID int, reserved, actual int64) error {
+	return retrySettle(func() error { return SettleQuota(tokenID, reserved, actual) })
+}
+
+// retrySettle 对给定结算操作按需退避重试（便于注入测试）。
+func retrySettle(fn func() error) error {
+	var err error
+	for attempt := 0; attempt < settleMaxRetries; attempt++ {
+		if err = fn(); err == nil {
+			return nil
+		}
+		if !isSQLiteBusyErr(err) {
+			return err
+		}
+		time.Sleep(settleRetryDelay)
+	}
+	return err
+}
+
+// isSQLiteBusyErr 判断是否为 SQLite 写锁竞争类瞬时错误（可重试）。
+func isSQLiteBusyErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
+		strings.Contains(msg, "busy") ||
+		strings.Contains(msg, "sqlite_busy")
 }
 
 // enqueue 尝试入队；队列满或 worker 未启动则同步回退。

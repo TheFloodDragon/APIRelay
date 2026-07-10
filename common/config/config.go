@@ -42,6 +42,9 @@ type ServerConfig struct {
 	AdminMaxBodyBytes int64 `yaml:"admin_max_body_bytes"`
 	// CORSAllowedOrigins 管理 CORS allowlist；为空时不主动允许任何 Origin。
 	CORSAllowedOrigins []string `yaml:"cors_allowed_origins"`
+	// TrustedProxies 受信任的反向代理 CIDR/IP 列表；为空时不信任任何代理，
+	// ClientIP 取 RemoteAddr，避免 X-Forwarded-For 伪造绕过登录限速。
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 type DatabaseConfig struct {
@@ -61,7 +64,8 @@ type LogConfig struct {
 }
 
 type RelayConfig struct {
-	// MaxRetries 单次请求跨渠道最大切换次数
+	// MaxRetries 单次请求跨渠道最大切换次数。
+	// 语义：N 次切换 = 最多尝试 N+1 个渠道（首选渠道 + N 个备用渠道）。
 	MaxRetries int `yaml:"max_retries"`
 	// ChannelMaxRetries 单个渠道的重试次数
 	ChannelMaxRetries int `yaml:"channel_max_retries"`
@@ -204,6 +208,7 @@ func (c *Config) Normalize() {
 		c.Server.AdminMaxBodyBytes = DefaultAdminMaxBodyBytes
 	}
 	c.Server.CORSAllowedOrigins = normalizeList(c.Server.CORSAllowedOrigins)
+	c.Server.TrustedProxies = normalizeList(c.Server.TrustedProxies)
 
 	if strings.TrimSpace(c.Database.Driver) == "" {
 		c.Database.Driver = "sqlite"
@@ -287,6 +292,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("APIRELAY_CORS_ALLOWED_ORIGINS"); v != "" {
 		cfg.Server.CORSAllowedOrigins = splitCSV(v)
+	}
+	if v := os.Getenv("APIRELAY_TRUSTED_PROXIES"); v != "" {
+		cfg.Server.TrustedProxies = splitCSV(v)
 	}
 	if v := os.Getenv("APIRELAY_DB_DRIVER"); v != "" {
 		cfg.Database.Driver = v
