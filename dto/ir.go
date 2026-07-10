@@ -46,6 +46,9 @@ type UnifiedToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"` // JSON 字符串
+	// Index 标识该工具调用在一次响应中的稳定序号（流式分片归并所需）。
+	// nil 表示未知（非流式或上游未提供）。跨协议流式时用于区分并正确重组多个并行工具调用。
+	Index *int `json:"index,omitempty"`
 }
 
 // UnifiedTool 统一工具定义。

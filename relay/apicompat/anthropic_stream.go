@@ -47,11 +47,13 @@ func (p *AnthropicStreamParser) Parse(data []byte) (*dto.UnifiedStreamChunk, err
 	case "content_block_start":
 		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
 			p.toolBlocks[ev.Index] = &toolBlockState{id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}
+			idx := ev.Index
 			return &dto.UnifiedStreamChunk{
 				ToolCalls: []dto.UnifiedToolCall{{
 					ID:        ev.ContentBlock.ID,
 					Name:      ev.ContentBlock.Name,
 					Arguments: "",
+					Index:     &idx,
 				}},
 			}, nil
 		}
@@ -66,7 +68,8 @@ func (p *AnthropicStreamParser) Parse(data []byte) (*dto.UnifiedStreamChunk, err
 			return &dto.UnifiedStreamChunk{DeltaText: ev.Delta.Text}, nil
 		case "input_json_delta":
 			ts := p.toolBlocks[ev.Index]
-			tc := dto.UnifiedToolCall{Arguments: ev.Delta.PartialJSON}
+			idx := ev.Index
+			tc := dto.UnifiedToolCall{Arguments: ev.Delta.PartialJSON, Index: &idx}
 			if ts != nil {
 				tc.ID = ts.id
 				tc.Name = ts.name

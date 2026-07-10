@@ -264,12 +264,15 @@ func ParseResponsesStreamEvent(data []byte) (*dto.UnifiedStreamChunk, error) {
 	case "response.output_text.delta":
 		return &dto.UnifiedStreamChunk{DeltaText: ev.Delta}, nil
 	case "response.function_call_arguments.delta":
-		return &dto.UnifiedStreamChunk{ToolCalls: []dto.UnifiedToolCall{{Arguments: ev.Delta}}}, nil
+		idx := ev.OutputIndex
+		return &dto.UnifiedStreamChunk{ToolCalls: []dto.UnifiedToolCall{{Arguments: ev.Delta, Index: &idx}}}, nil
 	case "response.output_item.added":
 		if ev.Item != nil && ev.Item.Type == "function_call" {
+			idx := ev.OutputIndex
 			return &dto.UnifiedStreamChunk{ToolCalls: []dto.UnifiedToolCall{{
-				ID:   ev.Item.CallID,
-				Name: ev.Item.Name,
+				ID:    ev.Item.CallID,
+				Name:  ev.Item.Name,
+				Index: &idx,
 			}}}, nil
 		}
 		return nil, nil

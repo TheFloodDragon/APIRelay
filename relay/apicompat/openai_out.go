@@ -54,6 +54,11 @@ type OpenAIStreamState struct {
 	model   string
 	created int64
 	started bool
+	// toolIndex 将上游工具调用的稳定 index 归一为 0 基连续序号（OpenAI 客户端惯例）。
+	toolIndex map[int]int
+	// toolStarted 记录某归一 index 是否已发过 id/name（后续分片只发 arguments）。
+	toolStarted map[int]bool
+	nextToolIdx int
 }
 
 // NewOpenAIStreamState 创建流式状态。
@@ -61,7 +66,28 @@ func NewOpenAIStreamState(id, model string) *OpenAIStreamState {
 	if id == "" {
 		id = "chatcmpl-stream"
 	}
-	return &OpenAIStreamState{id: id, model: model, created: time.Now().Unix()}
+	return &OpenAIStreamState{
+		id:          id,
+		model:       model,
+		created:     time.Now().Unix(),
+		toolIndex:   make(map[int]int),
+		toolStarted: make(map[int]bool),
+	}
+}
+
+// normalizeToolIdx 将上游稳定 index 映射为 0 基连续序号。无 index 时按出现顺序分配。
+func (s *OpenAIStreamState) normalizeToolIdx(upstream *int) int {
+	key := -1
+	if upstream != nil {
+		key = *upstream
+	}
+	if idx, ok := s.toolIndex[key]; ok {
+		return idx
+	}
+	idx := s.nextToolIdx
+	s.nextToolIdx++
+	s.toolIndex[key] = idx
+	return idx
 }
 
 // Chunk 将统一增量序列化为一条 OpenAI SSE chunk 的 JSON（不含 "data: "）。
@@ -74,13 +100,19 @@ func (s *OpenAIStreamState) Chunk(c *dto.UnifiedStreamChunk) []byte {
 	}
 	delta.Content = c.DeltaText
 	for _, tc := range c.ToolCalls {
-		idx := 0
-		delta.ToolCalls = append(delta.ToolCalls, dto.OpenAIToolCall{
-			ID:       tc.ID,
+		idx := s.normalizeToolIdx(tc.Index)
+		outTC := dto.OpenAIToolCall{
 			Type:     "function",
 			Index:    &idx,
-			Function: dto.OpenAIToolCallFunc{Name: tc.Name, Arguments: tc.Arguments},
-		})
+			Function: dto.OpenAIToolCallFunc{Arguments: tc.Arguments},
+		}
+		// 仅在该工具调用首个分片发送 id/name，避免逐片重复。
+		if !s.toolStarted[idx] {
+			s.toolStarted[idx] = true
+			outTC.ID = tc.ID
+			outTC.Function.Name = tc.Name
+		}
+		delta.ToolCalls = append(delta.ToolCalls, outTC)
 	}
 
 	choice := dto.OpenAIChoice{Index: 0, Delta: delta}

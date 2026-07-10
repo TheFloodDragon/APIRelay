@@ -235,11 +235,17 @@ func ParseOpenAIStreamChunk(data []byte) (*dto.UnifiedStreamChunk, error) {
 		if ch.Delta != nil {
 			out.DeltaText = ch.Delta.Content
 			for _, tc := range ch.Delta.ToolCalls {
-				out.ToolCalls = append(out.ToolCalls, dto.UnifiedToolCall{
+				call := dto.UnifiedToolCall{
 					ID:        tc.ID,
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
-				})
+				}
+				// 保留 OpenAI 流式 tool_calls 的 index，用于跨协议正确重组并行调用。
+				if tc.Index != nil {
+					idx := *tc.Index
+					call.Index = &idx
+				}
+				out.ToolCalls = append(out.ToolCalls, call)
 			}
 		}
 		if ch.FinishReason != nil {

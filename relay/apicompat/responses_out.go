@@ -70,6 +70,9 @@ type ResponsesStreamState struct {
 	started bool
 	usage   dto.Usage
 	content string
+	// toolItems 记录已经通过 output_item.added 声明过的工具调用（上游 index key -> 已声明）。
+	toolItems map[int]bool
+	nextOutIx int
 }
 
 // NewResponsesStreamState 创建状态机。
@@ -77,7 +80,7 @@ func NewResponsesStreamState(id, model string) *ResponsesStreamState {
 	if id == "" {
 		id = "resp_relay_stream"
 	}
-	return &ResponsesStreamState{id: id, model: model}
+	return &ResponsesStreamState{id: id, model: model, toolItems: make(map[int]bool)}
 }
 
 // Begin 返回 response.created / response.in_progress 事件。
@@ -111,6 +114,32 @@ func (s *ResponsesStreamState) Delta(c *dto.UnifiedStreamChunk) []ResponsesSSEEv
 			OutputIndex: 0,
 			Delta:       c.DeltaText,
 		}))
+	}
+	for _, tc := range c.ToolCalls {
+		key := toolIndexKey(tc.Index)
+		if !s.toolItems[key] {
+			// 首次见到该工具调用：声明 output_item.added(function_call)。
+			s.toolItems[key] = true
+			outIx := s.nextOutIx
+			s.nextOutIx++
+			events = append(events, marshalResponsesEvent("response.output_item.added", dto.ResponsesStreamEvent{
+				Type:        "response.output_item.added",
+				OutputIndex: outIx,
+				Item: &dto.ResponsesOutput{
+					Type:   "function_call",
+					CallID: tc.ID,
+					Name:   tc.Name,
+					Status: "in_progress",
+				},
+			}))
+		}
+		if tc.Arguments != "" {
+			events = append(events, marshalResponsesEvent("response.function_call_arguments.delta", dto.ResponsesStreamEvent{
+				Type:        "response.function_call_arguments.delta",
+				OutputIndex: 0,
+				Delta:       tc.Arguments,
+			}))
+		}
 	}
 	if c.Usage != nil {
 		s.usage = *c.Usage
