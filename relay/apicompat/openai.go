@@ -126,7 +126,10 @@ func BuildOpenAIRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.OpenA
 			Name:       m.Name,
 			ToolCallID: m.ToolCallID,
 		}
-		if m.Content != "" {
+		// 多模态：含图片等 parts 时输出 OpenAI content 数组，避免丢弃图片（A6）。
+		if len(m.Parts) > 0 {
+			om.Content = buildOpenAIMultimodalContent(m)
+		} else if m.Content != "" {
 			c, _ := json.Marshal(m.Content)
 			om.Content = c
 		}
@@ -153,6 +156,37 @@ func BuildOpenAIRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.OpenA
 		})
 	}
 	return req
+}
+
+// buildOpenAIMultimodalContent 将统一多模态 parts 序列化为 OpenAI content 数组
+// （[{type:"text",text}, {type:"image_url",image_url:{url}}]），保留图片输入。
+func buildOpenAIMultimodalContent(m dto.UnifiedMessage) json.RawMessage {
+	type imageURL struct {
+		URL string `json:"url"`
+	}
+	type part struct {
+		Type     string    `json:"type"`
+		Text     string    `json:"text,omitempty"`
+		ImageURL *imageURL `json:"image_url,omitempty"`
+	}
+	arr := make([]part, 0, len(m.Parts))
+	for _, p := range m.Parts {
+		switch p.Type {
+		case "text":
+			arr = append(arr, part{Type: "text", Text: p.Text})
+		case "image_url":
+			if p.ImageURL != "" {
+				arr = append(arr, part{Type: "image_url", ImageURL: &imageURL{URL: p.ImageURL}})
+			}
+		}
+	}
+	if len(arr) == 0 {
+		// 无可用 parts 时回退纯文本，避免发出空数组。
+		c, _ := json.Marshal(m.Content)
+		return c
+	}
+	b, _ := json.Marshal(arr)
+	return b
 }
 
 // OpenAIResponseToIR 将 OpenAI 非流式响应转为统一响应。

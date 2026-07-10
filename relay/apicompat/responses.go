@@ -153,7 +153,7 @@ func BuildResponsesRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.Re
 				items = append(items, dto.ResponsesInputItem{
 					Type:    "message",
 					Role:    "assistant",
-					Content: responsesTextContent("output_text", m.Content),
+					Content: responsesMessageContent("output_text", m),
 				})
 			}
 			for _, tc := range m.ToolCalls {
@@ -168,7 +168,7 @@ func BuildResponsesRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.Re
 			items = append(items, dto.ResponsesInputItem{
 				Type:    "message",
 				Role:    orDefault(string(m.Role), "user"),
-				Content: responsesTextContent("input_text", m.Content),
+				Content: responsesMessageContent("input_text", m),
 			})
 		}
 	}
@@ -188,6 +188,31 @@ func BuildResponsesRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.Re
 
 func responsesTextContent(typ, text string) json.RawMessage {
 	parts := []dto.ResponsesContentPart{{Type: typ, Text: text}}
+	b, _ := json.Marshal(parts)
+	return b
+}
+
+// responsesMessageContent 构造 Responses 消息 content 数组，支持多模态图片（A6）。
+// textType 为该角色的文本块类型（用户 input_text / 助手 output_text）。
+// 无 parts 时回退为单个文本块。
+func responsesMessageContent(textType string, m dto.UnifiedMessage) json.RawMessage {
+	if len(m.Parts) == 0 {
+		return responsesTextContent(textType, m.Content)
+	}
+	parts := make([]dto.ResponsesContentPart, 0, len(m.Parts))
+	for _, p := range m.Parts {
+		switch p.Type {
+		case "text":
+			parts = append(parts, dto.ResponsesContentPart{Type: textType, Text: p.Text})
+		case "image_url":
+			if p.ImageURL != "" {
+				parts = append(parts, dto.ResponsesContentPart{Type: "input_image", ImageURL: p.ImageURL})
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return responsesTextContent(textType, m.Content)
+	}
 	b, _ := json.Marshal(parts)
 	return b
 }
