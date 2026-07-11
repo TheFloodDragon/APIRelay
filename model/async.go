@@ -37,29 +37,38 @@ var (
 	asyncWG      sync.WaitGroup
 	asyncRunning atomic.Bool
 	asyncStop    chan struct{}
+	asyncStartMu sync.Mutex
 )
 
 const asyncQueueSize = 4096
 
 // StartAsyncWorker 启动后台异步 worker（幂等）。
 func StartAsyncWorker() {
-	if asyncRunning.Swap(true) {
+	// 用互斥锁串行化 start/stop，并在翻转 running 标志前完成队列创建：
+	// enqueue 只有在 asyncRunning.Load()==true 时才读 asyncQueue，
+	// 而该变量的写入受同一把锁保护并先于 Swap(true) 完成，避免非同步的并发读写。
+	asyncStartMu.Lock()
+	defer asyncStartMu.Unlock()
+	if asyncRunning.Load() {
 		return
 	}
-	asyncQueue = make(chan asyncTask, asyncQueueSize)
-	asyncStop = make(chan struct{})
+	queue := make(chan asyncTask, asyncQueueSize)
+	stop := make(chan struct{})
+	asyncQueue = queue
+	asyncStop = stop
+	asyncRunning.Store(true)
 	asyncWG.Add(1)
 	go func() {
 		defer asyncWG.Done()
 		for {
 			select {
-			case t := <-asyncQueue:
+			case t := <-queue:
 				processAsyncTask(t)
-			case <-asyncStop:
+			case <-stop:
 				// 排空剩余任务后退出
 				for {
 					select {
-					case t := <-asyncQueue:
+					case t := <-queue:
 						processAsyncTask(t)
 					default:
 						return
@@ -73,9 +82,12 @@ func StartAsyncWorker() {
 
 // StopAsyncWorker 停止 worker 并 flush 剩余任务。
 func StopAsyncWorker() {
-	if !asyncRunning.Swap(false) {
+	asyncStartMu.Lock()
+	defer asyncStartMu.Unlock()
+	if !asyncRunning.Load() {
 		return
 	}
+	asyncRunning.Store(false)
 	close(asyncStop)
 	asyncWG.Wait()
 	logger.L().Info("async worker stopped")

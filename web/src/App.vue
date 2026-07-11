@@ -22,13 +22,15 @@ function bindToast(instance) {
   toastRef.value = instance
 }
 
+let runtimeSeq = 0
 async function loadRuntimeState() {
   if (!localStorage.getItem('apirelay_session')) return
+  const seq = ++runtimeSeq
   try {
     await api.get('/settings/logging')
-    serviceOnline.value = true
+    if (seq === runtimeSeq) serviceOnline.value = true
   } catch {
-    serviceOnline.value = false
+    if (seq === runtimeSeq) serviceOnline.value = false
   }
 }
 

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, getCurrentInstance, onMounted, ref } from 'vue'
 import api, { copyText } from '../api'
+import { DEFAULT_HEALTH_CONFIG, hasHealth, healthTotal, healthText, healthTitle, healthClass as healthClassBy } from '../health'
 import Modal from '../components/Modal.vue'
 import PageState from '../components/PageState.vue'
 import HeaderOverrideEditor from '../components/HeaderOverrideEditor.vue'
@@ -43,7 +44,7 @@ const checkupSummary = ref(null)
 
 const selectedIds = ref(new Set())
 const globalTestPrompt = ref("Say 'hi' in one word.")
-const healthConfig = ref({ recent_count: 100, window_hours: 24, healthy_threshold: 95, warning_threshold: 70 })
+const healthConfig = ref({ ...DEFAULT_HEALTH_CONFIG })
 const bulkDeleting = ref(false)
 
 const togglingIds = ref(new Set())
@@ -84,7 +85,6 @@ const sortedChannels = computed(() => {
     return haystack.includes(query)
   })
 })
-const allSelected = computed(() => sortedChannels.value.length > 0 && sortedChannels.value.every((channel) => selectedIds.value.has(channel.id)))
 const canReorder = computed(() => statusFilter.value === 'all' && !channelQuery.value.trim())
 const channelSummary = computed(() => channels.value.reduce((summary, channel) => {
   const state = breakerState(channel)
@@ -135,37 +135,9 @@ function modelHealth(channel, item) {
   return channel?.model_health?.[item?.name] || null
 }
 
-function healthTotal(health) {
-  return Number(health?.total) || 0
-}
-
-function hasHealth(health) {
-  return healthTotal(health) > 0
-}
-
-function healthPercent(health) {
-  if (!hasHealth(health)) return 0
-  return Math.round((Number(health.availability) || 0) * 10) / 10
-}
-
+// 依据当前设置阈值返回健康 chip class。
 function healthClass(health) {
-  if (!hasHealth(health)) return ''
-  const percent = healthPercent(health)
-  if (percent >= Number(healthConfig.value.healthy_threshold || 95)) return 'chip-run'
-  if (percent >= Number(healthConfig.value.warning_threshold || 70)) return 'chip-test'
-  return 'chip-trip'
-}
-
-function healthText(health) {
-  if (!hasHealth(health)) return '未调用'
-  return `${healthPercent(health)}% · ${Number(health.success) || 0}/${healthTotal(health)}`
-}
-
-function healthTitle(health) {
-  if (!hasHealth(health)) return '尚无真实调用日志'
-  const parts = [`成功 ${Number(health.success) || 0}`, `失败 ${Number(health.failed) || 0}`]
-  if (health.last_error) parts.push(health.last_error)
-  return parts.join(' · ')
+  return healthClassBy(health, healthConfig.value)
 }
 
 function channelHealth(channel) {
@@ -210,13 +182,6 @@ function updateSet(target, value, active) {
   if (active) next.add(value)
   else next.delete(value)
   target.value = next
-}
-
-function maskedKey(key) {
-  const value = String(key || '')
-  if (!value) return '未配置'
-  if (value.length <= 10) return `${value.slice(0, 3)}••••`
-  return `${value.slice(0, 6)}••••${value.slice(-4)}`
 }
 
 async function copyKey(channel) {
@@ -606,13 +571,6 @@ function toggleSelected(channelId) {
   const next = new Set(selectedIds.value)
   if (next.has(channelId)) next.delete(channelId)
   else next.add(channelId)
-  selectedIds.value = next
-}
-
-function toggleSelectAll() {
-  const next = new Set(selectedIds.value)
-  if (allSelected.value) sortedChannels.value.forEach((channel) => next.delete(channel.id))
-  else sortedChannels.value.forEach((channel) => next.add(channel.id))
   selectedIds.value = next
 }
 

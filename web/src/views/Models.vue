@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, getCurrentInstance } from 'vue'
 import api, { fmtTime } from '../api'
+import { DEFAULT_HEALTH_CONFIG, hasHealth, healthTotal, healthText, healthTitle, healthClass as healthClassBy } from '../health'
 import StatCell from '../components/StatCell.vue'
 import PageState from '../components/PageState.vue'
 
@@ -10,7 +11,7 @@ const loading = ref(true)
 const error = ref('')
 const q = ref('')
 const expandedModels = ref(new Set())
-const healthConfig = ref({ recent_count: 100, window_hours: 24, healthy_threshold: 95, warning_threshold: 70 })
+const healthConfig = ref({ ...DEFAULT_HEALTH_CONFIG })
 
 const filtered = computed(() => {
   const keyword = q.value.trim().toLowerCase()
@@ -68,38 +69,9 @@ function upstreamSummary(model) {
   return names.length > 3 ? `${visible} 等 ${names.length} 个` : visible
 }
 
-function healthTotal(health) {
-  return Number(health?.total) || 0
-}
-
-function hasHealth(health) {
-  return healthTotal(health) > 0
-}
-
-function healthPercent(health) {
-  if (!hasHealth(health)) return 0
-  return Math.round((Number(health.availability) || 0) * 10) / 10
-}
-
-function healthText(health) {
-  if (!hasHealth(health)) return '未调用'
-  return `${healthPercent(health)}% · ${Number(health.success) || 0}/${healthTotal(health)}`
-}
-
+// 依据当前设置阈值返回健康 chip class。
 function healthClass(health) {
-  if (!hasHealth(health)) return ''
-  const percent = healthPercent(health)
-  if (percent >= Number(healthConfig.value.healthy_threshold || 95)) return 'chip-run'
-  if (percent >= Number(healthConfig.value.warning_threshold || 70)) return 'chip-test'
-  return 'chip-trip'
-}
-
-function healthTitle(health) {
-  if (!hasHealth(health)) return '尚无真实调用日志'
-  const parts = [`成功 ${Number(health.success) || 0}`, `失败 ${Number(health.failed) || 0}`]
-  if (health.last_failure_at) parts.push(`最近失败 ${fmtTime(health.last_failure_at)}`)
-  if (health.last_error) parts.push(health.last_error)
-  return parts.join(' · ')
+  return healthClassBy(health, healthConfig.value)
 }
 
 function isExpanded(model) {

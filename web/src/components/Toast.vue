@@ -1,19 +1,30 @@
 <script setup>
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 
 const toasts = ref([])
+const timers = new Map()
 let seq = 0
 
 const add = (msg, type = 'info', duration = 3200) => {
   const id = ++seq
   toasts.value.push({ id, msg: String(msg ?? ''), type })
-  if (duration > 0) setTimeout(() => remove(id), duration)
+  if (duration > 0) timers.set(id, window.setTimeout(() => remove(id), duration))
   return id
 }
 
 const remove = (id) => {
+  const timer = timers.get(id)
+  if (timer) {
+    window.clearTimeout(timer)
+    timers.delete(id)
+  }
   toasts.value = toasts.value.filter((toast) => toast.id !== id)
 }
+
+onBeforeUnmount(() => {
+  timers.forEach((timer) => window.clearTimeout(timer))
+  timers.clear()
+})
 
 const meta = {
   success: { label: '成功', mark: '✓', cls: 'border-run/20 bg-run-wash', markCls: 'bg-run text-white' },

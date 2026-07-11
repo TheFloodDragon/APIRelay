@@ -105,6 +105,9 @@ func UpdateChannel(c *gin.Context) {
 	}
 	in.Id = existing.Id
 	in.CreatedAt = existing.CreatedAt
+	// 运行时字段由后端维护，编辑表单不回传，需从 existing 恢复，避免被 Save 全字段覆盖清零。
+	in.CooldownUntil = existing.CooldownUntil
+	in.Priority = existing.Priority
 	if err := model.UpdateChannel(&in); err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return

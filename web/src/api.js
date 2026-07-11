@@ -100,12 +100,28 @@ export function usd(microUSD) {
   return '$' + v.toFixed(4)
 }
 
+/** 微美元 → 美元字符串；零值返回破折号（用于列表留白） */
+export function cost(microUSD) {
+  if (!microUSD) return '—'
+  return usd(microUSD)
+}
+
 /** 毫秒时间戳 → "MM-DD HH:mm:ss" */
 export function fmtTime(ms) {
   if (!ms) return '—'
   const d = new Date(ms)
+  if (Number.isNaN(d.getTime())) return '—'
   const p = (n) => String(n).padStart(2, '0')
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** 毫秒时间戳 → "MM-DD HH:mm"（无秒，用于概览） */
+export function fmtTimeShort(ms) {
+  if (!ms) return '—'
+  const d = new Date(ms)
+  if (Number.isNaN(d.getTime())) return '—'
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 export { TOKEN_KEY }

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, getCurrentInstance, onMounted, ref } from 'vue'
-import api, { copyText, takeLatest } from '../api'
+import api, { copyText, takeLatest, fmtTime as fmt, cost } from '../api'
 import Drawer from '../components/Drawer.vue'
 import PageState from '../components/PageState.vue'
 
@@ -59,16 +59,7 @@ const moreFilterCount = computed(() => ['request_id', 'upstream_request_id', 'ch
 
 const fetchLogs = takeLatest((params) => api.get('/logs', { params }))
 
-function fmt(ms) {
-  if (!ms) return '—'
-  const date = new Date(ms)
-  const pad = (value) => String(value).padStart(2, '0')
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-}
-
-function cost(micro) {
-  return micro ? `$${(micro / 1_000_000).toFixed(4)}` : '—'
-}
+// fmt（=api.js fmtTime 别名）与 cost 复用 api.js 公共实现。
 
 function formatBytes(value) {
   const bytes = Number(value) || 0

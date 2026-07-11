@@ -1,15 +1,39 @@
 <script setup>
-import { ref } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 
 const open = ref(false)
+const root = ref(null)
 
 function closeSoon() {
   window.setTimeout(() => { open.value = false }, 0)
 }
+
+function onDocPointer(event) {
+  if (root.value && !root.value.contains(event.target)) open.value = false
+}
+
+function onDocKeydown(event) {
+  if (event.key === 'Escape') open.value = false
+}
+
+watch(open, (isOpen) => {
+  if (isOpen) {
+    document.addEventListener('mousedown', onDocPointer)
+    document.addEventListener('keydown', onDocKeydown)
+  } else {
+    document.removeEventListener('mousedown', onDocPointer)
+    document.removeEventListener('keydown', onDocKeydown)
+  }
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocPointer)
+  document.removeEventListener('keydown', onDocKeydown)
+})
 </script>
 
 <template>
-  <div class="relative inline-block text-left">
+  <div ref="root" class="relative inline-block text-left">
     <button
       type="button"
       class="btn btn-sm"
