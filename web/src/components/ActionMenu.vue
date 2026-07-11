@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 const open = ref(false)
 const root = ref(null)
@@ -9,26 +9,22 @@ function closeSoon() {
 }
 
 function onDocPointer(event) {
-  if (root.value && !root.value.contains(event.target)) open.value = false
+  if (open.value && root.value && !root.value.contains(event.target)) open.value = false
 }
 
 function onDocKeydown(event) {
-  if (event.key === 'Escape') open.value = false
+  if (open.value && event.key === 'Escape') open.value = false
 }
 
-watch(open, (isOpen) => {
-  if (isOpen) {
-    document.addEventListener('mousedown', onDocPointer)
-    document.addEventListener('keydown', onDocKeydown)
-  } else {
-    document.removeEventListener('mousedown', onDocPointer)
-    document.removeEventListener('keydown', onDocKeydown)
-  }
+onMounted(() => {
+  // 捕获阶段监听 pointerdown，兼容鼠标、触摸与内部组件阻止冒泡的场景。
+  document.addEventListener('pointerdown', onDocPointer, true)
+  document.addEventListener('keydown', onDocKeydown, true)
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', onDocPointer)
-  document.removeEventListener('keydown', onDocKeydown)
+  document.removeEventListener('pointerdown', onDocPointer, true)
+  document.removeEventListener('keydown', onDocKeydown, true)
 })
 </script>
 

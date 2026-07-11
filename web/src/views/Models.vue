@@ -47,19 +47,14 @@ function upstreamName(model, provider) {
   return provider.upstream || model.name
 }
 
-function protocolEntries(model) {
+function dominantProtocol(model) {
   const counts = new Map()
   providersFor(model).forEach((provider) => {
     const protocol = provider.protocol || '未指定'
     counts.set(protocol, (counts.get(protocol) || 0) + 1)
   })
-  return [...counts.entries()].map(([name, count]) => ({ name, count }))
-}
-
-function protocolSummary(model) {
-  const entries = protocolEntries(model)
-  if (!entries.length) return '—'
-  return entries.map(({ name, count }) => `${name} ${count}`).join(' · ')
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  return entries[0]?.[0] || '—'
 }
 
 function upstreamSummary(model) {
@@ -112,7 +107,7 @@ onMounted(load)
       <div>
         <div class="eyebrow">模型管理</div>
         <h1 class="page-title">模型与渠道绑定</h1>
-        <p class="page-description">按最近使用时间排列，查看模型的可用渠道、真实调用健康、协议分布和上游映射。</p>
+        <p class="page-description">按最近使用时间排列，查看模型的可用渠道、真实调用健康、主要协议和上游映射。</p>
       </div>
       <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
         <label class="min-w-0 sm:w-64">
@@ -158,7 +153,7 @@ onMounted(load)
                   <th class="w-[13%]">最近使用</th>
                   <th class="w-[12%]">可用渠道</th>
                   <th class="w-[14%]">调用健康</th>
-                  <th class="w-[17%]">协议分布</th>
+                  <th class="w-[17%]">协议</th>
                   <th class="w-[19%]">上游映射</th>
                 </tr>
               </thead>
@@ -173,7 +168,9 @@ onMounted(load)
                         :aria-label="`${isExpanded(model) ? '收起' : '展开'}模型 ${model.name} 的渠道绑定`"
                         @click="toggleModel(model)"
                       >
-                        <span class="w-4 shrink-0 text-center text-soft" aria-hidden="true">{{ isExpanded(model) ? '−' : '+' }}</span>
+                        <span class="model-disclosure" :class="{ 'model-disclosure-open': isExpanded(model) }" aria-hidden="true">
+                          <svg viewBox="0 0 16 16"><path d="m5.5 3.5 4.5 4.5-4.5 4.5" /></svg>
+                        </span>
                         <span class="min-w-0">
                           <span class="block break-words font-mono text-[13px] font-medium text-ink">{{ model.name }}</span>
                           <span class="mt-1 block text-xs text-soft">{{ providersFor(model).length }} 个渠道绑定</span>
@@ -189,7 +186,7 @@ onMounted(load)
                       </span>
                     </td>
                     <td><span class="chip" :class="healthClass(model.health)" :title="healthTitle(model.health)">{{ healthText(model.health) }}</span></td>
-                    <td class="break-words text-sm text-ink">{{ protocolSummary(model) }}</td>
+                    <td class="break-words text-sm text-ink">{{ dominantProtocol(model) }}</td>
                     <td class="break-words font-mono text-xs text-ink" :title="providersFor(model).map((provider) => upstreamName(model, provider)).join('、')">
                       {{ upstreamSummary(model) }}
                     </td>
@@ -219,7 +216,29 @@ onMounted(load)
                       <div v-else class="px-6 py-4 text-sm text-soft">暂无渠道绑定。</div>
                     </td>
                   </tr>
-                </template>
+</template>
+
+<style scoped>
+.model-disclosure {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #dde4ed;
+  border-radius: 7px;
+  background: #fff;
+  color: #627087;
+  box-shadow: 0 1px 2px rgba(22, 36, 58, .04);
+  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
+}
+.model-disclosure svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform 180ms cubic-bezier(.2,.8,.2,1); }
+button:hover .model-disclosure { color: #3564d4; border-color: #b9c9ee; background: #edf2ff; }
+.model-disclosure-open { color: #3564d4; border-color: #b9c9ee; background: #edf2ff; }
+.model-disclosure-open svg { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .model-disclosure, .model-disclosure svg { transition: none; } }
+</style>
               </tbody>
             </table>
           </div>
@@ -237,7 +256,9 @@ onMounted(load)
                   <span class="block break-words font-mono text-[13px] font-medium text-ink">{{ model.name }}</span>
                   <span class="mt-1 block text-xs text-soft">{{ providersFor(model).length }} 个渠道绑定</span>
                 </span>
-                <span class="shrink-0 text-lg leading-5 text-soft" aria-hidden="true">{{ isExpanded(model) ? '−' : '+' }}</span>
+                <span class="model-disclosure shrink-0" :class="{ 'model-disclosure-open': isExpanded(model) }" aria-hidden="true">
+                  <svg viewBox="0 0 16 16"><path d="m5.5 3.5 4.5 4.5-4.5 4.5" /></svg>
+                </span>
               </button>
 
               <dl class="space-y-3 border-t border-line px-4 py-3">
@@ -254,8 +275,8 @@ onMounted(load)
                   <dd><span class="chip" :class="healthClass(model.health)" :title="healthTitle(model.health)">{{ healthText(model.health) }}</span></dd>
                 </div>
                 <div class="mobile-kv">
-                  <dt>协议分布</dt>
-                  <dd class="break-words">{{ protocolSummary(model) }}</dd>
+                  <dt>协议</dt>
+                  <dd class="break-words">{{ dominantProtocol(model) }}</dd>
                 </div>
                 <div class="mobile-kv">
                   <dt>上游映射</dt>

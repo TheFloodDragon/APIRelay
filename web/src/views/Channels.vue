@@ -23,6 +23,7 @@ const probing = ref(false)
 const saving = ref(false)
 const editorError = ref('')
 const editorTab = ref('connection')
+const revealKey = ref(false)
 const headerValidation = ref({ valid: true, error: '', allowedCount: 0, ignored: [] })
 const bodyValidation = ref({ valid: true, error: '', keyCount: 0, ignored: [] })
 const models = ref([])
@@ -126,6 +127,11 @@ const editorSteps = computed(() => ({
   models: enabledCount.value > 0,
   routing: headerValidation.value.valid && bodyValidation.value.valid,
 }))
+const activeEditor = computed(() => ({
+  connection: { index: '01', title: '连接与凭据', note: '定义渠道身份及上游接入方式。' },
+  models: { index: '02', title: '模型工作台', note: '维护模型、映射、协议和计价。' },
+  routing: { index: '03', title: '流量策略与请求复写', note: '控制权重、协议匹配和上游请求内容。' },
+}[editorTab.value]))
 const customHeaderCount = computed(() => headerValidation.value.valid ? headerValidation.value.allowedCount : 0)
 const checkupRate = computed(() => {
   const summary = checkupSummary.value
@@ -303,6 +309,7 @@ function parseRules(channel) {
 function resetEditorState() {
   editorError.value = ''
   editorTab.value = 'connection'
+  revealKey.value = false
   newModelName.value = ''
   testing.value = {}
   testResults.value = {}
@@ -748,7 +755,7 @@ onMounted(() => {
           {{ loading ? '刷新中' : '刷新' }}
         </button>
         <button type="button" class="btn btn-primary" :disabled="metadataLoading" aria-label="新建渠道" @click="openCreate">
-          ＋ 新建渠道
+          新建渠道
         </button>
       </div>
     </header>
@@ -860,9 +867,9 @@ onMounted(() => {
                 <button type="button" class="channel-switch" :class="{ 'channel-switch-on': channel.status === 1 }" :disabled="togglingIds.has(channel.id)" :aria-pressed="channel.status === 1" :aria-label="`${channel.status === 1 ? '停用' : '启用'}渠道 ${channel.name}`" @click="toggleChannel(channel)"><span aria-hidden="true"></span></button>
               </div>
               <div class="flex items-center gap-1.5">
-                <button v-if="breakerState(channel) === 'trip'" type="button" class="btn btn-danger btn-sm whitespace-nowrap" :disabled="resettingIds.has(channel.id)" :aria-label="`熔断器重置 ${channel.name}`" @click="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '处理中' : '重置' }}</button>
                 <button type="button" class="btn btn-primary btn-sm whitespace-nowrap" :aria-label="`管理渠道 ${channel.name}`" @click="openEdit(channel)">管理</button>
                 <ActionMenu>
+                  <button v-if="breakerState(channel) === 'trip'" role="menuitem" type="button" class="text-trip" :disabled="resettingIds.has(channel.id)" @click.stop="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '解除中' : '解除熔断' }}</button>
                   <button role="menuitem" type="button" :disabled="checkupLoadingId !== null" @click.stop="checkupChannel(channel)">{{ checkupLoadingId === channel.id ? '检查中' : '运行检查' }}</button>
                   <button role="menuitem" type="button" :disabled="togglingIds.has(channel.id)" @click.stop="toggleChannel(channel)">{{ togglingIds.has(channel.id) ? '切换中' : channel.status === 1 ? '停用渠道' : '启用渠道' }}</button>
                   <button role="menuitem" type="button" class="text-trip" :disabled="deletingIds.has(channel.id)" @click.stop="removeChannel(channel)">{{ deletingIds.has(channel.id) ? '删除中' : '删除渠道' }}</button>
@@ -898,21 +905,40 @@ onMounted(() => {
       :persistent="editorBusy"
       @close="closeEditor"
     >
-      <div class="min-w-0 space-y-4">
-        <div class="editor-tabs" role="tablist" aria-label="渠道配置">
+      <div class="channel-editor min-w-0">
+        <div class="editor-mobile-nav" role="tablist" aria-label="渠道配置">
           <button type="button" role="tab" :aria-selected="editorTab === 'connection'" @click="editorTab = 'connection'"><span class="editor-step" :class="editorSteps.connection ? 'editor-step-done' : ''">1</span><span>连接</span></button>
-          <span class="editor-connector" aria-hidden="true"></span>
           <button type="button" role="tab" :aria-selected="editorTab === 'models'" @click="editorTab = 'models'"><span class="editor-step" :class="editorSteps.models ? 'editor-step-done' : ''">2</span><span>模型</span></button>
-          <span class="editor-connector" aria-hidden="true"></span>
-          <button type="button" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'"><span class="editor-step" :class="editorSteps.routing ? 'editor-step-done' : 'editor-step-warn'">3</span><span>路由与复写</span></button>
+          <button type="button" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'"><span class="editor-step" :class="editorSteps.routing ? 'editor-step-done' : 'editor-step-warn'">3</span><span>路由</span></button>
         </div>
-        <section v-show="editorTab === 'connection'" class="rounded-xl border border-line bg-white" aria-labelledby="nameplate-heading">
-          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
-            <div>
-              <div id="nameplate-heading" class="dim-title">连接设置</div>
-              <div class="mt-0.5 text-[12px] text-soft">配置渠道名称、地址和访问凭据。</div>
+
+        <div class="editor-layout">
+          <aside class="editor-sidebar" aria-label="渠道配置导航">
+            <div class="editor-device-mark">
+              <span class="channel-state-dot" :class="form.status === 1 ? 'channel-state-run' : 'channel-state-off'" aria-hidden="true"><i></i></span>
+              <div class="min-w-0"><b>{{ form.name || '未命名渠道' }}</b><span>{{ form.id ? `CHANNEL ${form.id}` : 'NEW CHANNEL' }}</span></div>
             </div>
-            <span class="chip" :class="form.status === 1 ? 'chip-run' : ''">{{ form.status === 1 ? '启用' : '停用' }}</span>
+            <nav class="editor-side-nav" role="tablist" aria-label="渠道配置阶段">
+              <button type="button" role="tab" :aria-selected="editorTab === 'connection'" @click="editorTab = 'connection'"><span class="editor-nav-index">01</span><span><b>连接与凭据</b><small>{{ editorSteps.connection ? '已配置' : '需要完善' }}</small></span><i :class="editorSteps.connection ? 'is-done' : ''"></i></button>
+              <button type="button" role="tab" :aria-selected="editorTab === 'models'" @click="editorTab = 'models'"><span class="editor-nav-index">02</span><span><b>模型工作台</b><small>{{ enabledCount }} 个已启用</small></span><i :class="editorSteps.models ? 'is-done' : ''"></i></button>
+              <button type="button" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'"><span class="editor-nav-index">03</span><span><b>路由与复写</b><small>{{ editorSteps.routing ? '校验通过' : '存在错误' }}</small></span><i :class="editorSteps.routing ? 'is-done' : 'is-error'"></i></button>
+            </nav>
+            <div class="editor-summary">
+              <span>配置摘要</span>
+              <dl><div><dt>协议</dt><dd>{{ typeName(form.type) }}</dd></div><div><dt>模型</dt><dd>{{ enabledCount }} / {{ models.length }}</dd></div><div><dt>权重</dt><dd>×{{ form.weight || 1 }}</dd></div><div><dt>请求头</dt><dd>{{ customHeaderCount }}</dd></div></dl>
+            </div>
+          </aside>
+
+          <main class="editor-workspace">
+            <header class="editor-workspace-head">
+              <div><span>{{ activeEditor.index }}</span><h3>{{ activeEditor.title }}</h3><p>{{ activeEditor.note }}</p></div>
+              <span class="chip" :class="editorSteps[editorTab] ? 'chip-run' : 'chip-test'">{{ editorSteps[editorTab] ? '配置就绪' : '等待完善' }}</span>
+            </header>
+            <div class="editor-workspace-body">
+        <section v-show="editorTab === 'connection'" class="editor-panel" aria-labelledby="nameplate-heading">
+          <div class="editor-section-head">
+            <div><div id="nameplate-heading" class="dim-title">渠道身份</div><div class="mt-0.5 text-[12px] text-soft">用于路由识别、分组和默认协议判断。</div></div>
+            <label class="inline-flex items-center gap-2 text-xs text-soft"><span>{{ form.status === 1 ? '已启用' : '已停用' }}</span><button type="button" class="channel-switch" :class="{ 'channel-switch-on': form.status === 1 }" :aria-pressed="form.status === 1" @click="form.status = form.status === 1 ? 0 : 1"><span></span></button></label>
           </div>
           <div class="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
             <div class="xl:col-span-2">
@@ -939,7 +965,7 @@ onMounted(() => {
                 <input
                   id="channel-key"
                   v-model="form.key"
-                  type="text"
+                  :type="revealKey ? 'text' : 'password'"
                   class="input input-mono"
                   placeholder="upstream-key"
                   name="apirelay-upstream-key"
@@ -951,6 +977,7 @@ onMounted(() => {
                   data-lpignore="true"
                   data-form-type="other"
                 />
+                <button type="button" class="btn shrink-0" :aria-pressed="revealKey" :aria-label="revealKey ? '隐藏 API Key' : '显示 API Key'" @click="revealKey = !revealKey">{{ revealKey ? '隐藏' : '显示' }}</button>
                 <button type="button" class="btn shrink-0" :disabled="!form.key" aria-label="复制编辑器中的 API Key" @click="copyKey(form)">复制</button>
               </div>
               <p class="mt-1 text-[12px] text-soft">上游凭据按现有数据结构保存；复制操作使用安全上下文与兼容降级。</p>
@@ -963,11 +990,11 @@ onMounted(() => {
           </div>
         </section>
 
-        <section v-show="editorTab === 'models'" class="rounded-xl border border-line bg-white" aria-labelledby="circuits-heading">
-          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
+        <section v-show="editorTab === 'models'" class="editor-panel" aria-labelledby="circuits-heading">
+          <div class="editor-section-head">
             <div>
-              <div id="circuits-heading" class="dim-title">模型配置</div>
-              <div class="mt-0.5 text-[12px] text-soft">维护模型名称、协议、映射和价格。</div>
+              <div id="circuits-heading" class="dim-title">模型清单</div>
+              <div class="mt-0.5 text-[12px] text-soft">{{ enabledCount }} 个启用，共 {{ models.length }} 个配置。</div>
             </div>
             <div class="flex flex-wrap gap-2">
               <button
@@ -1014,7 +1041,7 @@ onMounted(() => {
                 aria-label="新模型名称"
                 @keyup.enter="addModel"
               />
-              <button type="button" class="btn shrink-0" aria-label="添加模型" @click="addModel">＋ 添加模型</button>
+              <button type="button" class="btn shrink-0" aria-label="添加模型" @click="addModel">添加模型</button>
             </div>
 
             <div v-if="models.length" class="hidden border border-line md:block">
@@ -1122,8 +1149,8 @@ onMounted(() => {
           </div>
         </section>
 
-        <div v-show="editorTab === 'routing'" class="grid gap-4 lg:grid-cols-2">
-          <section class="rounded-xl border border-line bg-white" aria-labelledby="rules-heading">
+        <div v-show="editorTab === 'routing'" class="editor-routing-grid">
+          <section class="editor-panel" aria-labelledby="rules-heading">
             <div class="border-b border-line px-3 py-2.5">
               <div id="rules-heading" class="dim-title">协议路由规则</div>
               <div class="mt-0.5 text-[12px] text-soft">按模型名称匹配目标协议。</div>
@@ -1137,11 +1164,11 @@ onMounted(() => {
                 </select>
                 <button type="button" class="btn btn-danger btn-sm" :aria-label="`删除第 ${index + 1} 条协议规则`" @click="rules.splice(index, 1)">删除</button>
               </div>
-              <button type="button" class="btn btn-sm" aria-label="添加协议规则" @click="rules.push({ pattern: '', protocol: 'anthropic' })">＋ 添加规则</button>
+              <button type="button" class="btn btn-sm" aria-label="添加协议规则" @click="rules.push({ pattern: '', protocol: 'anthropic' })">添加规则</button>
             </div>
           </section>
 
-          <section class="rounded-xl border border-line bg-white" aria-labelledby="advanced-heading">
+          <section class="editor-panel" aria-labelledby="advanced-heading">
             <div class="border-b border-line px-3 py-2.5">
               <div id="advanced-heading" class="dim-title">权重与请求复写</div>
               <div class="mt-0.5 text-[12px] text-soft">设置负载权重，并在协议转换后复写发往上游的请求头与请求体。</div>
@@ -1165,8 +1192,11 @@ onMounted(() => {
             </div>
           </section>
         </div>
+            </div>
+          </main>
+        </div>
 
-        <div v-if="editorError" class="border border-trip bg-trip-wash px-3 py-2 text-[13px] text-trip" role="alert">{{ editorError }}</div>
+        <div v-if="editorError" class="mt-3 rounded-lg border border-trip bg-trip-wash px-3 py-2 text-[13px] text-trip" role="alert">{{ editorError }}</div>
       </div>
 
       <template #footer>
@@ -1287,23 +1317,62 @@ onMounted(() => {
 .channel-state-trip { background: #d05a52; box-shadow: 0 0 0 4px rgba(208,90,82,.12); animation: signal-pulse 1.35s ease-in-out infinite; }
 .channel-state-off { background: #94a0b2; }
 
-.editor-tabs { display: flex; align-items: center; width: 100%; border: 1px solid #dde4ed; border-radius: 12px; background: #f8fafd; padding: 6px; overflow-x: auto; }
-.editor-tabs button { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 5px 10px; border-radius: 8px; color: #627087; font-size: 12px; font-weight: 600; white-space: nowrap; transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease; }
-.editor-tabs button[aria-selected='true'] { background: white; color: #18243a; box-shadow: 0 3px 12px rgba(22,36,58,.08); }
+.channel-editor { margin: -20px; background: #f4f7fb; }
+.editor-layout { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 610px; }
+.editor-sidebar { display: flex; flex-direction: column; border-right: 1px solid #dde4ed; background: #16243a; color: white; }
+.editor-device-mark { display: flex; align-items: center; gap: 11px; padding: 20px 18px; border-bottom: 1px solid rgba(255,255,255,.09); }
+.editor-device-mark b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Saira SemiCondensed', sans-serif; font-size: 15px; font-weight: 600; color: rgba(255,255,255,.92); }
+.editor-device-mark span:not(.channel-state-dot) { display: block; margin-top: 2px; font-family: 'Spline Sans Mono', monospace; font-size: 9px; letter-spacing: .12em; color: rgba(255,255,255,.34); }
+.editor-side-nav { display: grid; gap: 4px; padding: 14px 10px; }
+.editor-side-nav button { position: relative; display: grid; grid-template-columns: 27px minmax(0,1fr) 8px; align-items: center; gap: 8px; min-height: 58px; border-radius: 10px; padding: 9px 10px; text-align: left; color: rgba(255,255,255,.48); transition: background-color 160ms ease, color 160ms ease, transform 160ms ease; }
+.editor-side-nav button:hover { color: rgba(255,255,255,.82); background: rgba(255,255,255,.05); transform: translateX(2px); }
+.editor-side-nav button[aria-selected='true'] { color: white; background: rgba(255,255,255,.09); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+.editor-nav-index { font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: rgba(142,177,255,.75); }
+.editor-side-nav b { display: block; font-size: 12px; font-weight: 600; }
+.editor-side-nav small { display: block; margin-top: 3px; font-size: 10px; color: rgba(255,255,255,.32); }
+.editor-side-nav i { width: 7px; height: 7px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; }
+.editor-side-nav i.is-done { border-color: #60c3b8; background: #60c3b8; box-shadow: 0 0 0 3px rgba(96,195,184,.1); }
+.editor-side-nav i.is-error { border-color: #ed8b83; background: #ed8b83; }
+.editor-summary { margin-top: auto; border-top: 1px solid rgba(255,255,255,.09); padding: 16px 18px 18px; }
+.editor-summary > span { font-family: 'Spline Sans Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: rgba(255,255,255,.3); }
+.editor-summary dl { display: grid; gap: 8px; margin-top: 10px; }
+.editor-summary dl div { display: flex; justify-content: space-between; gap: 10px; font-size: 10px; }
+.editor-summary dt { color: rgba(255,255,255,.34); }
+.editor-summary dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,.72); font-family: 'Spline Sans Mono', monospace; }
+.editor-workspace { min-width: 0; background: #f4f7fb; }
+.editor-workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #dde4ed; background: rgba(255,255,255,.82); padding: 18px 22px; }
+.editor-workspace-head > div > span { float: left; margin-right: 10px; padding-top: 3px; font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: #3564d4; }
+.editor-workspace-head h3 { font-family: 'Saira SemiCondensed', sans-serif; font-size: 20px; font-weight: 600; line-height: 1.1; color: #18243a; }
+.editor-workspace-head p { margin-top: 4px; font-size: 11px; color: #627087; }
+.editor-workspace-body { padding: 18px; }
+.editor-panel { overflow: hidden; border: 1px solid #dde4ed; border-radius: 12px; background: white; box-shadow: 0 1px 2px rgba(22,36,58,.03); }
+.editor-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #dde4ed; padding: 13px 16px; }
+.editor-routing-grid { display: grid; gap: 14px; }
+.editor-mobile-nav { display: none; }
 .editor-step { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; border: 1px solid #cbd5e1; border-radius: 999px; font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: #94a0b2; background: white; }
 .editor-step-done { color: white; border-color: #23877f; background: #23877f; }
 .editor-step-warn { border-color: #d05a52; color: #d05a52; }
-.editor-connector { width: 24px; height: 1px; flex: 0 0 auto; background: #dde4ed; }
 
 @keyframes feeder-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes signal-pulse { 50% { box-shadow: 0 0 0 7px rgba(183,121,31,0); } }
+
+@media (max-width: 900px) {
+  .channel-editor { margin: -16px; }
+  .editor-layout { display: block; min-height: 0; }
+  .editor-sidebar { display: none; }
+  .editor-mobile-nav { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 4px; border-bottom: 1px solid #dde4ed; background: white; padding: 8px; }
+  .editor-mobile-nav button { display: flex; min-width: 0; align-items: center; justify-content: center; gap: 6px; border-radius: 8px; padding: 7px 5px; font-size: 11px; font-weight: 600; color: #627087; }
+  .editor-mobile-nav button[aria-selected='true'] { background: #16243a; color: white; }
+  .editor-workspace-head { padding: 14px 16px; }
+  .editor-workspace-body { padding: 12px; }
+}
 
 @media (max-width: 700px) {
   .route-bus { overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
   .route-bus-segment { flex: 0 0 126px; scroll-snap-align: start; }
   .channel-list { background-position-x: -5px; }
   .channel-row:hover { transform: none; }
-  .editor-connector { width: 8px; }
+  .editor-workspace-head .chip { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
