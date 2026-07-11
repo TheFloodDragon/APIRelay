@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/apirelay/apirelay/common/logger"
 )
@@ -384,6 +386,165 @@ func ListModelLastUsed() (map[string]int64, error) {
 		result[item.Model] = item.LastUsedAt
 	}
 	return result, nil
+}
+
+// ModelHealthStat 是基于真实调用日志聚合的模型可用性统计。
+type ModelHealthStat struct {
+	ChannelId     int     `json:"channel_id,omitempty"`
+	Model         string  `json:"model,omitempty"`
+	Total         int64   `json:"total"`
+	Success       int64   `json:"success"`
+	Failed        int64   `json:"failed"`
+	Availability  float64 `json:"availability"` // 成功率百分比，0-100。
+	LastUsedAt    int64   `json:"last_used_at"`
+	LastSuccessAt int64   `json:"last_success_at"`
+	LastFailureAt int64   `json:"last_failure_at"`
+	LastError     string  `json:"last_error,omitempty"`
+}
+
+// EmptyModelHealthStat 返回未调用模型的空健康对象，避免前端将无数据误判为 0% 不可用。
+func EmptyModelHealthStat(channelID int, modelName string) *ModelHealthStat {
+	return &ModelHealthStat{ChannelId: channelID, Model: modelName}
+}
+
+// ListModelHealthByChannel 按 channel_id + src_model 聚合调用健康统计。
+func ListModelHealthByChannel() (map[int]map[string]*ModelHealthStat, error) {
+	var rows []*ModelHealthStat
+	if err := DB.Model(&Log{}).
+		Select(modelHealthSelect("channel_id, src_model AS model")).
+		Where("src_model <> ? AND type IN ?", "", []int{LogTypeConsume, LogTypeError}).
+		Group("channel_id, src_model").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	finalizeModelHealth(rows)
+	if err := attachLastFailureErrors(rows, true); err != nil {
+		return nil, err
+	}
+	result := make(map[int]map[string]*ModelHealthStat)
+	for _, item := range rows {
+		if result[item.ChannelId] == nil {
+			result[item.ChannelId] = make(map[string]*ModelHealthStat)
+		}
+		result[item.ChannelId][item.Model] = item
+	}
+	return result, nil
+}
+
+// ListModelHealthByModel 按 src_model 聚合跨渠道模型总览健康统计。
+func ListModelHealthByModel() (map[string]*ModelHealthStat, error) {
+	var rows []*ModelHealthStat
+	if err := DB.Model(&Log{}).
+		Select(modelHealthSelect("src_model AS model")).
+		Where("src_model <> ? AND type IN ?", "", []int{LogTypeConsume, LogTypeError}).
+		Group("src_model").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	finalizeModelHealth(rows)
+	if err := attachLastFailureErrors(rows, false); err != nil {
+		return nil, err
+	}
+	result := make(map[string]*ModelHealthStat, len(rows))
+	for _, item := range rows {
+		result[item.Model] = item
+	}
+	return result, nil
+}
+
+func modelHealthSelect(prefix string) string {
+	success := modelHealthSuccessSQL()
+	failure := modelHealthFailureSQL()
+	return fmt.Sprintf(`%s,
+COUNT(*) AS total,
+COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END), 0) AS success,
+COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END), 0) AS failed,
+MAX(created_at) AS last_used_at,
+MAX(CASE WHEN %s THEN created_at ELSE 0 END) AS last_success_at,
+MAX(CASE WHEN %s THEN created_at ELSE 0 END) AS last_failure_at`, prefix, success, failure, success, failure)
+}
+
+func modelHealthSuccessSQL() string {
+	return fmt.Sprintf("type = %d AND status >= 200 AND status < 400 AND COALESCE(error, '') = ''", LogTypeConsume)
+}
+
+func modelHealthFailureSQL() string {
+	return fmt.Sprintf("type = %d OR status < 200 OR status >= 400 OR COALESCE(error, '') <> ''", LogTypeError)
+}
+
+func finalizeModelHealth(rows []*ModelHealthStat) {
+	for _, item := range rows {
+		if item == nil || item.Total <= 0 {
+			continue
+		}
+		item.Availability = float64(item.Success) / float64(item.Total) * 100
+	}
+}
+
+func attachLastFailureErrors(rows []*ModelHealthStat, byChannel bool) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	byKey := make(map[string]*ModelHealthStat, len(rows))
+	for _, item := range rows {
+		if item == nil || item.LastFailureAt == 0 {
+			continue
+		}
+		byKey[modelHealthKey(item.ChannelId, item.Model, byChannel)] = item
+	}
+	if len(byKey) == 0 {
+		return nil
+	}
+	type failureRow struct {
+		ChannelId int
+		Model     string
+		Status    int
+		Error     string
+		Content   string
+	}
+	var failures []failureRow
+	if err := DB.Model(&Log{}).
+		Select("channel_id, src_model AS model, status, error, content").
+		Where("src_model <> ? AND type IN ? AND ("+modelHealthFailureSQL()+")", "", []int{LogTypeConsume, LogTypeError}).
+		Order("created_at desc, id desc").
+		Scan(&failures).Error; err != nil {
+		return err
+	}
+	for _, failure := range failures {
+		key := modelHealthKey(failure.ChannelId, failure.Model, byChannel)
+		item, ok := byKey[key]
+		if !ok || item.LastError != "" {
+			continue
+		}
+		item.LastError = compactLastError(failure.Error, failure.Content, failure.Status)
+	}
+	return nil
+}
+
+func modelHealthKey(channelID int, modelName string, byChannel bool) string {
+	if byChannel {
+		return fmt.Sprintf("%d\x00%s", channelID, modelName)
+	}
+	return modelName
+}
+
+func compactLastError(errorText, content string, status int) string {
+	message := strings.TrimSpace(errorText)
+	if message == "" {
+		message = strings.TrimSpace(content)
+	}
+	if message == "" {
+		if status > 0 {
+			message = fmt.Sprintf("HTTP %d", status)
+		} else {
+			message = "调用失败"
+		}
+	}
+	runes := []rune(message)
+	if len(runes) > 240 {
+		message = string(runes[:240]) + "…"
+	}
+	return message
 }
 
 // LogStat 仪表盘统计聚合结果。

@@ -15,17 +15,19 @@ import (
 type AggregatedModel struct {
 	Name       string                 `json:"name"`
 	LastUsedAt int64                  `json:"last_used_at"`
+	Health     *model.ModelHealthStat `json:"health"`
 	Providers  []AggregatedModelOwner `json:"providers"`
 }
 
 // AggregatedModelOwner 描述提供某模型的一个供应商。
 type AggregatedModelOwner struct {
-	ChannelId   int    `json:"channel_id"`
-	ChannelName string `json:"channel_name"`
-	Group       string `json:"group"`
-	Enabled     bool   `json:"enabled"`
-	Protocol    string `json:"protocol"` // 解析后的协议名（继承时显示实际生效协议）
-	Upstream    string `json:"upstream"`
+	ChannelId   int                    `json:"channel_id"`
+	ChannelName string                 `json:"channel_name"`
+	Group       string                 `json:"group"`
+	Enabled     bool                   `json:"enabled"`
+	Protocol    string                 `json:"protocol"` // 解析后的协议名（继承时显示实际生效协议）
+	Upstream    string                 `json:"upstream"`
+	Health      *model.ModelHealthStat `json:"health"`
 }
 
 // ListAggregatedModels GET /api/models
@@ -43,6 +45,17 @@ func ListAggregatedModels(c *gin.Context) {
 		return
 	}
 
+	modelHealth, err := model.ListModelHealthByModel()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	channelHealth, err := model.ListModelHealthByChannel()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	grouped := map[string]*AggregatedModel{}
 	order := []string{}
 	for _, ch := range channels {
@@ -52,9 +65,20 @@ func ListAggregatedModels(c *gin.Context) {
 			}
 			agg, ok := grouped[m.Name]
 			if !ok {
-				agg = &AggregatedModel{Name: m.Name, LastUsedAt: lastUsed[m.Name]}
+				health := modelHealth[m.Name]
+				if health == nil {
+					health = model.EmptyModelHealthStat(0, m.Name)
+				}
+				agg = &AggregatedModel{Name: m.Name, LastUsedAt: lastUsed[m.Name], Health: health}
 				grouped[m.Name] = agg
 				order = append(order, m.Name)
+			}
+			providerHealth := (*model.ModelHealthStat)(nil)
+			if byModel := channelHealth[ch.Id]; byModel != nil {
+				providerHealth = byModel[m.Name]
+			}
+			if providerHealth == nil {
+				providerHealth = model.EmptyModelHealthStat(ch.Id, m.Name)
 			}
 			agg.Providers = append(agg.Providers, AggregatedModelOwner{
 				ChannelId:   ch.Id,
@@ -63,6 +87,7 @@ func ListAggregatedModels(c *gin.Context) {
 				Enabled:     m.Enabled && ch.Status == model.ChannelStatusEnabled,
 				Protocol:    resolveProtocolName(ch, m),
 				Upstream:    m.Upstream,
+				Health:      providerHealth,
 			})
 		}
 	}

@@ -19,6 +19,27 @@ func ListChannels(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	health, err := model.ListModelHealthByChannel()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, ch := range list {
+		ch.ModelHealth = make(map[string]*model.ModelHealthStat)
+		for _, item := range ch.ModelConfigList() {
+			if strings.TrimSpace(item.Name) == "" {
+				continue
+			}
+			stat := (*model.ModelHealthStat)(nil)
+			if byModel := health[ch.Id]; byModel != nil {
+				stat = byModel[item.Name]
+			}
+			if stat == nil {
+				stat = model.EmptyModelHealthStat(ch.Id, item.Name)
+			}
+			ch.ModelHealth[item.Name] = stat
+		}
+	}
 	ok(c, list)
 }
 

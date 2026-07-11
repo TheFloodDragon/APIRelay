@@ -139,3 +139,100 @@ func TestSavedChannelEndpointsRejectInvalidHeaderOverride(t *testing.T) {
 		})
 	}
 }
+
+func setupControllerHealthTestDB(t *testing.T) *model.Channel {
+	t.Helper()
+	if err := model.InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {
+		t.Fatal(err)
+	}
+	model.DB.Exec("DELETE FROM logs")
+	model.DB.Exec("DELETE FROM channels")
+	model.DB.Exec("DELETE FROM abilities")
+	ch := &model.Channel{
+		Name: "primary", Type: 1, Status: model.ChannelStatusEnabled, BaseURL: "https://example.test", Key: "k", Group: "default", Weight: 1,
+		ModelConfigs: `[{"name":"gpt-4o","enabled":true},{"name":"never-used","enabled":true}]`,
+	}
+	if err := model.CreateChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	logs := []*model.Log{
+		{RequestId: "ok", Type: model.LogTypeConsume, ChannelId: ch.Id, SrcModel: "gpt-4o", Status: 200, CreatedAt: 1_700_000_000_100},
+		{RequestId: "fail", Type: model.LogTypeError, ChannelId: ch.Id, SrcModel: "gpt-4o", Status: 503, Error: "upstream unavailable", CreatedAt: 1_700_000_000_200},
+	}
+	for _, item := range logs {
+		if err := model.CreateLog(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ch
+}
+
+func TestListChannelsIncludesModelHealth(t *testing.T) {
+	setupControllerHealthTestDB(t)
+	recorder := performChannelRequest(t, http.MethodGet, "/api/channels", "", ListChannels)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			Name        string                            `json:"name"`
+			ModelHealth map[string]*model.ModelHealthStat `json:"model_health"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Success || len(response.Data) != 1 {
+		t.Fatalf("response = %+v", response)
+	}
+	health := response.Data[0].ModelHealth["gpt-4o"]
+	if health == nil || health.Total != 2 || health.Success != 1 || health.Failed != 1 || health.LastError != "upstream unavailable" {
+		t.Fatalf("gpt-4o health = %+v", health)
+	}
+	empty := response.Data[0].ModelHealth["never-used"]
+	if empty == nil || empty.Total != 0 || empty.Model != "never-used" {
+		t.Fatalf("never-used health = %+v", empty)
+	}
+}
+
+func TestListAggregatedModelsIncludesHealth(t *testing.T) {
+	setupControllerHealthTestDB(t)
+	recorder := performChannelRequest(t, http.MethodGet, "/api/models", "", ListAggregatedModels)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			Name      string                 `json:"name"`
+			Health    *model.ModelHealthStat `json:"health"`
+			Providers []struct {
+				ChannelName string                 `json:"channel_name"`
+				Health      *model.ModelHealthStat `json:"health"`
+			} `json:"providers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Success || len(response.Data) != 2 {
+		t.Fatalf("response = %+v", response)
+	}
+	var found bool
+	for _, item := range response.Data {
+		if item.Name != "gpt-4o" {
+			continue
+		}
+		found = true
+		if item.Health == nil || item.Health.Total != 2 || item.Health.Success != 1 || item.Health.Failed != 1 {
+			t.Fatalf("aggregate health = %+v", item.Health)
+		}
+		if len(item.Providers) != 1 || item.Providers[0].Health == nil || item.Providers[0].Health.LastError != "upstream unavailable" {
+			t.Fatalf("providers = %+v", item.Providers)
+		}
+	}
+	if !found {
+		t.Fatal("missing gpt-4o aggregate model")
+	}
+}

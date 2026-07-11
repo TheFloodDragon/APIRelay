@@ -40,6 +40,8 @@ type Channel struct {
 	BodyOverride string `json:"body_override" gorm:"type:text"`
 	// TestPrompt 覆盖全局默认测试提示词；为空时继承全局设置。
 	TestPrompt string `json:"test_prompt" gorm:"type:text"`
+	// ModelHealth 按模型名暴露该渠道内真实调用健康统计，仅用于 API 响应。
+	ModelHealth map[string]*ModelHealthStat `json:"model_health,omitempty" gorm:"-"`
 	// CooldownUntil 冷却截止毫秒时间戳，0 表示未冷却（不持久化调度可放内存，这里持久化便于观察）
 	CooldownUntil int64 `json:"cooldown_until" gorm:"default:0"`
 	CreatedAt     int64 `json:"created_at"`

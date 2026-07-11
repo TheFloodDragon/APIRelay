@@ -69,22 +69,60 @@ func TestListLogsFilters(t *testing.T) {
 	}
 }
 
-func TestListLogsPagination(t *testing.T) {
+func TestListModelHealthAggregatesByChannelAndModel(t *testing.T) {
 	setupLogTestDB(t)
 	base := int64(1_700_000_000_000)
-	seedLog(t, &Log{RequestId: "req-1", Type: LogTypeConsume, Status: 200, CreatedAt: base + 100})
-	seedLog(t, &Log{RequestId: "req-2", Type: LogTypeConsume, Status: 200, CreatedAt: base + 200})
-	seedLog(t, &Log{RequestId: "req-3", Type: LogTypeConsume, Status: 200, CreatedAt: base + 300})
+	seedLog(t, &Log{RequestId: "ok-1", Type: LogTypeConsume, ChannelId: 1, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 100})
+	seedLog(t, &Log{RequestId: "ok-2", Type: LogTypeConsume, ChannelId: 1, SrcModel: "gpt-4o", Status: 302, CreatedAt: base + 200})
+	seedLog(t, &Log{RequestId: "bad-1", Type: LogTypeConsume, ChannelId: 1, SrcModel: "gpt-4o", Status: 429, Error: "rate limited", CreatedAt: base + 300})
+	seedLog(t, &Log{RequestId: "bad-2", Type: LogTypeError, ChannelId: 1, SrcModel: "gpt-4o", Status: 0, Error: "dial timeout", CreatedAt: base + 400})
+	seedLog(t, &Log{RequestId: "ok-3", Type: LogTypeConsume, ChannelId: 2, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 500})
+	seedLog(t, &Log{RequestId: "ignored-manage", Type: LogTypeManage, ChannelId: 1, SrcModel: "gpt-4o", Status: 500, Error: "admin failure", CreatedAt: base + 600})
+	seedLog(t, &Log{RequestId: "ignored-empty-model", Type: LogTypeConsume, ChannelId: 1, Status: 200, CreatedAt: base + 700})
 
-	q := &LogQuery{Page: 2, PageSize: 1}
-	logs, total, err := ListLogs(q)
+	byChannel, err := ListModelHealthByChannel()
 	if err != nil {
-		t.Fatalf("list logs: %v", err)
+		t.Fatalf("list channel health: %v", err)
 	}
-	if total != 3 {
-		t.Fatalf("total = %d, want 3", total)
+	ch1 := byChannel[1]["gpt-4o"]
+	if ch1 == nil {
+		t.Fatal("missing channel 1 gpt-4o health")
 	}
-	if len(logs) != 1 || logs[0].RequestId != "req-2" {
-		t.Fatalf("page 2 item = %+v, want req-2", logs)
+	if ch1.Total != 4 || ch1.Success != 2 || ch1.Failed != 2 {
+		t.Fatalf("channel health = total %d success %d failed %d, want 4/2/2", ch1.Total, ch1.Success, ch1.Failed)
+	}
+	if ch1.Availability != 50 {
+		t.Fatalf("availability = %v, want 50", ch1.Availability)
+	}
+	if ch1.LastUsedAt != base+400 || ch1.LastSuccessAt != base+200 || ch1.LastFailureAt != base+400 {
+		t.Fatalf("timestamps = %+v", ch1)
+	}
+	if ch1.LastError != "dial timeout" {
+		t.Fatalf("last_error = %q, want dial timeout", ch1.LastError)
+	}
+
+	byModel, err := ListModelHealthByModel()
+	if err != nil {
+		t.Fatalf("list model health: %v", err)
+	}
+	all := byModel["gpt-4o"]
+	if all == nil {
+		t.Fatal("missing aggregate model health")
+	}
+	if all.Total != 5 || all.Success != 3 || all.Failed != 2 {
+		t.Fatalf("aggregate health = total %d success %d failed %d, want 5/3/2", all.Total, all.Success, all.Failed)
+	}
+	if all.LastUsedAt != base+500 || all.LastSuccessAt != base+500 || all.LastFailureAt != base+400 {
+		t.Fatalf("aggregate timestamps = %+v", all)
+	}
+}
+
+func TestEmptyModelHealthStat(t *testing.T) {
+	health := EmptyModelHealthStat(7, "never-called")
+	if health.ChannelId != 7 || health.Model != "never-called" {
+		t.Fatalf("identity = %+v", health)
+	}
+	if health.Total != 0 || health.Success != 0 || health.Failed != 0 || health.Availability != 0 {
+		t.Fatalf("empty health should be zeroed: %+v", health)
 	}
 }

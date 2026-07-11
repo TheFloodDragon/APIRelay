@@ -111,6 +111,53 @@ function modelCount(channel) {
   return (channel.models || '').split(',').map((item) => item.trim()).filter(Boolean).length
 }
 
+function modelHealth(channel, item) {
+  return channel?.model_health?.[item?.name] || null
+}
+
+function healthTotal(health) {
+  return Number(health?.total) || 0
+}
+
+function hasHealth(health) {
+  return healthTotal(health) > 0
+}
+
+function healthPercent(health) {
+  if (!hasHealth(health)) return 0
+  return Math.round((Number(health.availability) || 0) * 10) / 10
+}
+
+function healthClass(health) {
+  if (!hasHealth(health)) return ''
+  const percent = healthPercent(health)
+  if (percent >= 95) return 'chip-run'
+  if (percent >= 70) return 'chip-test'
+  return 'chip-trip'
+}
+
+function healthText(health) {
+  if (!hasHealth(health)) return '未调用'
+  return `${healthPercent(health)}% · ${Number(health.success) || 0}/${healthTotal(health)}`
+}
+
+function healthTitle(health) {
+  if (!hasHealth(health)) return '尚无真实调用日志'
+  const parts = [`成功 ${Number(health.success) || 0}`, `失败 ${Number(health.failed) || 0}`]
+  if (health.last_error) parts.push(health.last_error)
+  return parts.join(' · ')
+}
+
+function channelHealth(channel) {
+  const stats = Object.values(channel?.model_health || {}).filter(Boolean)
+  const called = stats.filter(hasHealth)
+  if (!called.length) return null
+  const total = called.reduce((sum, item) => sum + healthTotal(item), 0)
+  const success = called.reduce((sum, item) => sum + (Number(item.success) || 0), 0)
+  const failed = called.reduce((sum, item) => sum + (Number(item.failed) || 0), 0)
+  return { total, success, failed, availability: total ? (success / total) * 100 : 0 }
+}
+
 function breakerState(channel) {
   if (checkupLoadingId.value === channel.id) return 'test'
   if (channel.status !== 1) return 'off'
@@ -764,6 +811,7 @@ onMounted(() => {
                 <th class="w-[22%]">渠道</th>
                 <th>连接地址</th>
                 <th class="w-20 text-right">模型</th>
+                <th class="w-32">调用健康</th>
                 <th class="w-20 text-right">权重</th>
                 <th class="w-56 text-right">操作</th>
               </tr>
@@ -820,6 +868,7 @@ onMounted(() => {
                   <div class="mt-1 truncate font-mono text-[11px] text-faint">Key：{{ maskedKey(channel.key) }}</div>
                 </td>
                 <td class="num">{{ modelCount(channel) }}</td>
+                <td><span class="chip" :class="healthClass(channelHealth(channel))" :title="healthTitle(channelHealth(channel))">{{ healthText(channelHealth(channel)) }}</span></td>
                 <td class="num">×{{ channel.weight }}</td>
                 <td>
                   <div class="flex items-center justify-end gap-1.5">
@@ -837,13 +886,14 @@ onMounted(() => {
                 </td>
               </tr>
               <tr v-if="expandedIds.has(channel.id)">
-                <td colspan="7" class="!p-0">
+                <td colspan="8" class="!p-0">
                   <div class="border-y border-line bg-canvas/70 px-5 py-4">
                     <div class="mb-3 flex items-center justify-between gap-3"><span class="dim-title">渠道模型</span><span class="text-xs text-soft">{{ channel._models.length }} 个配置</span></div>
                     <div v-if="channel._models.length" class="grid gap-2 lg:grid-cols-2">
                       <article v-for="item in channel._models" :key="item.name" class="flex min-w-0 items-center gap-3 rounded-lg border border-line bg-white p-3">
                         <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': item.enabled }" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" :aria-pressed="item.enabled" :aria-label="`${item.enabled ? '停用' : '启用'}模型 ${item.name}`" @click="toggleChannelModel(channel, item)"><span aria-hidden="true"></span></button>
                         <div class="min-w-0 flex-1"><code class="block truncate text-xs text-ink" :title="item.name">{{ item.name }}</code><div class="mt-1 truncate text-[11px] text-soft">{{ item.protocol || '继承协议' }} · → {{ item.upstream || item.name }}</div></div>
+                        <span class="chip shrink-0" :class="healthClass(modelHealth(channel, item))" :title="healthTitle(modelHealth(channel, item))">{{ healthText(modelHealth(channel, item)) }}</span>
                         <span class="chip shrink-0" :class="item.enabled && channel.status === 1 ? 'chip-run' : ''">{{ item.enabled ? '启用' : '停用' }}</span>
                         <button type="button" class="btn btn-danger btn-sm shrink-0" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="removeChannelModel(channel, item)">删除</button>
                       </article>
@@ -890,6 +940,7 @@ onMounted(() => {
               <span class="chip chip-blue">{{ typeName(channel.type) }}</span>
               <span class="chip">{{ channel.group || 'default' }}</span>
               <span class="chip">{{ modelCount(channel) }} 个模型</span>
+              <span class="chip" :class="healthClass(channelHealth(channel))" :title="healthTitle(channelHealth(channel))">健康 {{ healthText(channelHealth(channel)) }}</span>
               <span class="chip">权重 {{ channel.weight }}</span>
             </div>
             <code class="mt-3 block break-all text-[11px] text-soft">{{ channel.base_url || '使用默认地址' }}</code>
@@ -901,6 +952,7 @@ onMounted(() => {
               <div v-for="item in channel._models" :key="item.name" class="flex min-w-0 items-center gap-2 rounded border border-line p-2">
                 <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': item.enabled }" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="toggleChannelModel(channel, item)"><span></span></button>
                 <div class="min-w-0 flex-1"><code class="block truncate text-xs">{{ item.name }}</code><span class="block truncate text-[10px] text-soft">→ {{ item.upstream || item.name }}</span></div>
+                <span class="chip shrink-0" :class="healthClass(modelHealth(channel, item))" :title="healthTitle(modelHealth(channel, item))">{{ healthText(modelHealth(channel, item)) }}</span>
                 <button type="button" class="btn btn-danger btn-sm" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="removeChannelModel(channel, item)">删除</button>
               </div>
               <div v-if="!channel._models.length" class="text-center text-xs text-soft">暂无模型</div>
