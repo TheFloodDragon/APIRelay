@@ -245,7 +245,8 @@ function buildDiagnosticPackage(log) {
     `- 客户端模型: ${log.src_model || '—'}`,
     ...(isModelMapped(log) ? [`- 实际请求模型: ${log.mapped_model}`] : []),
     `- 流式: ${log.is_stream ? 'yes' : 'no'}`,
-    `- Tokens: prompt=${log.prompt_tokens || 0}, completion=${log.completion_tokens || 0}`,
+    `- Tokens: prompt=${log.prompt_tokens || 0}, completion=${log.completion_tokens || 0}${log.usage_estimated ? ' (estimated)' : ''}`,
+    `- Cache/Reasoning: write=${log.cache_creation_input_tokens || 0}, read=${log.cache_read_input_tokens || 0}, reasoning=${log.reasoning_tokens || 0}`,
     `- 费用: ${cost(log.quota)}`,
     `- 耗时: ${log.use_time_ms || 0}ms, 首字=${log.first_byte_ms || 0}ms`,
   ]
@@ -438,7 +439,8 @@ onMounted(load)
                     <div class="mt-1 truncate font-mono text-xs text-soft">{{ log.token_name || '—' }}</div>
                   </td>
                   <td class="num">
-                    <div>{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }}</div>
+                    <div>{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }} <span v-if="log.usage_estimated" class="chip chip-test ml-1">估算</span></div>
+                    <div v-if="log.cache_creation_input_tokens || log.cache_read_input_tokens || log.reasoning_tokens" class="text-[10px] text-soft">写 {{ log.cache_creation_input_tokens || 0 }} · 读 {{ log.cache_read_input_tokens || 0 }} · 推理 {{ log.reasoning_tokens || 0 }}</div>
                     <div class="text-xs text-soft">{{ cost(log.quota) }}</div>
                   </td>
                   <td class="num">
@@ -469,7 +471,8 @@ onMounted(load)
                 <div class="mobile-kv"><dt>客户端模型</dt><dd class="break-all font-mono text-xs font-medium">{{ log.src_model || '—' }}</dd></div>
                 <div v-if="isModelMapped(log)" class="mobile-kv"><dt>实际请求模型</dt><dd class="break-all font-mono text-xs text-soft">{{ log.mapped_model }}</dd></div>
                 <div class="mobile-kv"><dt>令牌</dt><dd class="break-all font-mono text-xs">{{ log.token_name || '—' }}</dd></div>
-                <div class="mobile-kv"><dt>Tokens / 费用</dt><dd class="font-mono text-xs">{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }} · {{ cost(log.quota) }}</dd></div>
+                <div class="mobile-kv"><dt>Tokens / 费用</dt><dd class="font-mono text-xs">{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }} · {{ cost(log.quota) }}<span v-if="log.usage_estimated" class="ml-1 text-test">估算</span></dd></div>
+                <div v-if="log.cache_creation_input_tokens || log.cache_read_input_tokens || log.reasoning_tokens" class="mobile-kv"><dt>缓存 / 推理</dt><dd class="font-mono text-xs">写 {{ log.cache_creation_input_tokens || 0 }} · 读 {{ log.cache_read_input_tokens || 0 }} · 推理 {{ log.reasoning_tokens || 0 }}</dd></div>
                 <div class="mobile-kv"><dt>耗时</dt><dd class="font-mono text-xs">{{ log.use_time_ms || 0 }} ms · 首字 {{ log.first_byte_ms || 0 }} ms</dd></div>
                 <div class="mobile-kv"><dt>尝试</dt><dd>{{ log._failover_chain.length }} 次</dd></div>
               </dl>
@@ -513,7 +516,9 @@ onMounted(load)
             <div><dt class="field-label">客户端模型</dt><dd class="break-all font-mono text-xs font-medium">{{ selectedLog.src_model || '—' }}</dd></div>
             <div v-if="isModelMapped(selectedLog)"><dt class="field-label">实际请求模型</dt><dd class="break-all font-mono text-xs text-soft">{{ selectedLog.mapped_model }}</dd></div>
             <div><dt class="field-label">令牌</dt><dd class="break-all font-mono text-xs">{{ selectedLog.token_name || '—' }}</dd></div>
-            <div><dt class="field-label">Tokens / 费用</dt><dd class="font-mono text-xs">{{ selectedLog.prompt_tokens || 0 }} / {{ selectedLog.completion_tokens || 0 }} · {{ cost(selectedLog.quota) }}</dd></div>
+            <div><dt class="field-label">Tokens / 费用</dt><dd class="font-mono text-xs">{{ selectedLog.prompt_tokens || 0 }} / {{ selectedLog.completion_tokens || 0 }} · {{ cost(selectedLog.quota) }}<span v-if="selectedLog.usage_estimated" class="ml-1 text-test">估算</span></dd></div>
+            <div><dt class="field-label">缓存写入 / 读取</dt><dd class="font-mono text-xs">{{ selectedLog.cache_creation_input_tokens || 0 }} / {{ selectedLog.cache_read_input_tokens || 0 }}</dd></div>
+            <div><dt class="field-label">推理 Tokens</dt><dd class="font-mono text-xs">{{ selectedLog.reasoning_tokens || 0 }}</dd></div>
             <div><dt class="field-label">耗时</dt><dd class="font-mono text-xs">{{ selectedLog.use_time_ms || 0 }} ms · 首字 {{ selectedLog.first_byte_ms || 0 }} ms</dd></div>
           </dl>
         </section>

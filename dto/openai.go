@@ -48,16 +48,32 @@ func (s StopSequences) MarshalJSON() ([]byte, error) {
 
 // OpenAIChatRequest 对应 /v1/chat/completions 请求。
 type OpenAIChatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Stop        StopSequences   `json:"stop,omitempty"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
+	Model             string                `json:"model"`
+	Messages          []OpenAIMessage       `json:"messages"`
+	MaxTokens         *int                  `json:"max_tokens,omitempty"`
+	Temperature       *float64              `json:"temperature,omitempty"`
+	TopP              *float64              `json:"top_p,omitempty"`
+	Stream            bool                  `json:"stream,omitempty"`
+	Stop              StopSequences         `json:"stop,omitempty"`
+	Tools             []OpenAITool          `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage       `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                 `json:"parallel_tool_calls,omitempty"`
+	ResponseFormat    *OpenAIResponseFormat `json:"response_format,omitempty"`
+	ReasoningEffort   string                `json:"reasoning_effort,omitempty"`
+	TopK              *int                  `json:"top_k,omitempty"`
 	// StreamOptions 用于在流式中请求 usage
 	StreamOptions *OpenAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+type OpenAIResponseFormat struct {
+	Type       string            `json:"type"`
+	JSONSchema *OpenAIJSONSchema `json:"json_schema,omitempty"`
+}
+
+type OpenAIJSONSchema struct {
+	Name   string          `json:"name,omitempty"`
+	Strict bool            `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
 type OpenAIStreamOptions struct {
@@ -121,9 +137,19 @@ type OpenAIDelta struct {
 }
 
 type OpenAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                           `json:"prompt_tokens"`
+	CompletionTokens        int                           `json:"completion_tokens"`
+	TotalTokens             int                           `json:"total_tokens"`
+	PromptTokensDetails     *OpenAIPromptTokenDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *OpenAICompletionTokenDetails `json:"completion_tokens_details,omitempty"`
+}
+
+type OpenAIPromptTokenDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+type OpenAICompletionTokenDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // OpenAIErrorResponse 标准 OpenAI 错误体。

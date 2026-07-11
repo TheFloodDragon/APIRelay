@@ -28,9 +28,21 @@ func ParseResponsesRequest(body []byte) (*dto.UnifiedRequest, error) {
 		Stream:         req.Stream,
 		Temperature:    req.Temperature,
 		TopP:           req.TopP,
+		TopK:           req.TopK,
 		MaxTokens:      req.MaxOutputTokens,
+		ToolChoice:     parseToolChoice(req.ToolChoice, req.ParallelToolCalls != nil && !*req.ParallelToolCalls),
 		SourceEndpoint: "responses",
 		Raw:            body,
+	}
+	if req.Text != nil && req.Text.Format != nil {
+		f := req.Text.Format
+		ir.ResponseFormat = &dto.UnifiedResponseFormat{Type: f.Type, Name: f.Name, Strict: f.Strict, Schema: f.Schema}
+	}
+	if req.Reasoning != nil {
+		ir.Thinking = &dto.UnifiedThinkingConfig{Effort: req.Reasoning.Effort, Summary: req.Reasoning.Summary}
+	}
+	if containsJSONKey(body, "cache_control") {
+		ir.UnsupportedFeatures = append(ir.UnsupportedFeatures, "cache_control")
 	}
 
 	ir.Messages = parseResponsesInput(req.Input)
@@ -136,7 +148,15 @@ func BuildResponsesRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.Re
 		Stream:          ir.Stream,
 		Temperature:     ir.Temperature,
 		TopP:            ir.TopP,
+		TopK:            ir.TopK,
 		MaxOutputTokens: ir.MaxTokens,
+	}
+	req.ToolChoice, req.ParallelToolCalls = responsesToolChoice(ir.ToolChoice)
+	if format := ir.ResponseFormat; format != nil {
+		req.Text = &dto.ResponsesTextConfig{Format: &dto.ResponsesTextFormat{Type: format.Type, Name: format.Name, Strict: format.Strict, Schema: format.Schema}}
+	}
+	if thinking := ir.Thinking; thinking != nil && (thinking.Effort != "" || thinking.Summary != "") {
+		req.Reasoning = &dto.ResponsesReasoning{Effort: thinking.Effort, Summary: thinking.Summary}
 	}
 
 	var items []dto.ResponsesInputItem
@@ -244,11 +264,7 @@ func ResponsesResponseToIR(resp *dto.ResponsesResponse) *dto.UnifiedResponse {
 	}
 	out.Content = sb.String()
 	if resp.Usage != nil {
-		out.Usage = dto.Usage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
-		}
+		out.Usage = responsesUsageToIR(resp.Usage)
 	}
 	return out
 }
@@ -279,14 +295,26 @@ func ParseResponsesStreamEvent(data []byte) (*dto.UnifiedStreamChunk, error) {
 	case "response.completed":
 		chunk := &dto.UnifiedStreamChunk{FinishReason: "stop", Done: true}
 		if ev.Response != nil && ev.Response.Usage != nil {
-			chunk.Usage = &dto.Usage{
-				PromptTokens:     ev.Response.Usage.InputTokens,
-				CompletionTokens: ev.Response.Usage.OutputTokens,
-				TotalTokens:      ev.Response.Usage.TotalTokens,
-			}
+			usage := responsesUsageToIR(ev.Response.Usage)
+			chunk.Usage = &usage
 		}
 		return chunk, nil
 	default:
 		return nil, nil
 	}
+}
+
+func responsesUsageToIR(usage *dto.ResponsesUsage) dto.Usage {
+	out := dto.Usage{
+		PromptTokens:     usage.InputTokens,
+		CompletionTokens: usage.OutputTokens,
+		TotalTokens:      usage.TotalTokens,
+	}
+	if usage.InputTokensDetails != nil {
+		out.CacheReadInputTokens = usage.InputTokensDetails.CachedTokens
+	}
+	if usage.OutputTokensDetails != nil {
+		out.ReasoningTokens = usage.OutputTokensDetails.ReasoningTokens
+	}
+	return out
 }

@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"math"
 	"sync"
 )
 
@@ -16,6 +17,9 @@ const SettingKeyProtocolRules = "protocol_rules"
 
 // 全局模型价格表的 Setting key。
 const SettingKeyModelPrices = "model_prices"
+
+// 全局缓存 token 计费倍率的 Setting key。
+const SettingKeyBilling = "billing"
 
 // 全局日志详情配置的 Setting key。
 const SettingKeyLogging = "logging"
@@ -53,6 +57,18 @@ type NetworkConfig struct {
 	Mode      string `json:"mode"`
 	ManualURL string `json:"manual_url"`
 	NoProxy   string `json:"no_proxy"`
+}
+
+const (
+	DefaultCacheWriteMultiplier = 1.25
+	DefaultCacheReadMultiplier  = 0.1
+	maxBillingMultiplier        = 10.0
+)
+
+// BillingConfig 控制缓存 token 相对标准输入价格的计费倍率。
+type BillingConfig struct {
+	CacheWriteMultiplier float64 `json:"cache_write_multiplier"`
+	CacheReadMultiplier  float64 `json:"cache_read_multiplier"`
 }
 
 // ModelPrice 是「模型名 -> input/output 价格（USD / 1M tokens）」的条目。
@@ -99,6 +115,8 @@ func SetSetting(key, value string) error {
 			invalidateProtocolRulesCache()
 		case SettingKeyModelPrices:
 			invalidateModelPricesCache()
+		case SettingKeyBilling:
+			invalidateBillingConfigCache()
 		case SettingKeyLogging:
 			invalidateLoggingConfigCache()
 		case SettingKeyModelHealth:
@@ -205,6 +223,70 @@ func invalidateModelPricesCache() {
 	modelPricesLoaded = false
 	modelPricesCache = nil
 	modelPricesMu.Unlock()
+}
+
+// ---- 缓存 token 计费倍率缓存 ----
+
+var (
+	billingConfigMu     sync.RWMutex
+	billingConfigCache  BillingConfig
+	billingConfigLoaded bool
+)
+
+// NormalizeBillingConfig 将无效倍率恢复默认值并限制异常上界；显式 0 合法，表示该类缓存 token 免费。
+func NormalizeBillingConfig(cfg BillingConfig) BillingConfig {
+	if math.IsNaN(cfg.CacheWriteMultiplier) || math.IsInf(cfg.CacheWriteMultiplier, 0) || cfg.CacheWriteMultiplier < 0 {
+		cfg.CacheWriteMultiplier = DefaultCacheWriteMultiplier
+	} else if cfg.CacheWriteMultiplier > maxBillingMultiplier {
+		cfg.CacheWriteMultiplier = maxBillingMultiplier
+	}
+	if math.IsNaN(cfg.CacheReadMultiplier) || math.IsInf(cfg.CacheReadMultiplier, 0) || cfg.CacheReadMultiplier < 0 {
+		cfg.CacheReadMultiplier = DefaultCacheReadMultiplier
+	} else if cfg.CacheReadMultiplier > maxBillingMultiplier {
+		cfg.CacheReadMultiplier = maxBillingMultiplier
+	}
+	return cfg
+}
+
+// GetBillingConfig 返回缓存计费倍率；未配置时使用 1.25x 写入、0.1x 读取。
+func GetBillingConfig() BillingConfig {
+	billingConfigMu.RLock()
+	if billingConfigLoaded {
+		cfg := billingConfigCache
+		billingConfigMu.RUnlock()
+		return cfg
+	}
+	billingConfigMu.RUnlock()
+
+	billingConfigMu.Lock()
+	defer billingConfigMu.Unlock()
+	if billingConfigLoaded {
+		return billingConfigCache
+	}
+	cfg := BillingConfig{
+		CacheWriteMultiplier: DefaultCacheWriteMultiplier,
+		CacheReadMultiplier:  DefaultCacheReadMultiplier,
+	}
+	if raw, _ := GetSetting(SettingKeyBilling); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg)
+	}
+	cfg = NormalizeBillingConfig(cfg)
+	billingConfigCache = cfg
+	billingConfigLoaded = true
+	return cfg
+}
+
+// SaveBillingConfig 归一化并持久化缓存计费倍率。
+func SaveBillingConfig(cfg BillingConfig) (BillingConfig, error) {
+	cfg = NormalizeBillingConfig(cfg)
+	return cfg, SaveSettingJSON(SettingKeyBilling, cfg)
+}
+
+func invalidateBillingConfigCache() {
+	billingConfigMu.Lock()
+	billingConfigLoaded = false
+	billingConfigCache = BillingConfig{}
+	billingConfigMu.Unlock()
 }
 
 // ---- 全局日志详情配置缓存 ----

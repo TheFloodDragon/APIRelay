@@ -15,6 +15,7 @@ func setupTestDB(t *testing.T) {
 	DB.Exec("DELETE FROM log_payloads")
 	DB.Exec("DELETE FROM settings")
 	invalidateModelHealthConfigCache()
+	invalidateBillingConfigCache()
 }
 
 func TestLoggingConfigDefault(t *testing.T) {
@@ -74,6 +75,30 @@ func TestModelHealthConfigDefaultsNormalizationAndPersistence(t *testing.T) {
 	}
 	if got := GetModelHealthConfig(); got != saved {
 		t.Fatalf("persisted config = %+v, want %+v", got, saved)
+	}
+}
+
+func TestBillingConfigDefaultsAndPersistence(t *testing.T) {
+	setupTestDB(t)
+	defaults := GetBillingConfig()
+	if defaults.CacheWriteMultiplier != 1.25 || defaults.CacheReadMultiplier != 0.1 {
+		t.Fatalf("unexpected billing defaults: %+v", defaults)
+	}
+
+	saved, err := SaveBillingConfig(BillingConfig{CacheWriteMultiplier: 2, CacheReadMultiplier: 0})
+	if err != nil {
+		t.Fatalf("save billing config: %v", err)
+	}
+	if got := GetBillingConfig(); got != saved {
+		t.Fatalf("persisted billing config = %+v, want %+v", got, saved)
+	}
+	if saved.CacheReadMultiplier != 0 {
+		t.Fatalf("explicit zero multiplier must be preserved: %+v", saved)
+	}
+
+	normalized := NormalizeBillingConfig(BillingConfig{CacheWriteMultiplier: -1, CacheReadMultiplier: 20})
+	if normalized.CacheWriteMultiplier != DefaultCacheWriteMultiplier || normalized.CacheReadMultiplier != maxBillingMultiplier {
+		t.Fatalf("unexpected normalized billing config: %+v", normalized)
 	}
 }
 

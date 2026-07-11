@@ -158,22 +158,30 @@ func ResolvePrice(ch *model.Channel, displayModel string) (input, output float64
 	return 0, 0
 }
 
-// CalcQuota 按 token 用量与价格计算消耗的微美元额度（向上取整到整数微美元）。
+// CalcQuota 按标准 input/output token 用量计算消耗；缓存明细为空时等价于完整 usage 计费。
 func CalcQuota(promptTokens, completionTokens int, inputPrice, outputPrice float64) int64 {
+	return CalcQuotaForUsage(dto.Usage{PromptTokens: promptTokens, CompletionTokens: completionTokens}, inputPrice, outputPrice, model.BillingConfig{CacheWriteMultiplier: 1, CacheReadMultiplier: 1})
+}
+
+// CalcQuotaForUsage 按完整 usage 与缓存倍率计算微美元额度。PromptTokens 视为总输入，
+// cache creation/read 从普通输入中扣除后分别应用倍率；reasoning 已包含在 completion 中，不重复收费。
+func CalcQuotaForUsage(usage dto.Usage, inputPrice, outputPrice float64, cfg model.BillingConfig) int64 {
 	if inputPrice <= 0 && outputPrice <= 0 {
 		return 0
 	}
-	costUSD := (float64(promptTokens)*inputPrice + float64(completionTokens)*outputPrice) / tokensPerPriceUnit
+	ordinaryInput := usage.PromptTokens - usage.CacheCreationInputTokens - usage.CacheReadInputTokens
+	if ordinaryInput < 0 {
+		ordinaryInput = 0
+	}
+	costUSD := (float64(ordinaryInput)*inputPrice +
+		float64(usage.CacheCreationInputTokens)*inputPrice*cfg.CacheWriteMultiplier +
+		float64(usage.CacheReadInputTokens)*inputPrice*cfg.CacheReadMultiplier +
+		float64(usage.CompletionTokens)*outputPrice) / tokensPerPriceUnit
 	micro := costUSD * microUSDPerUSD
 	if micro <= 0 {
 		return 0
 	}
-	// 向上取整，避免长期累积少扣
-	q := int64(micro)
-	if float64(q) < micro {
-		q++
-	}
-	return q
+	return int64(math.Ceil(micro))
 }
 
 // EstimateTokens 粗略估算请求的 prompt token 数（用于预扣）。
@@ -228,7 +236,7 @@ func EstimateQuota(ir *dto.UnifiedRequest) int64 {
 	if !hit || (in <= 0 && out <= 0) {
 		return 0
 	}
-	return applyReserveSafety(CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), in, out))
+	return applyReserveSafety(CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), in*reserveInputMultiplier(), out))
 }
 
 // EstimateQuotaForCandidates 基于候选渠道价格上界估算预扣额度。
@@ -242,7 +250,7 @@ func EstimateQuotaForCandidates(ir *dto.UnifiedRequest, candidates []model.Chann
 	if in <= 0 && out <= 0 {
 		return 0
 	}
-	return applyReserveSafety(CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), in, out))
+	return applyReserveSafety(CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), in*reserveInputMultiplier(), out))
 }
 
 func maxCandidatePrice(displayModel string, candidates []model.ChannelCandidate) (input, output float64) {
@@ -262,6 +270,18 @@ func maxCandidatePrice(displayModel string, candidates []model.ChannelCandidate)
 		}
 	}
 	return input, output
+}
+
+func reserveInputMultiplier() float64 {
+	cfg := model.GetBillingConfig()
+	multiplier := 1.0
+	if cfg.CacheWriteMultiplier > multiplier {
+		multiplier = cfg.CacheWriteMultiplier
+	}
+	if cfg.CacheReadMultiplier > multiplier {
+		multiplier = cfg.CacheReadMultiplier
+	}
+	return multiplier
 }
 
 func applyReserveSafety(quota int64) int64 {

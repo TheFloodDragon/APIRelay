@@ -11,14 +11,35 @@ import "encoding/json"
 
 // ResponsesRequest 对应 /v1/responses 请求。
 type ResponsesRequest struct {
-	Model           string          `json:"model"`
-	Input           json.RawMessage `json:"input"`                  // string 或 []ResponsesInputItem
-	Instructions    string          `json:"instructions,omitempty"` // 等价于 system
-	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	Stream          bool            `json:"stream,omitempty"`
-	Tools           []ResponsesTool `json:"tools,omitempty"`
+	Model             string               `json:"model"`
+	Input             json.RawMessage      `json:"input"`                  // string 或 []ResponsesInputItem
+	Instructions      string               `json:"instructions,omitempty"` // 等价于 system
+	MaxOutputTokens   *int                 `json:"max_output_tokens,omitempty"`
+	Temperature       *float64             `json:"temperature,omitempty"`
+	TopP              *float64             `json:"top_p,omitempty"`
+	Stream            bool                 `json:"stream,omitempty"`
+	Tools             []ResponsesTool      `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage      `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
+	Text              *ResponsesTextConfig `json:"text,omitempty"`
+	Reasoning         *ResponsesReasoning  `json:"reasoning,omitempty"`
+	TopK              *int                 `json:"top_k,omitempty"`
+}
+
+type ResponsesTextConfig struct {
+	Format *ResponsesTextFormat `json:"format,omitempty"`
+}
+
+type ResponsesTextFormat struct {
+	Type   string          `json:"type"`
+	Name   string          `json:"name,omitempty"`
+	Strict bool            `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema,omitempty"`
+}
+
+type ResponsesReasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // ResponsesInputItem 输入项（message / function_call / function_call_output）。
@@ -77,9 +98,19 @@ type ResponsesOutput struct {
 }
 
 type ResponsesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens         int                          `json:"input_tokens"`
+	OutputTokens        int                          `json:"output_tokens"`
+	TotalTokens         int                          `json:"total_tokens"`
+	InputTokensDetails  *ResponsesInputTokenDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *ResponsesOutputTokenDetails `json:"output_tokens_details,omitempty"`
+}
+
+type ResponsesInputTokenDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+type ResponsesOutputTokenDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // ---- 流式事件 ----

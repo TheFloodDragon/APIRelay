@@ -24,8 +24,10 @@ func IRToAnthropicResponse(r *dto.UnifiedResponse, model string) *dto.AnthropicR
 		Model:      model,
 		StopReason: reverseMapStopReason(r.FinishReason),
 		Usage: dto.AnthropicUsage{
-			InputTokens:  r.Usage.PromptTokens,
-			OutputTokens: r.Usage.CompletionTokens,
+			InputTokens:              ordinaryInputTokens(&r.Usage),
+			OutputTokens:             r.Usage.CompletionTokens,
+			CacheCreationInputTokens: r.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     r.Usage.CacheReadInputTokens,
 		},
 	}
 	if r.Content != "" {
@@ -225,12 +227,25 @@ func (s *AnthropicStreamState) End() []AnthropicSSEEvent {
 		Type:  "message_delta",
 		Delta: &dto.AnthropicStreamDelta{StopReason: stop},
 		Usage: &dto.AnthropicUsage{
-			InputTokens:  s.usage.PromptTokens,
-			OutputTokens: s.usage.CompletionTokens,
+			InputTokens:              ordinaryInputTokens(&s.usage),
+			OutputTokens:             s.usage.CompletionTokens,
+			CacheCreationInputTokens: s.usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     s.usage.CacheReadInputTokens,
 		},
 	}))
 	events = append(events, marshalEvent("message_stop", dto.AnthropicStreamEvent{Type: "message_stop"}))
 	return events
+}
+
+func ordinaryInputTokens(usage *dto.Usage) int {
+	if usage == nil {
+		return 0
+	}
+	ordinary := usage.PromptTokens - usage.CacheCreationInputTokens - usage.CacheReadInputTokens
+	if ordinary < 0 {
+		return 0
+	}
+	return ordinary
 }
 
 func marshalEvent(name string, payload any) AnthropicSSEEvent {

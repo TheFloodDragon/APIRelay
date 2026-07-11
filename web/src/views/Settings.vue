@@ -11,6 +11,7 @@ const tabs = [
   { id: 'testing', label: '模型测试' },
   { id: 'protocols', label: '协议规则' },
   { id: 'prices', label: '模型价格' },
+  { id: 'billing', label: '计费倍率' },
   { id: 'health', label: '模型健康' },
   { id: 'breaker', label: '熔断器' },
 ]
@@ -18,6 +19,7 @@ const activeTab = ref('logging')
 const rules = ref([])
 const protocols = ref([])
 const prices = ref([])
+const billing = ref({ cache_write_multiplier: 1.25, cache_read_multiplier: 0.1 })
 const testModel = ref('')
 const loadingSettings = ref(true)
 const settingsError = ref('')
@@ -166,10 +168,11 @@ async function loadSettings() {
   loadingSettings.value = true
   settingsError.value = ''
   try {
-    const [ruleData, protocolData, priceData, breakerData, loggingData, networkData, promptData, healthData] = await Promise.all([
+    const [ruleData, protocolData, priceData, billingData, breakerData, loggingData, networkData, promptData, healthData] = await Promise.all([
       api.get('/settings/protocol-rules'),
       api.get('/protocols'),
       api.get('/settings/model-prices'),
+      api.get('/settings/billing'),
       api.get('/settings/circuit-breaker'),
       api.get('/settings/logging'),
       api.get('/settings/network'),
@@ -186,6 +189,10 @@ async function loadSettings() {
       input: item.input || 0,
       output: item.output || 0,
     }))
+    billing.value = {
+      cache_write_multiplier: billingData?.cache_write_multiplier ?? 1.25,
+      cache_read_multiplier: billingData?.cache_read_multiplier ?? 0.1,
+    }
     breaker.value = { ...defaultBreaker, ...(breakerData || {}) }
     logging.value = { ...logging.value, ...(loggingData || {}) }
     network.value = { ...network.value, ...(networkData || {}) }
@@ -196,6 +203,7 @@ async function loadSettings() {
     savedSnapshots.testing = snapshot(testPromptPayload())
     savedSnapshots.protocols = snapshot(rulesPayload())
     savedSnapshots.prices = snapshot(pricesPayload())
+    savedSnapshots.billing = snapshot(billingPayload())
     savedSnapshots.health = snapshot(modelHealthPayload())
     savedSnapshots.breaker = snapshot(breakerPayload())
     Object.keys(saveState.value).forEach((section) => setSaveState(section, 'idle'))
@@ -262,12 +270,23 @@ function pricesPayload() {
     const output = Number(price.output)
     if (!model && (!input && !output)) continue
     if (!model) throw new Error('填写价格后必须指定模型名')
-    if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) throw new Error(`模型“${model}”的价格必须是非负数`)
-    if (models.has(model)) throw new Error(`模型“${model}”存在重复价格`)
+    if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) throw new Error(`模型"${model}"的价格必须是非负数`)
+    if (models.has(model)) throw new Error(`模型"${model}"存在重复价格`)
     models.add(model)
     clean.push({ model, input, output })
   }
   return clean
+}
+
+function billingPayload() {
+  const cacheWrite = Number(billing.value.cache_write_multiplier)
+  const cacheRead = Number(billing.value.cache_read_multiplier)
+  if (!Number.isFinite(cacheWrite) || cacheWrite < 0 || cacheWrite > 10) throw new Error('缓存写入倍率必须位于 0 到 10 之间')
+  if (!Number.isFinite(cacheRead) || cacheRead < 0 || cacheRead > 10) throw new Error('缓存读取倍率必须位于 0 到 10 之间')
+  return {
+    cache_write_multiplier: cacheWrite,
+    cache_read_multiplier: cacheRead,
+  }
 }
 
 function modelHealthPayload() {
@@ -307,6 +326,7 @@ const saveDefinitions = {
   prices: { endpoint: '/settings/model-prices', payload: pricesPayload },
   health: { endpoint: '/settings/model-health', payload: modelHealthPayload },
   breaker: { endpoint: '/settings/circuit-breaker', payload: breakerPayload },
+  billing: { endpoint: '/settings/billing', payload: billingPayload },
 }
 
 async function persistSection(section) {
@@ -433,6 +453,7 @@ watchSection(network, 'network')
 watchSection(testPrompt, 'testing')
 watchSection(rules, 'protocols')
 watchSection(prices, 'prices')
+watchSection(billing, 'billing')
 watchSection(modelHealth, 'health')
 watchSection(breaker, 'breaker')
 
@@ -733,6 +754,40 @@ onMounted(loadSettings)
             <div v-if="!prices.length" class="rounded-lg border border-dashed border-line py-8 text-center text-sm text-soft">暂无价格条目，未配置时不计费</div>
           </div>
           <button class="btn mt-3" type="button" @click="addPrice">添加价格</button>
+        </div>
+      </PageState>
+    </section>
+
+    <section
+      v-else-if="activeTab === 'billing'"
+      id="settings-panel-billing"
+      role="tabpanel"
+      aria-labelledby="settings-tab-billing"
+      tabindex="0"
+      class="sheet"
+    >
+      <div class="sheet-head">
+        <div>
+          <div class="dim-title">缓存计费倍率</div>
+          <div class="mt-1 text-xs text-soft">以最终渠道的输入价格为基准，分别计算缓存写入与命中读取</div>
+        </div>
+        <span class="font-mono text-[11px]" :class="sectionStatus('billing').class" :title="sectionStatus('billing').title" aria-live="polite">{{ sectionStatus('billing').text }}</span>
+      </div>
+      <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
+        <div class="space-y-4 p-4 sm:p-5">
+          <p class="max-w-3xl text-xs leading-5 text-soft">普通输入保持 1×；缓存写入默认 1.25×，缓存读取默认 0.1×。设置为 0 表示该类缓存 token 不计费。</p>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">缓存写入倍率</span>
+              <input v-model.number="billing.cache_write_multiplier" class="input input-mono text-right" type="number" min="0" max="10" step="0.05" inputmode="decimal" />
+              <span class="field-help">cache creation token 相对输入价格的倍率。</span>
+            </label>
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">缓存读取倍率</span>
+              <input v-model.number="billing.cache_read_multiplier" class="input input-mono text-right" type="number" min="0" max="10" step="0.05" inputmode="decimal" />
+              <span class="field-help">cache read / cached token 相对输入价格的倍率。</span>
+            </label>
+          </div>
         </div>
       </PageState>
     </section>

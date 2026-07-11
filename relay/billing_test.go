@@ -24,6 +24,20 @@ func TestCalcQuota(t *testing.T) {
 	}
 }
 
+func TestCalcQuotaForUsageCacheMultipliersAndReasoning(t *testing.T) {
+	usage := dto.Usage{
+		PromptTokens:             1_000_000,
+		CompletionTokens:         100_000,
+		CacheCreationInputTokens: 200_000,
+		CacheReadInputTokens:     300_000,
+		ReasoningTokens:          80_000,
+	}
+	cfg := model.BillingConfig{CacheWriteMultiplier: 1.25, CacheReadMultiplier: 0.1}
+	if got := CalcQuotaForUsage(usage, 1, 2, cfg); got != 980_000 {
+		t.Fatalf("cache-aware quota = %d, want 980000", got)
+	}
+}
+
 func TestResolvePrice_ChannelOverride(t *testing.T) {
 	ch := &model.Channel{
 		ModelConfigs: `[{"name":"gpt-4o","enabled":true,"input":2.5,"output":10}]`,
@@ -83,7 +97,7 @@ func TestEstimateQuotaForCandidates_UsesChannelPriceCeiling(t *testing.T) {
 	mt := 100
 	ir := &dto.UnifiedRequest{Model: "gpt-test", MaxTokens: &mt, Messages: []dto.UnifiedMessage{{Role: dto.RoleUser, Content: "hello"}}}
 	candidates := []model.ChannelCandidate{{Channel: &model.Channel{ModelConfigs: `[{"name":"gpt-test","enabled":true,"input":2,"output":10}]`}}}
-	withoutSafety := CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), 2, 10)
+	withoutSafety := CalcQuota(EstimateTokens(ir), estimateCompletionTokens(ir), 2*reserveInputMultiplier(), 10)
 	want := applyReserveSafety(withoutSafety)
 	if got := EstimateQuotaForCandidates(ir, candidates); got != want {
 		t.Fatalf("estimate quota = %d, want %d", got, want)

@@ -12,8 +12,10 @@ import (
 
 // AnthropicStreamParser 维护跨事件的解析状态（如累积 usage、工具调用映射）。
 type AnthropicStreamParser struct {
-	inputTokens  int
-	outputTokens int
+	inputTokens              int
+	outputTokens             int
+	cacheCreationInputTokens int
+	cacheReadInputTokens     int
 	// 记录每个 content block index 对应的工具调用元信息
 	toolBlocks map[int]*toolBlockState
 }
@@ -39,8 +41,10 @@ func (p *AnthropicStreamParser) Parse(data []byte) (*dto.UnifiedStreamChunk, err
 	switch ev.Type {
 	case "message_start":
 		if ev.Message != nil {
-			p.inputTokens = ev.Message.Usage.InputTokens
 			p.outputTokens = ev.Message.Usage.OutputTokens
+			p.cacheCreationInputTokens = ev.Message.Usage.CacheCreationInputTokens
+			p.cacheReadInputTokens = ev.Message.Usage.CacheReadInputTokens
+			p.inputTokens = ev.Message.Usage.InputTokens + p.cacheCreationInputTokens + p.cacheReadInputTokens
 		}
 		return nil, nil
 
@@ -87,9 +91,11 @@ func (p *AnthropicStreamParser) Parse(data []byte) (*dto.UnifiedStreamChunk, err
 			p.outputTokens = ev.Usage.OutputTokens
 		}
 		chunk.Usage = &dto.Usage{
-			PromptTokens:     p.inputTokens,
-			CompletionTokens: p.outputTokens,
-			TotalTokens:      p.inputTokens + p.outputTokens,
+			PromptTokens:             p.inputTokens,
+			CompletionTokens:         p.outputTokens,
+			TotalTokens:              p.inputTokens + p.outputTokens,
+			CacheCreationInputTokens: p.cacheCreationInputTokens,
+			CacheReadInputTokens:     p.cacheReadInputTokens,
 		}
 		return chunk, nil
 

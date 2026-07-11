@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 
@@ -97,6 +98,32 @@ func UpdateModelPrices(c *gin.Context) {
 		return
 	}
 	ok(c, prices)
+}
+
+// GetBillingConfig GET /api/settings/billing。
+func GetBillingConfig(c *gin.Context) {
+	ok(c, model.GetBillingConfig())
+}
+
+// UpdateBillingConfig PUT /api/settings/billing。
+func UpdateBillingConfig(c *gin.Context) {
+	var cfg model.BillingConfig
+	if !bindJSON(c, &cfg) {
+		return
+	}
+	if math.IsNaN(cfg.CacheWriteMultiplier) || math.IsInf(cfg.CacheWriteMultiplier, 0) ||
+		math.IsNaN(cfg.CacheReadMultiplier) || math.IsInf(cfg.CacheReadMultiplier, 0) ||
+		cfg.CacheWriteMultiplier < 0 || cfg.CacheReadMultiplier < 0 ||
+		cfg.CacheWriteMultiplier > 10 || cfg.CacheReadMultiplier > 10 {
+		fail(c, http.StatusBadRequest, "缓存计费倍率必须位于 0 到 10 之间")
+		return
+	}
+	saved, err := model.SaveBillingConfig(cfg)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, saved)
 }
 
 // GetModelHealthConfig GET /api/settings/model-health

@@ -8,15 +8,29 @@ import "encoding/json"
 
 // AnthropicRequest 对应 Anthropic Messages 请求。
 type AnthropicRequest struct {
-	Model         string             `json:"model"`
-	Messages      []AnthropicMessage `json:"messages"`
-	System        json.RawMessage    `json:"system,omitempty"` // string 或 content block 数组
-	MaxTokens     int                `json:"max_tokens"`
-	Stream        bool               `json:"stream,omitempty"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	TopP          *float64           `json:"top_p,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Tools         []AnthropicTool    `json:"tools,omitempty"`
+	Model         string               `json:"model"`
+	Messages      []AnthropicMessage   `json:"messages"`
+	System        json.RawMessage      `json:"system,omitempty"` // string 或 content block 数组
+	MaxTokens     int                  `json:"max_tokens"`
+	Stream        bool                 `json:"stream,omitempty"`
+	Temperature   *float64             `json:"temperature,omitempty"`
+	TopP          *float64             `json:"top_p,omitempty"`
+	StopSequences []string             `json:"stop_sequences,omitempty"`
+	Tools         []AnthropicTool      `json:"tools,omitempty"`
+	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
+	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
+	TopK          *int                 `json:"top_k,omitempty"`
+}
+
+type AnthropicToolChoice struct {
+	Type                   string `json:"type"` // auto | none | any | tool
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
+}
+
+type AnthropicThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 // AnthropicMessage role + content（string 或 content block 数组）。
@@ -41,6 +55,11 @@ type AnthropicContentBlock struct {
 
 	// image
 	Source *AnthropicImageSource `json:"source,omitempty"`
+
+	// thinking / redacted_thinking
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
 }
 
 type AnthropicImageSource struct {
@@ -70,8 +89,10 @@ type AnthropicResponse struct {
 }
 
 type AnthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // ---- 流式事件 ----

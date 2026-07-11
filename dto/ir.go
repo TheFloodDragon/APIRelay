@@ -22,10 +22,14 @@ const (
 
 // UnifiedContentPart 统一的多模态内容块。
 type UnifiedContentPart struct {
-	Type string `json:"type"` // text | image_url | ...
+	Type string `json:"type"` // text | image_url | thinking | redacted_thinking | ...
 	Text string `json:"text,omitempty"`
 	// ImageURL 用于图像输入
 	ImageURL string `json:"image_url,omitempty"`
+	// Thinking/Signature/Data 用于保留 Anthropic thinking 与 redacted_thinking 块。
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
 }
 
 // UnifiedMessage 统一消息。
@@ -58,17 +62,45 @@ type UnifiedTool struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
+// UnifiedToolChoice 统一工具选择策略。
+type UnifiedToolChoice struct {
+	Mode            string `json:"mode,omitempty"` // auto | none | required | tool
+	Name            string `json:"name,omitempty"`
+	DisableParallel bool   `json:"disable_parallel,omitempty"`
+}
+
+// UnifiedResponseFormat 统一结构化输出配置。
+type UnifiedResponseFormat struct {
+	Type   string          `json:"type,omitempty"` // text | json_object | json_schema
+	Name   string          `json:"name,omitempty"`
+	Strict bool            `json:"strict,omitempty"`
+	Schema json.RawMessage `json:"schema,omitempty"`
+}
+
+// UnifiedThinkingConfig 同时容纳 Anthropic budget thinking 与 OpenAI/Responses reasoning 配置。
+type UnifiedThinkingConfig struct {
+	Type         string `json:"type,omitempty"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	Effort       string `json:"effort,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+}
+
 // UnifiedRequest 统一请求（IR）。
 type UnifiedRequest struct {
-	Model       string           `json:"model"`
-	System      string           `json:"system,omitempty"`
-	Messages    []UnifiedMessage `json:"messages"`
-	Tools       []UnifiedTool    `json:"tools,omitempty"`
-	MaxTokens   *int             `json:"max_tokens,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	TopP        *float64         `json:"top_p,omitempty"`
-	Stream      bool             `json:"stream"`
-	Stop        []string         `json:"stop,omitempty"`
+	Model               string                 `json:"model"`
+	System              string                 `json:"system,omitempty"`
+	Messages            []UnifiedMessage       `json:"messages"`
+	Tools               []UnifiedTool          `json:"tools,omitempty"`
+	MaxTokens           *int                   `json:"max_tokens,omitempty"`
+	Temperature         *float64               `json:"temperature,omitempty"`
+	TopP                *float64               `json:"top_p,omitempty"`
+	TopK                *int                   `json:"top_k,omitempty"`
+	Stream              bool                   `json:"stream"`
+	Stop                []string               `json:"stop,omitempty"`
+	ToolChoice          *UnifiedToolChoice     `json:"tool_choice,omitempty"`
+	ResponseFormat      *UnifiedResponseFormat `json:"response_format,omitempty"`
+	Thinking            *UnifiedThinkingConfig `json:"thinking,omitempty"`
+	UnsupportedFeatures []string               `json:"-"`
 
 	// SourceEndpoint 记录对外协议来源，便于日志与差异化处理
 	SourceEndpoint string `json:"-"`
@@ -78,9 +110,13 @@ type UnifiedRequest struct {
 
 // Usage 统一用量。
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens             int  `json:"prompt_tokens"`
+	CompletionTokens         int  `json:"completion_tokens"`
+	TotalTokens              int  `json:"total_tokens"`
+	CacheCreationInputTokens int  `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int  `json:"cache_read_input_tokens,omitempty"`
+	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
+	Estimated                bool `json:"estimated,omitempty"`
 }
 
 // UnifiedResponse 统一的非流式响应。

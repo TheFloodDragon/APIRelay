@@ -23,11 +23,7 @@ func IRToResponsesResponse(r *dto.UnifiedResponse, model string) *dto.ResponsesR
 		CreatedAt: time.Now().Unix(),
 		Model:     model,
 		Status:    "completed",
-		Usage: &dto.ResponsesUsage{
-			InputTokens:  r.Usage.PromptTokens,
-			OutputTokens: r.Usage.CompletionTokens,
-			TotalTokens:  r.Usage.TotalTokens,
-		},
+		Usage:     irUsageToResponses(&r.Usage),
 	}
 	if r.Content != "" {
 		resp.Output = append(resp.Output, dto.ResponsesOutput{
@@ -155,11 +151,7 @@ func (s *ResponsesStreamState) End() []ResponsesSSEEvent {
 		CreatedAt: time.Now().Unix(),
 		Model:     s.model,
 		Status:    "completed",
-		Usage: &dto.ResponsesUsage{
-			InputTokens:  s.usage.PromptTokens,
-			OutputTokens: s.usage.CompletionTokens,
-			TotalTokens:  s.usage.TotalTokens,
-		},
+		Usage:     irUsageToResponses(&s.usage),
 	}
 	if s.content != "" {
 		final.Output = append(final.Output, dto.ResponsesOutput{
@@ -173,6 +165,24 @@ func (s *ResponsesStreamState) End() []ResponsesSSEEvent {
 	return []ResponsesSSEEvent{
 		marshalResponsesEvent("response.completed", dto.ResponsesStreamEvent{Type: "response.completed", Response: final}),
 	}
+}
+
+func irUsageToResponses(usage *dto.Usage) *dto.ResponsesUsage {
+	if usage == nil {
+		return nil
+	}
+	out := &dto.ResponsesUsage{
+		InputTokens:  usage.PromptTokens,
+		OutputTokens: usage.CompletionTokens,
+		TotalTokens:  usage.TotalTokens,
+	}
+	if usage.CacheReadInputTokens > 0 {
+		out.InputTokensDetails = &dto.ResponsesInputTokenDetails{CachedTokens: usage.CacheReadInputTokens}
+	}
+	if usage.ReasoningTokens > 0 {
+		out.OutputTokensDetails = &dto.ResponsesOutputTokenDetails{ReasoningTokens: usage.ReasoningTokens}
+	}
+	return out
 }
 
 func marshalResponsesEvent(name string, payload any) ResponsesSSEEvent {

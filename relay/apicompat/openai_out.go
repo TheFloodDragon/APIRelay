@@ -40,11 +40,7 @@ func IRToOpenAIResponse(r *dto.UnifiedResponse, model string) *dto.OpenAIChatRes
 			Message:      msg,
 			FinishReason: &finish,
 		}},
-		Usage: &dto.OpenAIUsage{
-			PromptTokens:     r.Usage.PromptTokens,
-			CompletionTokens: r.Usage.CompletionTokens,
-			TotalTokens:      r.Usage.TotalTokens,
-		},
+		Usage: irUsageToOpenAI(&r.Usage),
 	}
 }
 
@@ -128,12 +124,26 @@ func (s *OpenAIStreamState) Chunk(c *dto.UnifiedStreamChunk) []byte {
 		Choices: []dto.OpenAIChoice{choice},
 	}
 	if c.Usage != nil {
-		resp.Usage = &dto.OpenAIUsage{
-			PromptTokens:     c.Usage.PromptTokens,
-			CompletionTokens: c.Usage.CompletionTokens,
-			TotalTokens:      c.Usage.TotalTokens,
-		}
+		resp.Usage = irUsageToOpenAI(c.Usage)
 	}
 	b, _ := json.Marshal(resp)
 	return b
+}
+
+func irUsageToOpenAI(usage *dto.Usage) *dto.OpenAIUsage {
+	if usage == nil {
+		return nil
+	}
+	out := &dto.OpenAIUsage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+	}
+	if usage.CacheReadInputTokens > 0 {
+		out.PromptTokensDetails = &dto.OpenAIPromptTokenDetails{CachedTokens: usage.CacheReadInputTokens}
+	}
+	if usage.ReasoningTokens > 0 {
+		out.CompletionTokensDetails = &dto.OpenAICompletionTokenDetails{ReasoningTokens: usage.ReasoningTokens}
+	}
+	return out
 }

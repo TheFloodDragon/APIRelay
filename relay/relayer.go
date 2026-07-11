@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -189,6 +190,20 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 		return
 	}
 
+	// 在预扣和故障转移前排除无法无损表达本次请求的目标协议。协议不兼容不是渠道故障，
+	// 不应进入熔断/冷却；若全部候选均不兼容，向客户端返回明确的 400。
+	compatible, incompatibilities := filterCompatibleCandidates(info.EndpointType, ir, candidates)
+	if len(compatible) == 0 {
+		msg := "请求包含无法转换到可用上游协议的字段"
+		if len(incompatibilities) > 0 {
+			msg += "：" + strings.Join(incompatibilities, "；")
+		}
+		out.WriteError(c, http.StatusBadRequest, msg)
+		r.logError(info, http.StatusBadRequest, msg)
+		return
+	}
+	candidates = compatible
+
 	// 预扣额度：基于候选渠道价格上界 + 全局价格表估算，避免渠道级价格高于全局价时少预扣。
 	if billing != nil {
 		reserved := EstimateQuotaForCandidates(ir, candidates)
@@ -208,6 +223,28 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 	}()
 
 	r.relayWithFailover(c, info, ir, out, billing, candidates)
+}
+
+func filterCompatibleCandidates(ep constant.EndpointType, ir *dto.UnifiedRequest, candidates []model.ChannelCandidate) ([]model.ChannelCandidate, []string) {
+	compatible := make([]model.ChannelCandidate, 0, len(candidates))
+	var reasons []string
+	seenReasons := map[string]struct{}{}
+	for _, candidate := range candidates {
+		if candidate.Channel == nil {
+			continue
+		}
+		target := ResolveAPIType(candidate.Channel, ir.Model)
+		if err := apicompat.ValidateCompatibility(ep, target, ir); err != nil {
+			reason := candidate.Channel.Name + "：" + err.Error()
+			if _, exists := seenReasons[reason]; !exists {
+				seenReasons[reason] = struct{}{}
+				reasons = append(reasons, reason)
+			}
+			continue
+		}
+		compatible = append(compatible, candidate)
+	}
+	return compatible, reasons
 }
 
 // relayWithFailover 执行带故障转移的转发主循环。
@@ -573,7 +610,7 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, ir *dto.Unifi
 	// 按对外协议序列化；入口响应写出器会采集最终状态、响应头与正文。
 	out.WriteResponse(c, uniResp, info.OriginModel)
 
-	r.logConsume(info, ir, &uniResp.Usage, billing)
+	r.logConsume(info, ir, &uniResp.Usage, responseCompletionChars(uniResp), billing)
 	return http.StatusOK, false, nil
 }
 
@@ -675,7 +712,7 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 	if usage != nil {
 		u = *usage
 	}
-	r.logConsume(info, ir, &u, billing)
+	r.logConsume(info, ir, &u, completionChars, billing)
 	return http.StatusOK, false, nil
 }
 
@@ -752,23 +789,45 @@ func streamChunkCompletionChars(ep constant.EndpointType, chunk *dto.UnifiedStre
 	return 0
 }
 
-func interruptedStreamUsage(ir *dto.UnifiedRequest, usage *dto.Usage, completionChars int) dto.Usage {
+func hasReportedUsage(usage dto.Usage) bool {
+	return usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 ||
+		usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 || usage.ReasoningTokens > 0
+}
+
+func normalizeUsage(ir *dto.UnifiedRequest, usage *dto.Usage, completionChars int) dto.Usage {
 	effective := dto.Usage{}
 	if usage != nil {
 		effective = *usage
 	}
-	if effective.PromptTokens <= 0 {
-		effective.PromptTokens = EstimateTokens(ir)
+	if hasReportedUsage(effective) {
+		if effective.TotalTokens == 0 {
+			effective.TotalTokens = effective.PromptTokens + effective.CompletionTokens
+		}
+		return effective
 	}
-	if effective.CompletionTokens <= 0 && completionChars > 0 {
-		// 与预扣估算采用同一量级，按 Unicode 字符向上折算，避免短输出记为 0。
+	effective.PromptTokens = EstimateTokens(ir)
+	if completionChars > 0 {
+		// 按 Unicode 字符向上折算，短输出至少 1 token。
 		effective.CompletionTokens = (completionChars + 3) / 4
 	}
-	minimumTotal := effective.PromptTokens + effective.CompletionTokens
-	if effective.TotalTokens < minimumTotal {
-		effective.TotalTokens = minimumTotal
-	}
+	effective.TotalTokens = effective.PromptTokens + effective.CompletionTokens
+	effective.Estimated = true
 	return effective
+}
+
+func interruptedStreamUsage(ir *dto.UnifiedRequest, usage *dto.Usage, completionChars int) dto.Usage {
+	return normalizeUsage(ir, usage, completionChars)
+}
+
+func responseCompletionChars(response *dto.UnifiedResponse) int {
+	if response == nil {
+		return 0
+	}
+	chars := utf8.RuneCountInString(response.Content)
+	for _, call := range response.ToolCalls {
+		chars += utf8.RuneCountInString(call.Name) + utf8.RuneCountInString(call.Arguments)
+	}
+	return chars
 }
 
 func (r *Relayer) logInterruptedStream(info *RelayInfo, ir *dto.UnifiedRequest, usage *dto.Usage, completionChars int, billing *BillingSession, status int, errMsg string) {
@@ -776,31 +835,35 @@ func (r *Relayer) logInterruptedStream(info *RelayInfo, ir *dto.UnifiedRequest, 
 	var quota int64
 	if info.Channel != nil {
 		in, out := ResolvePrice(info.Channel, info.OriginModel)
-		quota = CalcQuota(effective.PromptTokens, effective.CompletionTokens, in, out)
+		quota = CalcQuotaForUsage(effective, in, out, model.GetBillingConfig())
 	}
 	l := &model.Log{
-		RequestId:         info.RequestID,
-		UpstreamRequestId: info.UpstreamRequestId,
-		Type:              model.LogTypeError,
-		UserId:            info.UserId,
-		TokenId:           info.TokenId,
-		TokenName:         info.TokenName,
-		Group:             info.Group,
-		EndpointType:      string(info.EndpointType),
-		ApiType:           apiTypeLabel(info),
-		SrcModel:          info.OriginModel,
-		MappedModel:       info.UpstreamModel,
-		IsStream:          true,
-		PromptTokens:      effective.PromptTokens,
-		CompletionTokens:  effective.CompletionTokens,
-		TotalTokens:       effective.TotalTokens,
-		Quota:             quota,
-		UseTimeMs:         int(time.Now().UnixMilli() - info.StartAtMs),
-		FirstByteMs:       info.FirstByteMs,
-		Status:            status,
-		Ip:                info.ClientIP,
-		Error:             cleanErrorMessage("interrupted stream: " + errMsg),
-		Content:           info.FailoverChain,
+		RequestId:                info.RequestID,
+		UpstreamRequestId:        info.UpstreamRequestId,
+		Type:                     model.LogTypeError,
+		UserId:                   info.UserId,
+		TokenId:                  info.TokenId,
+		TokenName:                info.TokenName,
+		Group:                    info.Group,
+		EndpointType:             string(info.EndpointType),
+		ApiType:                  apiTypeLabel(info),
+		SrcModel:                 info.OriginModel,
+		MappedModel:              info.UpstreamModel,
+		IsStream:                 true,
+		PromptTokens:             effective.PromptTokens,
+		CompletionTokens:         effective.CompletionTokens,
+		TotalTokens:              effective.TotalTokens,
+		CacheCreationInputTokens: effective.CacheCreationInputTokens,
+		CacheReadInputTokens:     effective.CacheReadInputTokens,
+		ReasoningTokens:          effective.ReasoningTokens,
+		UsageEstimated:           effective.Estimated,
+		Quota:                    quota,
+		UseTimeMs:                int(time.Now().UnixMilli() - info.StartAtMs),
+		FirstByteMs:              info.FirstByteMs,
+		Status:                   status,
+		Ip:                       info.ClientIP,
+		Error:                    cleanErrorMessage("interrupted stream: " + errMsg),
+		Content:                  info.FailoverChain,
 	}
 	if info.Channel != nil {
 		l.ChannelId = info.Channel.Id
@@ -852,47 +915,43 @@ func (r *Relayer) buildRelayInfo(c *gin.Context, ep constant.EndpointType) *Rela
 	return info
 }
 
-func (r *Relayer) logConsume(info *RelayInfo, ir *dto.UnifiedRequest, usage *dto.Usage, billing *BillingSession) {
+func (r *Relayer) logConsume(info *RelayInfo, ir *dto.UnifiedRequest, usage *dto.Usage, completionChars int, billing *BillingSession) {
 	useTime := int(time.Now().UnixMilli() - info.StartAtMs)
-	effectiveUsage := dto.Usage{}
-	if usage != nil {
-		effectiveUsage = *usage
-	}
-	// 部分上游流式响应不返回 usage；至少按请求 prompt 粗略估算，避免成功流式请求完全零计费。
-	if info.IsStream && ir != nil && effectiveUsage.PromptTokens == 0 && effectiveUsage.CompletionTokens == 0 && effectiveUsage.TotalTokens == 0 {
-		effectiveUsage.PromptTokens = EstimateTokens(ir)
-		effectiveUsage.TotalTokens = effectiveUsage.PromptTokens
-	}
+	effectiveUsage := normalizeUsage(ir, usage, completionChars)
 
-	// 按实际渠道价格计算消耗额度（微美元）
+	// 按实际渠道价格和缓存倍率计算消耗额度（微美元）
 	var quota int64
 	if info.Channel != nil {
 		in, out := ResolvePrice(info.Channel, info.OriginModel)
-		quota = CalcQuota(effectiveUsage.PromptTokens, effectiveUsage.CompletionTokens, in, out)
+		quota = CalcQuotaForUsage(effectiveUsage, in, out, model.GetBillingConfig())
 	}
 
 	l := &model.Log{
-		RequestId:         info.RequestID,
-		UpstreamRequestId: info.UpstreamRequestId,
-		Type:              model.LogTypeConsume,
-		UserId:            info.UserId,
-		TokenId:           info.TokenId,
-		TokenName:         info.TokenName,
-		Group:             info.Group,
-		EndpointType:      string(info.EndpointType),
-		ApiType:           apiTypeLabel(info),
-		SrcModel:          info.OriginModel,
-		MappedModel:       info.UpstreamModel,
-		IsStream:          info.IsStream,
-		PromptTokens:      effectiveUsage.PromptTokens,
-		CompletionTokens:  effectiveUsage.CompletionTokens,
-		TotalTokens:       effectiveUsage.TotalTokens,
-		Quota:             quota,
-		UseTimeMs:         useTime,
-		FirstByteMs:       info.FirstByteMs,
-		Status:            http.StatusOK,
-		Ip:                info.ClientIP,
-		Content:           info.FailoverChain,
+		RequestId:                info.RequestID,
+		UpstreamRequestId:        info.UpstreamRequestId,
+		Type:                     model.LogTypeConsume,
+		UserId:                   info.UserId,
+		TokenId:                  info.TokenId,
+		TokenName:                info.TokenName,
+		Group:                    info.Group,
+		EndpointType:             string(info.EndpointType),
+		ApiType:                  apiTypeLabel(info),
+		SrcModel:                 info.OriginModel,
+		MappedModel:              info.UpstreamModel,
+		IsStream:                 info.IsStream,
+		PromptTokens:             effectiveUsage.PromptTokens,
+		CompletionTokens:         effectiveUsage.CompletionTokens,
+		TotalTokens:              effectiveUsage.TotalTokens,
+		CacheCreationInputTokens: effectiveUsage.CacheCreationInputTokens,
+		CacheReadInputTokens:     effectiveUsage.CacheReadInputTokens,
+		ReasoningTokens:          effectiveUsage.ReasoningTokens,
+		UsageEstimated:           effectiveUsage.Estimated,
+		Quota:                    quota,
+		UseTimeMs:                useTime,
+		FirstByteMs:              info.FirstByteMs,
+		Status:                   http.StatusOK,
+		Ip:                       info.ClientIP,
+		Content:                  info.FailoverChain,
 	}
 	if info.Channel != nil {
 		l.ChannelId = info.Channel.Id

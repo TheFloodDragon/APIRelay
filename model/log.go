@@ -34,11 +34,15 @@ type Log struct {
 	SrcModel    string `json:"src_model" gorm:"size:128;index"` // 客户端请求的模型
 	MappedModel string `json:"mapped_model" gorm:"size:128"`    // 实际转发到上游的模型
 
-	IsStream         bool  `json:"is_stream"`
-	PromptTokens     int   `json:"prompt_tokens"`
-	CompletionTokens int   `json:"completion_tokens"`
-	TotalTokens      int   `json:"total_tokens"`
-	Quota            int64 `json:"quota"`
+	IsStream                 bool  `json:"is_stream"`
+	PromptTokens             int   `json:"prompt_tokens"`
+	CompletionTokens         int   `json:"completion_tokens"`
+	TotalTokens              int   `json:"total_tokens"`
+	CacheCreationInputTokens int   `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int   `json:"cache_read_input_tokens"`
+	ReasoningTokens          int   `json:"reasoning_tokens"`
+	UsageEstimated           bool  `json:"usage_estimated" gorm:"index"`
+	Quota                    int64 `json:"quota"`
 
 	UseTimeMs   int `json:"use_time_ms"`   // 总耗时
 	FirstByteMs int `json:"first_byte_ms"` // 首字节延迟（流式）

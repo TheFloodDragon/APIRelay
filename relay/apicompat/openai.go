@@ -26,10 +26,27 @@ func ParseOpenAIRequest(body []byte) (*dto.UnifiedRequest, error) {
 		MaxTokens:      req.MaxTokens,
 		Temperature:    req.Temperature,
 		TopP:           req.TopP,
+		TopK:           req.TopK,
 		Stream:         req.Stream,
 		Stop:           []string(req.Stop),
+		ToolChoice:     parseToolChoice(req.ToolChoice, req.ParallelToolCalls != nil && !*req.ParallelToolCalls),
 		SourceEndpoint: "openai",
 		Raw:            body,
+	}
+	if req.ResponseFormat != nil {
+		format := &dto.UnifiedResponseFormat{Type: req.ResponseFormat.Type}
+		if req.ResponseFormat.JSONSchema != nil {
+			format.Name = req.ResponseFormat.JSONSchema.Name
+			format.Strict = req.ResponseFormat.JSONSchema.Strict
+			format.Schema = req.ResponseFormat.JSONSchema.Schema
+		}
+		ir.ResponseFormat = format
+	}
+	if req.ReasoningEffort != "" {
+		ir.Thinking = &dto.UnifiedThinkingConfig{Effort: req.ReasoningEffort}
+	}
+	if containsJSONKey(body, "cache_control") {
+		ir.UnsupportedFeatures = append(ir.UnsupportedFeatures, "cache_control")
 	}
 
 	for _, m := range req.Messages {
@@ -109,8 +126,19 @@ func BuildOpenAIRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.OpenA
 		MaxTokens:   ir.MaxTokens,
 		Temperature: ir.Temperature,
 		TopP:        ir.TopP,
+		TopK:        ir.TopK,
 		Stream:      ir.Stream,
 		Stop:        dto.StopSequences(ir.Stop),
+	}
+	req.ToolChoice, req.ParallelToolCalls = openAIToolChoice(ir.ToolChoice)
+	if format := ir.ResponseFormat; format != nil {
+		req.ResponseFormat = &dto.OpenAIResponseFormat{Type: format.Type}
+		if format.Type == "json_schema" {
+			req.ResponseFormat.JSONSchema = &dto.OpenAIJSONSchema{Name: format.Name, Strict: format.Strict, Schema: format.Schema}
+		}
+	}
+	if ir.Thinking != nil {
+		req.ReasoningEffort = ir.Thinking.Effort
 	}
 	if ir.Stream {
 		req.StreamOptions = &dto.OpenAIStreamOptions{IncludeUsage: true}
@@ -214,11 +242,7 @@ func OpenAIResponseToIR(resp *dto.OpenAIChatResponse) *dto.UnifiedResponse {
 		}
 	}
 	if resp.Usage != nil {
-		out.Usage = dto.Usage{
-			PromptTokens:     resp.Usage.PromptTokens,
-			CompletionTokens: resp.Usage.CompletionTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
-		}
+		out.Usage = openAIUsageToIR(resp.Usage)
 	}
 	return out
 }
@@ -253,11 +277,23 @@ func ParseOpenAIStreamChunk(data []byte) (*dto.UnifiedStreamChunk, error) {
 		}
 	}
 	if chunk.Usage != nil {
-		out.Usage = &dto.Usage{
-			PromptTokens:     chunk.Usage.PromptTokens,
-			CompletionTokens: chunk.Usage.CompletionTokens,
-			TotalTokens:      chunk.Usage.TotalTokens,
-		}
+		usage := openAIUsageToIR(chunk.Usage)
+		out.Usage = &usage
 	}
 	return out, nil
+}
+
+func openAIUsageToIR(usage *dto.OpenAIUsage) dto.Usage {
+	out := dto.Usage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+	}
+	if usage.PromptTokensDetails != nil {
+		out.CacheReadInputTokens = usage.PromptTokensDetails.CachedTokens
+	}
+	if usage.CompletionTokensDetails != nil {
+		out.ReasoningTokens = usage.CompletionTokensDetails.ReasoningTokens
+	}
+	return out
 }

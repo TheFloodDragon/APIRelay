@@ -27,9 +27,23 @@ func ParseAnthropicRequest(body []byte) (*dto.UnifiedRequest, error) {
 		Stream:         req.Stream,
 		Temperature:    req.Temperature,
 		TopP:           req.TopP,
+		TopK:           req.TopK,
 		Stop:           req.StopSequences,
 		SourceEndpoint: "anthropic",
 		Raw:            body,
+	}
+	if req.ToolChoice != nil {
+		mode := req.ToolChoice.Type
+		if mode == "any" {
+			mode = "required"
+		}
+		ir.ToolChoice = &dto.UnifiedToolChoice{Mode: mode, Name: req.ToolChoice.Name, DisableParallel: req.ToolChoice.DisableParallelToolUse}
+	}
+	if req.Thinking != nil {
+		ir.Thinking = &dto.UnifiedThinkingConfig{Type: req.Thinking.Type, BudgetTokens: req.Thinking.BudgetTokens}
+	}
+	if containsJSONKey(body, "cache_control") {
+		ir.UnsupportedFeatures = append(ir.UnsupportedFeatures, "cache_control")
 	}
 	if req.MaxTokens > 0 {
 		mt := req.MaxTokens
@@ -134,6 +148,10 @@ func parseAnthropicContent(raw json.RawMessage) (anthropicParsedContent, bool) {
 				}
 				out.parts = append(out.parts, dto.UnifiedContentPart{Type: "image_url", ImageURL: url})
 			}
+		case "thinking":
+			out.parts = append(out.parts, dto.UnifiedContentPart{Type: "thinking", Thinking: b.Thinking, Signature: b.Signature})
+		case "redacted_thinking":
+			out.parts = append(out.parts, dto.UnifiedContentPart{Type: "redacted_thinking", Data: b.Data})
 		case "tool_use":
 			out.toolCalls = append(out.toolCalls, dto.UnifiedToolCall{
 				ID:        b.ID,
@@ -183,7 +201,18 @@ func BuildAnthropicRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.An
 		Stream:        ir.Stream,
 		Temperature:   ir.Temperature,
 		TopP:          ir.TopP,
+		TopK:          ir.TopK,
 		StopSequences: ir.Stop,
+	}
+	if choice := ir.ToolChoice; choice != nil {
+		mode := choice.Mode
+		if mode == "required" {
+			mode = "any"
+		}
+		req.ToolChoice = &dto.AnthropicToolChoice{Type: mode, Name: choice.Name, DisableParallelToolUse: choice.DisableParallel}
+	}
+	if thinking := ir.Thinking; thinking != nil && (thinking.Type != "" || thinking.BudgetTokens > 0) {
+		req.Thinking = &dto.AnthropicThinking{Type: thinking.Type, BudgetTokens: thinking.BudgetTokens}
 	}
 	// Anthropic 强制要求 max_tokens
 	if ir.MaxTokens != nil && *ir.MaxTokens > 0 {
@@ -209,6 +238,14 @@ func BuildAnthropicRequest(ir *dto.UnifiedRequest, upstreamModel string) *dto.An
 			req.Messages = append(req.Messages, dto.AnthropicMessage{Role: "user", Content: content})
 		case dto.RoleAssistant:
 			blocks := []dto.AnthropicContentBlock{}
+			for _, part := range m.Parts {
+				switch part.Type {
+				case "thinking":
+					blocks = append(blocks, dto.AnthropicContentBlock{Type: "thinking", Thinking: part.Thinking, Signature: part.Signature})
+				case "redacted_thinking":
+					blocks = append(blocks, dto.AnthropicContentBlock{Type: "redacted_thinking", Data: part.Data})
+				}
+			}
 			if m.Content != "" {
 				blocks = append(blocks, dto.AnthropicContentBlock{Type: "text", Text: m.Content})
 			}
@@ -297,12 +334,22 @@ func AnthropicResponseToIR(resp *dto.AnthropicResponse) *dto.UnifiedResponse {
 		}
 	}
 	out.Content = sb.String()
-	out.Usage = dto.Usage{
-		PromptTokens:     resp.Usage.InputTokens,
-		CompletionTokens: resp.Usage.OutputTokens,
-		TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-	}
+	out.Usage = anthropicUsageToIR(&resp.Usage)
 	return out
+}
+
+func anthropicUsageToIR(usage *dto.AnthropicUsage) dto.Usage {
+	if usage == nil {
+		return dto.Usage{}
+	}
+	promptTotal := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens
+	return dto.Usage{
+		PromptTokens:             promptTotal,
+		CompletionTokens:         usage.OutputTokens,
+		TotalTokens:              promptTotal + usage.OutputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     usage.CacheReadInputTokens,
+	}
 }
 
 func mapAnthropicStopReason(r string) string {
