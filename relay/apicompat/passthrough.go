@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/apirelay/apirelay/constant"
 )
@@ -97,6 +98,57 @@ func ReplaceTopLevelModel(raw []byte, newModel string) ([]byte, error) {
 		return out, nil
 	}
 	return nil, errModelFieldNotFound
+}
+
+// RewriteRawSSEModel 将同协议 Raw SSE 的响应模型名回写为客户端请求的显示模型名。
+// 非 data 行、终止标记、无模型字段或无效 JSON 均原样返回；只有模型承载事件会被重序列化。
+func RewriteRawSSEModel(line string, ep constant.EndpointType, displayModel string) string {
+	if displayModel == "" || !strings.HasPrefix(line, "data:") {
+		return line
+	}
+	payloadStart := len("data:")
+	for payloadStart < len(line) && (line[payloadStart] == ' ' || line[payloadStart] == '\t') {
+		payloadStart++
+	}
+	payload := line[payloadStart:]
+	if payload == "" || payload == "[DONE]" {
+		return line
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal([]byte(payload), &root); err != nil {
+		return line
+	}
+	changed := false
+	switch ep {
+	case constant.EndpointAnthropic:
+		if message, ok := root["message"].(map[string]any); ok {
+			if _, exists := message["model"]; exists {
+				message["model"] = displayModel
+				changed = true
+			}
+		}
+	case constant.EndpointResponses:
+		if response, ok := root["response"].(map[string]any); ok {
+			if _, exists := response["model"]; exists {
+				response["model"] = displayModel
+				changed = true
+			}
+		}
+	default:
+		if _, exists := root["model"]; exists {
+			root["model"] = displayModel
+			changed = true
+		}
+	}
+	if !changed {
+		return line
+	}
+	rewritten, err := json.Marshal(root)
+	if err != nil {
+		return line
+	}
+	return line[:payloadStart] + string(rewritten)
 }
 
 // ============================================================================

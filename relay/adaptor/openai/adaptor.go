@@ -94,9 +94,13 @@ func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response
 
 	var usage *dto.Usage
 	lineCount := 0
+	completed := false
 	err := adaptor.StreamRawLines(resp.Body, func(line string) error {
 		lineCount++
 		data, isData := adaptor.ParseSSEData(line)
+		if isData && data == "[DONE]" {
+			completed = true
+		}
 
 		// 旁路解析 data 行提取 usage（[DONE] 与空 data 跳过）
 		if isData && data != "" && data != "[DONE]" {
@@ -122,6 +126,9 @@ func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response
 	})
 	if err != nil {
 		return usage, fmt.Errorf("stream after %d lines: %w", lineCount, err)
+	}
+	if !completed {
+		return usage, fmt.Errorf("stream after %d lines: %w", lineCount, adaptor.ErrUnexpectedStreamEOF)
 	}
 	return usage, nil
 }

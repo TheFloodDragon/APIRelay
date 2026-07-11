@@ -2,6 +2,7 @@ package relay
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -149,4 +150,54 @@ func TestFailover_ExhaustedReturnsRealStatus(t *testing.T) {
 		t.Fatal("must not disguise failure as 200")
 	}
 	_ = fmt.Sprint(rec.Body.String())
+}
+
+func TestFailover_StreamInterruptedAfterWriteDoesNotFinishOrSwitch(t *testing.T) {
+	setupTestDB(t)
+
+	var primaryHits, backupHits int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&primaryHits, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-real\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// 不发送 [DONE] 就关闭响应，模拟首包后的上游断流。
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&backupHits, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"backup\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer backup.Close()
+
+	mustChannelURL(t, "primary", primary.URL, 10)
+	mustChannelURL(t, "backup", backup.URL, 1)
+
+	r := NewRelayer(&config.RelayConfig{MaxRetries: 2, ChannelMaxRetries: 1, DefaultGroup: "default"})
+	c, rec := newRelayTestContext(t)
+	c.Request.Body = io.NopCloser(strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	r.handle(c, constant.EndpointOpenAI, apicompat.ParseOpenAIRequest)
+
+	if atomic.LoadInt32(&primaryHits) != 1 {
+		t.Fatalf("primary hits = %d, want 1", atomic.LoadInt32(&primaryHits))
+	}
+	if atomic.LoadInt32(&backupHits) != 0 {
+		t.Fatalf("backup must not be attempted after response started; hits=%d", atomic.LoadInt32(&backupHits))
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "partial") {
+		t.Fatalf("partial upstream data should be preserved, body=%s", body)
+	}
+	if strings.Contains(body, "[DONE]") {
+		t.Fatalf("interrupted stream must not receive synthetic [DONE], body=%s", body)
+	}
+	if strings.Contains(body, "backup") {
+		t.Fatalf("backup response must not be appended, body=%s", body)
+	}
+	if strings.Contains(body, "gpt-4o-real") || !strings.Contains(body, `"model":"gpt-4o"`) {
+		t.Fatalf("raw stream must expose the display model instead of upstream model, body=%s", body)
+	}
 }

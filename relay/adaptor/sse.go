@@ -2,6 +2,7 @@ package adaptor
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"strings"
 )
@@ -11,6 +12,10 @@ const (
 	sseInitialBuffer = 64 * 1024
 	sseMaxBuffer     = 16 * 1024 * 1024
 )
+
+// ErrUnexpectedStreamEOF 表示上游在发送协议结束标记前关闭了 SSE 连接。
+// 调用方必须保留截断语义，不能向客户端补发正常结束事件。
+var ErrUnexpectedStreamEOF = errors.New("upstream stream closed before completion marker")
 
 // newSSEScanner 构造带大缓冲的逐行扫描器。
 func newSSEScanner(r io.Reader) *bufio.Scanner {

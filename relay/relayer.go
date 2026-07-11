@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/apirelay/apirelay/common/config"
 	"github.com/apirelay/apirelay/common/logger"
@@ -244,7 +245,9 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 				return
 			}
 			if category == ErrorCategoryRelayTimeout {
-				out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
+				if !c.Writer.Written() {
+					out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
+				}
 				r.logError(info, http.StatusGatewayTimeout, "relay request timeout")
 				return
 			}
@@ -359,7 +362,15 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		}
 		if isTimeoutCategory(category) {
 			status = timeoutStatus(category)
-			retryable = true
+			// HTTP 响应一旦开始写出，任何错误都不可再重试，否则会把第二个
+			// 上游响应拼接到已经提交的流中。只有首字节前超时才允许故障转移。
+			retryable = !c.Writer.Written()
+		}
+		if c.Writer.Written() {
+			retryable = false
+			if status < http.StatusBadRequest {
+				status = http.StatusBadGateway
+			}
 		}
 
 		// 记录熔断器失败。客户端主动取消不计入渠道失败。
@@ -588,11 +599,20 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 	var writer StreamWriter
 	firstByte := false
 	chunkCount := 0
+	completionChars := 0
+	var observedUsage *dto.Usage
 
 	usage, err := adp.StreamHandler(info, resp, func(chunk *dto.UnifiedStreamChunk) error {
 		if !firstByte {
 			info.FirstByteMs = int(time.Now().UnixMilli() - info.StartAtMs)
 			firstByte = true
+		}
+		if chunk != nil {
+			completionChars += streamChunkCompletionChars(info.EndpointType, chunk)
+			if chunk.Usage != nil {
+				copyUsage := *chunk.Usage
+				observedUsage = &copyUsage
+			}
 		}
 		if writer == nil {
 			writer = out.NewStream(c, info.RequestID, info.OriginModel)
@@ -600,16 +620,28 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 		chunkCount++
 		return writer.WriteChunk(c, chunk)
 	})
+	if usage == nil {
+		usage = observedUsage
+	}
 	if upstreamCaptureBuf != nil {
 		info.FullLogCapture.UpstreamRespBody = append([]byte(nil), upstreamCaptureBuf.Bytes()...)
 	}
 
 	if err != nil {
-		// 已经开始写流则尝试完成协议尾；首包前失败时不写头，允许故障转移。
-		if writer != nil {
-			_ = writer.Finish(c)
-		}
+		// 异常结束绝不能补发 [DONE]/message_stop/response.completed；这些标记只表示
+		// 上游自然完成。若已有内容写出，保留连接截断语义并由外层硬门禁禁止重试。
 		category := classifyRelayError(relayContext(info), err)
+		if writer != nil && c.Writer.Written() {
+			status := http.StatusBadGateway
+			switch category {
+			case ErrorCategoryClientCanceled:
+				status = statusClientClosedRequest
+			case ErrorCategoryRelayTimeout, ErrorCategoryUpstreamTimeout, ErrorCategoryTimeout:
+				status = http.StatusGatewayTimeout
+			}
+			r.logInterruptedStream(info, ir, usage, completionChars, billing, status, err.Error())
+		}
+
 		if category == ErrorCategoryClientCanceled {
 			return statusClientClosedRequest, false, fmt.Errorf("stream: %w", err)
 		}
@@ -623,11 +655,11 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 			return http.StatusGatewayTimeout, true, fmt.Errorf("upstream stream timeout before first byte: %w", err)
 		}
 		// 非超时错误：若尚未写出任何字节（writer == nil），说明响应头未写，
-		// 可安全故障转移到其它渠道；已开始写流则维持不可转移（协议尾已在上方 Finish）。
+		// 可安全故障转移到其它渠道；已开始写流则返回不可重试错误且不补协议尾。
 		if writer == nil {
 			return http.StatusBadGateway, true, fmt.Errorf("stream: %w", err)
 		}
-		return http.StatusOK, false, fmt.Errorf("stream: %w", err)
+		return http.StatusBadGateway, false, fmt.Errorf("stream: %w", err)
 	}
 
 	// 检测空流（没有收到任何 chunk）。此时尚未写响应头，允许故障转移。
@@ -645,6 +677,156 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 	}
 	r.logConsume(info, ir, &u, billing)
 	return http.StatusOK, false, nil
+}
+
+func streamChunkCompletionChars(ep constant.EndpointType, chunk *dto.UnifiedStreamChunk) int {
+	if chunk == nil {
+		return 0
+	}
+	if !chunk.IsRaw {
+		chars := utf8.RuneCountInString(chunk.DeltaText)
+		for _, tc := range chunk.ToolCalls {
+			chars += utf8.RuneCountInString(tc.Name) + utf8.RuneCountInString(tc.Arguments)
+		}
+		return chars
+	}
+	data, ok := adaptor.ParseSSEData(chunk.Raw)
+	if !ok || data == "" || data == "[DONE]" {
+		return 0
+	}
+
+	switch ep {
+	case constant.EndpointAnthropic:
+		var event struct {
+			Delta struct {
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
+			} `json:"delta"`
+			ContentBlock struct {
+				Name string `json:"name"`
+			} `json:"content_block"`
+		}
+		if json.Unmarshal([]byte(data), &event) == nil {
+			return utf8.RuneCountInString(event.Delta.Text) +
+				utf8.RuneCountInString(event.Delta.PartialJSON) +
+				utf8.RuneCountInString(event.ContentBlock.Name)
+		}
+	case constant.EndpointResponses:
+		var event struct {
+			Delta string `json:"delta"`
+			Item  struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			} `json:"item"`
+		}
+		if json.Unmarshal([]byte(data), &event) == nil {
+			return utf8.RuneCountInString(event.Delta) +
+				utf8.RuneCountInString(event.Item.Name) +
+				utf8.RuneCountInString(event.Item.Arguments)
+		}
+	default:
+		var event struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(data), &event) == nil {
+			chars := 0
+			for _, choice := range event.Choices {
+				chars += utf8.RuneCountInString(choice.Delta.Content)
+				for _, tc := range choice.Delta.ToolCalls {
+					chars += utf8.RuneCountInString(tc.Function.Name) + utf8.RuneCountInString(tc.Function.Arguments)
+				}
+			}
+			return chars
+		}
+	}
+	return 0
+}
+
+func interruptedStreamUsage(ir *dto.UnifiedRequest, usage *dto.Usage, completionChars int) dto.Usage {
+	effective := dto.Usage{}
+	if usage != nil {
+		effective = *usage
+	}
+	if effective.PromptTokens <= 0 {
+		effective.PromptTokens = EstimateTokens(ir)
+	}
+	if effective.CompletionTokens <= 0 && completionChars > 0 {
+		// 与预扣估算采用同一量级，按 Unicode 字符向上折算，避免短输出记为 0。
+		effective.CompletionTokens = (completionChars + 3) / 4
+	}
+	minimumTotal := effective.PromptTokens + effective.CompletionTokens
+	if effective.TotalTokens < minimumTotal {
+		effective.TotalTokens = minimumTotal
+	}
+	return effective
+}
+
+func (r *Relayer) logInterruptedStream(info *RelayInfo, ir *dto.UnifiedRequest, usage *dto.Usage, completionChars int, billing *BillingSession, status int, errMsg string) {
+	effective := interruptedStreamUsage(ir, usage, completionChars)
+	var quota int64
+	if info.Channel != nil {
+		in, out := ResolvePrice(info.Channel, info.OriginModel)
+		quota = CalcQuota(effective.PromptTokens, effective.CompletionTokens, in, out)
+	}
+	l := &model.Log{
+		RequestId:         info.RequestID,
+		UpstreamRequestId: info.UpstreamRequestId,
+		Type:              model.LogTypeError,
+		UserId:            info.UserId,
+		TokenId:           info.TokenId,
+		TokenName:         info.TokenName,
+		Group:             info.Group,
+		EndpointType:      string(info.EndpointType),
+		ApiType:           apiTypeLabel(info),
+		SrcModel:          info.OriginModel,
+		MappedModel:       info.UpstreamModel,
+		IsStream:          true,
+		PromptTokens:      effective.PromptTokens,
+		CompletionTokens:  effective.CompletionTokens,
+		TotalTokens:       effective.TotalTokens,
+		Quota:             quota,
+		UseTimeMs:         int(time.Now().UnixMilli() - info.StartAtMs),
+		FirstByteMs:       info.FirstByteMs,
+		Status:            status,
+		Ip:                info.ClientIP,
+		Error:             cleanErrorMessage("interrupted stream: " + errMsg),
+		Content:           info.FailoverChain,
+	}
+	if info.Channel != nil {
+		l.ChannelId = info.Channel.Id
+		l.ChannelName = info.Channel.Name
+	}
+
+	// 已向客户端产生内容的中断流仍消耗了上游 token：以真实 usage 优先、估算兜底结算，
+	// 标记 Settled 使请求级 defer 不会把预扣额度全额退回。
+	info.Settled = true
+	if billing != nil && billing.TokenID() > 0 {
+		if info.FullLogCapture != nil {
+			billing.AsyncLogAndSettleWithPayload(l, quota, info.FullLogCapture)
+		} else {
+			billing.AsyncLogAndSettle(l, quota)
+		}
+	} else if info.TokenId > 0 {
+		if info.FullLogCapture != nil {
+			model.AsyncLogAndSettleWithPayload(l, info.TokenId, info.ReservedQuota, quota, info.FullLogCapture)
+		} else {
+			model.AsyncLogAndSettle(l, info.TokenId, info.ReservedQuota, quota)
+		}
+	} else if info.FullLogCapture != nil {
+		model.AsyncLogWithPayload(l, info.FullLogCapture)
+	} else {
+		model.AsyncLog(l)
+	}
 }
 
 // ---- 辅助 ----
@@ -741,6 +923,10 @@ func (r *Relayer) logConsume(info *RelayInfo, ir *dto.UnifiedRequest, usage *dto
 }
 
 func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
+	// 已写流的中断路径已携带 token 用量完成错误日志与结算，避免重复落一条无用量错误日志。
+	if info.Settled {
+		return
+	}
 	l := &model.Log{
 		RequestId:    info.RequestID,
 		Type:         model.LogTypeError,

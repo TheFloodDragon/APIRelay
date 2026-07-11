@@ -54,21 +54,23 @@ func (openaiOutbound) WriteResponse(c *gin.Context, r *dto.UnifiedResponse, mode
 }
 
 func (openaiOutbound) NewStream(c *gin.Context, requestID, model string) StreamWriter {
-	return &openaiStreamWriter{state: apicompat.NewOpenAIStreamState(requestID, model)}
+	return &openaiStreamWriter{state: apicompat.NewOpenAIStreamState(requestID, model), model: model}
 }
 
 type openaiStreamWriter struct {
 	state   *apicompat.OpenAIStreamState
+	model   string
 	raw     bool
 	started bool
 }
 
 func (w *openaiStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
-	// RawChunk 模式：逐行零改写透传（含 event:/空行/data:/[DONE]）
+	// RawChunk 模式：逐行透传，仅回写模型映射（含 event:/空行/data:/[DONE]）
 	if chunk.IsRaw {
 		w.raw = true
 		w.ensureStarted(c)
-		return writeSSERaw(c, chunk.Raw+"\n")
+		line := apicompat.RewriteRawSSEModel(chunk.Raw, constant.EndpointOpenAI, w.model)
+		return writeSSERaw(c, line+"\n")
 	}
 	// IR 模式：序列化
 	data := w.state.Chunk(chunk)
@@ -113,21 +115,23 @@ func (anthropicOutbound) WriteResponse(c *gin.Context, r *dto.UnifiedResponse, m
 }
 
 func (anthropicOutbound) NewStream(c *gin.Context, requestID, model string) StreamWriter {
-	return &anthropicStreamWriter{state: apicompat.NewAnthropicStreamState(requestID, model)}
+	return &anthropicStreamWriter{state: apicompat.NewAnthropicStreamState(requestID, model), model: model}
 }
 
 type anthropicStreamWriter struct {
 	state   *apicompat.AnthropicStreamState
+	model   string
 	raw     bool
 	started bool
 }
 
 func (w *anthropicStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
-	// RawChunk 逐行零改写透传（含 event: 行与空行边界）
+	// RawChunk 逐行透传，仅回写 message_start 中的模型映射。
 	if chunk.IsRaw {
 		w.raw = true
 		w.ensureStarted(c)
-		return writeSSERaw(c, chunk.Raw+"\n")
+		line := apicompat.RewriteRawSSEModel(chunk.Raw, constant.EndpointAnthropic, w.model)
+		return writeSSERaw(c, line+"\n")
 	}
 	// IR 模式
 	events := w.state.Delta(chunk)
@@ -183,21 +187,23 @@ func (responsesOutbound) WriteResponse(c *gin.Context, r *dto.UnifiedResponse, m
 }
 
 func (responsesOutbound) NewStream(c *gin.Context, requestID, model string) StreamWriter {
-	return &responsesStreamWriter{state: apicompat.NewResponsesStreamState(requestID, model)}
+	return &responsesStreamWriter{state: apicompat.NewResponsesStreamState(requestID, model), model: model}
 }
 
 type responsesStreamWriter struct {
 	state   *apicompat.ResponsesStreamState
+	model   string
 	raw     bool
 	started bool
 }
 
 func (w *responsesStreamWriter) WriteChunk(c *gin.Context, chunk *dto.UnifiedStreamChunk) error {
-	// RawChunk 逐行零改写透传（含 event: 行与空行边界）
+	// RawChunk 逐行透传，仅回写 response 对象中的模型映射。
 	if chunk.IsRaw {
 		w.raw = true
 		w.ensureStarted(c)
-		return writeSSERaw(c, chunk.Raw+"\n")
+		line := apicompat.RewriteRawSSEModel(chunk.Raw, constant.EndpointResponses, w.model)
+		return writeSSERaw(c, line+"\n")
 	}
 	// IR 模式
 	events := w.state.Delta(chunk)

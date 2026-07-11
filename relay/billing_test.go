@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/apirelay/apirelay/common/config"
+	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/dto"
 	"github.com/apirelay/apirelay/model"
 )
@@ -96,6 +97,69 @@ func setupBillingSessionTestDB(t *testing.T) {
 	}
 	model.DB.Exec("DELETE FROM tokens")
 	model.DB.Exec("DELETE FROM logs")
+}
+
+func TestInterruptedStreamUsagePrefersActualAndEstimatesMissingValues(t *testing.T) {
+	ir := &dto.UnifiedRequest{Messages: []dto.UnifiedMessage{{Role: dto.RoleUser, Content: "hello"}}}
+
+	actual := interruptedStreamUsage(ir, &dto.Usage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18}, 100)
+	if actual.PromptTokens != 11 || actual.CompletionTokens != 7 || actual.TotalTokens != 18 {
+		t.Fatalf("actual usage must win, got %+v", actual)
+	}
+
+	estimated := interruptedStreamUsage(ir, nil, 9)
+	if estimated.PromptTokens != EstimateTokens(ir) {
+		t.Fatalf("estimated prompt = %d, want %d", estimated.PromptTokens, EstimateTokens(ir))
+	}
+	if estimated.CompletionTokens != 3 {
+		t.Fatalf("estimated completion = %d, want ceil(9/4)=3", estimated.CompletionTokens)
+	}
+	if estimated.TotalTokens != estimated.PromptTokens+estimated.CompletionTokens {
+		t.Fatalf("estimated total is inconsistent: %+v", estimated)
+	}
+}
+
+func TestStreamChunkCompletionCharsRawProtocols(t *testing.T) {
+	tests := []struct {
+		name  string
+		ep    constant.EndpointType
+		raw   string
+		chars int
+	}{
+		{"openai", constant.EndpointOpenAI, `data: {"choices":[{"delta":{"content":"你好","tool_calls":[{"function":{"name":"f","arguments":"{}"}}]}}]}`, 5},
+		{"anthropic", constant.EndpointAnthropic, `data: {"delta":{"text":"你好","partial_json":"{}"},"content_block":{"name":"f"}}`, 5},
+		{"responses", constant.EndpointResponses, `data: {"delta":"你好","item":{"name":"f","arguments":"{}"}}`, 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := streamChunkCompletionChars(tt.ep, &dto.UnifiedStreamChunk{Raw: tt.raw, IsRaw: true})
+			if got != tt.chars {
+				t.Fatalf("completion chars = %d, want %d", got, tt.chars)
+			}
+		})
+	}
+}
+
+func TestInterruptedStreamSettlementPreventsRefund(t *testing.T) {
+	setupBillingSessionTestDB(t)
+	tok := &model.Token{Name: "billing-interrupted", Quota: 1000, Status: model.TokenStatusEnabled}
+	if err := model.CreateToken(tok, "k-billing-interrupted"); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	billing := NewBillingSession(tok.Id)
+	if err := billing.Reserve(400); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	info := &RelayInfo{TokenId: tok.Id, OriginModel: "gpt-test", IsStream: true}
+	ir := &dto.UnifiedRequest{Messages: []dto.UnifiedMessage{{Role: dto.RoleUser, Content: "hello"}}}
+	NewRelayer(&config.RelayConfig{}).logInterruptedStream(info, ir, nil, 12, billing, 502, "unexpected EOF")
+
+	if !info.Settled {
+		t.Fatal("interrupted stream should mark relay as settled")
+	}
+	if billing.Refund() {
+		t.Fatal("request defer must not refund a settled interrupted stream")
+	}
 }
 
 func TestBillingSessionRefundOnlyOnce(t *testing.T) {

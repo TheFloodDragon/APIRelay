@@ -114,6 +114,10 @@ function decisionChip(decision) {
   return ''
 }
 
+function isModelMapped(log) {
+  return Boolean(log?.mapped_model && log.mapped_model !== log.src_model)
+}
+
 function logParams() {
   const params = { page: page.value, page_size: pageSize }
   for (const [key, value] of Object.entries(filters.value)) {
@@ -238,7 +242,8 @@ function buildDiagnosticPackage(log) {
     `- 令牌: ${log.token_name || '—'}`,
     `- 渠道: ${log.channel_name || (log.channel_id ? `#${log.channel_id}` : '—')}`,
     `- 协议: ${log.endpoint_type || '—'} -> ${log.api_type || '—'}`,
-    `- 模型: ${log.src_model || '—'}${log.mapped_model && log.mapped_model !== log.src_model ? ` -> ${log.mapped_model}` : ''}`,
+    `- 客户端模型: ${log.src_model || '—'}`,
+    ...(isModelMapped(log) ? [`- 实际请求模型: ${log.mapped_model}`] : []),
     `- 流式: ${log.is_stream ? 'yes' : 'no'}`,
     `- Tokens: prompt=${log.prompt_tokens || 0}, completion=${log.completion_tokens || 0}`,
     `- 费用: ${cost(log.quota)}`,
@@ -403,7 +408,7 @@ onMounted(load)
                   <th class="w-[13%]">时间</th>
                   <th class="w-[9%]">类型</th>
                   <th class="w-[20%]">渠道 / 协议</th>
-                  <th class="w-[16%]">模型 / 令牌</th>
+                  <th class="w-[16%]">客户端模型 / 令牌</th>
                   <th class="w-[15%] text-right">Tokens / 费用</th>
                   <th class="w-[12%] text-right">耗时</th>
                   <th class="w-[9%]">状态</th>
@@ -428,7 +433,8 @@ onMounted(load)
                     <div class="mt-1 truncate text-xs text-soft">{{ log.endpoint_type || '—' }}<template v-if="log.api_type && log.api_type !== log.endpoint_type"> → {{ log.api_type }}</template></div>
                   </td>
                   <td>
-                    <div class="truncate font-mono text-xs">{{ log.src_model || '—' }}<template v-if="log.mapped_model && log.mapped_model !== log.src_model"> → {{ log.mapped_model }}</template></div>
+                    <div class="truncate font-mono text-xs font-medium">{{ log.src_model || '—' }}</div>
+                    <div v-if="isModelMapped(log)" class="mt-1 truncate font-mono text-[11px] text-soft" :title="`实际请求模型：${log.mapped_model}`">↳ 实际 {{ log.mapped_model }}</div>
                     <div class="mt-1 truncate font-mono text-xs text-soft">{{ log.token_name || '—' }}</div>
                   </td>
                   <td class="num">
@@ -460,7 +466,8 @@ onMounted(load)
               <dl class="mt-3 space-y-2">
                 <div class="mobile-kv"><dt>类型</dt><dd><span class="chip" :class="typeChip(log.type)">{{ typeName(log.type) }}</span></dd></div>
                 <div class="mobile-kv"><dt>协议</dt><dd class="break-all">{{ log.endpoint_type || '—' }}<template v-if="log.api_type && log.api_type !== log.endpoint_type"> → {{ log.api_type }}</template></dd></div>
-                <div class="mobile-kv"><dt>模型</dt><dd class="break-all font-mono text-xs">{{ log.src_model || '—' }}<template v-if="log.mapped_model && log.mapped_model !== log.src_model"> → {{ log.mapped_model }}</template></dd></div>
+                <div class="mobile-kv"><dt>客户端模型</dt><dd class="break-all font-mono text-xs font-medium">{{ log.src_model || '—' }}</dd></div>
+                <div v-if="isModelMapped(log)" class="mobile-kv"><dt>实际请求模型</dt><dd class="break-all font-mono text-xs text-soft">{{ log.mapped_model }}</dd></div>
                 <div class="mobile-kv"><dt>令牌</dt><dd class="break-all font-mono text-xs">{{ log.token_name || '—' }}</dd></div>
                 <div class="mobile-kv"><dt>Tokens / 费用</dt><dd class="font-mono text-xs">{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }} · {{ cost(log.quota) }}</dd></div>
                 <div class="mobile-kv"><dt>耗时</dt><dd class="font-mono text-xs">{{ log.use_time_ms || 0 }} ms · 首字 {{ log.first_byte_ms || 0 }} ms</dd></div>
@@ -503,7 +510,8 @@ onMounted(load)
             <div><dt class="field-label">流式</dt><dd>{{ selectedLog.is_stream ? '是' : '否' }}</dd></div>
             <div><dt class="field-label">渠道</dt><dd class="break-all">{{ selectedLog.channel_name || (selectedLog.channel_id ? `#${selectedLog.channel_id}` : '—') }}</dd></div>
             <div><dt class="field-label">协议</dt><dd class="break-all font-mono text-xs">{{ selectedLog.endpoint_type || '—' }} → {{ selectedLog.api_type || '—' }}</dd></div>
-            <div><dt class="field-label">模型</dt><dd class="break-all font-mono text-xs">{{ selectedLog.src_model || '—' }}<template v-if="selectedLog.mapped_model && selectedLog.mapped_model !== selectedLog.src_model"> → {{ selectedLog.mapped_model }}</template></dd></div>
+            <div><dt class="field-label">客户端模型</dt><dd class="break-all font-mono text-xs font-medium">{{ selectedLog.src_model || '—' }}</dd></div>
+            <div v-if="isModelMapped(selectedLog)"><dt class="field-label">实际请求模型</dt><dd class="break-all font-mono text-xs text-soft">{{ selectedLog.mapped_model }}</dd></div>
             <div><dt class="field-label">令牌</dt><dd class="break-all font-mono text-xs">{{ selectedLog.token_name || '—' }}</dd></div>
             <div><dt class="field-label">Tokens / 费用</dt><dd class="font-mono text-xs">{{ selectedLog.prompt_tokens || 0 }} / {{ selectedLog.completion_tokens || 0 }} · {{ cost(selectedLog.quota) }}</dd></div>
             <div><dt class="field-label">耗时</dt><dd class="font-mono text-xs">{{ selectedLog.use_time_ms || 0 }} ms · 首字 {{ selectedLog.first_byte_ms || 0 }} ms</dd></div>
@@ -536,7 +544,10 @@ onMounted(load)
                 <dt class="text-soft">渠道 ID</dt><dd class="break-all font-mono">{{ attempt.channel_id || '—' }}</dd>
                 <dt class="text-soft">时间</dt><dd class="font-mono">{{ fmt(attempt.at_ms) }}</dd>
                 <dt class="text-soft">迭代 / 切换</dt><dd class="font-mono">{{ attempt.iter ?? '—' }} / {{ attempt.switches ?? '—' }}</dd>
-                <dt class="text-soft">模型</dt><dd class="break-all font-mono">{{ attempt.origin_model || '—' }}<template v-if="attempt.upstream_model && attempt.upstream_model !== attempt.origin_model"> → {{ attempt.upstream_model }}</template></dd>
+                <dt class="text-soft">客户端模型</dt><dd class="break-all font-mono font-medium">{{ attempt.origin_model || '—' }}</dd>
+                <template v-if="attempt.upstream_model && attempt.upstream_model !== attempt.origin_model">
+                  <dt class="text-soft">实际请求模型</dt><dd class="break-all font-mono text-soft">{{ attempt.upstream_model }}</dd>
+                </template>
                 <dt class="text-soft">错误</dt><dd class="break-all" :class="attempt.error ? 'text-trip' : 'text-soft'">{{ attempt.error_category ? `${attempt.error_category} · ` : '' }}{{ attempt.error || '—' }}</dd>
               </dl>
             </li>

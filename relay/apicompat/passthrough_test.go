@@ -2,6 +2,7 @@ package apicompat
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/apirelay/apirelay/constant"
@@ -201,6 +202,55 @@ func TestApplyBodyOverride_NullOverwrites(t *testing.T) {
 	_ = json.Unmarshal(out, &got)
 	if v, ok := got["metadata"]; !ok || v != nil {
 		t.Errorf("metadata should be null, got %v (present=%v)", v, ok)
+	}
+}
+
+func TestRewriteRawSSEModel(t *testing.T) {
+	tests := []struct {
+		name string
+		ep   constant.EndpointType
+		line string
+		path func(map[string]any) any
+	}{
+		{
+			name: "openai top level",
+			ep:   constant.EndpointOpenAI,
+			line: `data: {"id":"c1","model":"upstream-oai","unknown":{"keep":true},"choices":[]}`,
+			path: func(root map[string]any) any { return root["model"] },
+		},
+		{
+			name: "anthropic message start",
+			ep:   constant.EndpointAnthropic,
+			line: `data: {"type":"message_start","message":{"id":"m1","model":"upstream-claude","unknown":7}}`,
+			path: func(root map[string]any) any { return root["message"].(map[string]any)["model"] },
+		},
+		{
+			name: "responses nested response",
+			ep:   constant.EndpointResponses,
+			line: `data: {"type":"response.created","response":{"id":"r1","model":"upstream-responses","unknown":"keep"}}`,
+			path: func(root map[string]any) any { return root["response"].(map[string]any)["model"] },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RewriteRawSSEModel(tt.line, tt.ep, "display-model")
+			var root map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(got, "data: ")), &root); err != nil {
+				t.Fatalf("rewritten data is invalid JSON: %v; %s", err, got)
+			}
+			if model := tt.path(root); model != "display-model" {
+				t.Fatalf("model = %v, want display-model", model)
+			}
+			if !strings.Contains(got, "unknown") {
+				t.Fatalf("unknown fields must be retained: %s", got)
+			}
+		})
+	}
+
+	for _, line := range []string{"event: message_start", "", ": keepalive", "data: [DONE]", `data: {"delta":"unchanged"}`} {
+		if got := RewriteRawSSEModel(line, constant.EndpointAnthropic, "display-model"); got != line {
+			t.Fatalf("non-model line changed: %q -> %q", line, got)
+		}
 	}
 }
 

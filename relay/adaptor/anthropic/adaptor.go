@@ -104,17 +104,26 @@ func (a *Adaptor) StreamHandler(info *relaycommon.RelayInfo, resp *http.Response
 func (a *Adaptor) streamRaw(resp *http.Response, onChunk func(*dto.UnifiedStreamChunk) error) (*dto.Usage, error) {
 	parser := apicompat.NewAnthropicStreamParser()
 	var usage *dto.Usage
+	completed := false
 
 	err := adaptor.StreamRawLines(resp.Body, func(line string) error {
-		// 旁路解析：仅读取 data 行提取 usage，不影响转发
+		// 旁路解析：仅读取 data 行提取 usage 和自然结束标记，不影响转发
 		if data, ok := adaptor.ParseSSEData(line); ok && data != "" && data != "[DONE]" {
-			if chunk, perr := parser.Parse([]byte(data)); perr == nil && chunk != nil && chunk.Usage != nil {
-				usage = chunk.Usage
+			if chunk, perr := parser.Parse([]byte(data)); perr == nil && chunk != nil {
+				if chunk.Usage != nil {
+					usage = chunk.Usage
+				}
+				if chunk.Done {
+					completed = true
+				}
 			}
 		}
 		// 原样转发每一行（含 event:/空行/data:/[DONE]）
 		return onChunk(&dto.UnifiedStreamChunk{Raw: line, IsRaw: true})
 	})
+	if err == nil && !completed {
+		err = adaptor.ErrUnexpectedStreamEOF
+	}
 	return usage, err
 }
 
@@ -123,6 +132,7 @@ func (a *Adaptor) streamIR(resp *http.Response, onChunk func(*dto.UnifiedStreamC
 	parser := apicompat.NewAnthropicStreamParser()
 	scanner := bufio.NewScanner(resp.Body)
 	var usage *dto.Usage
+	completed := false
 
 	err := adaptor.ScanSSE(scanner, func(data string) error {
 		chunk, perr := parser.Parse([]byte(data))
@@ -132,7 +142,13 @@ func (a *Adaptor) streamIR(resp *http.Response, onChunk func(*dto.UnifiedStreamC
 		if chunk.Usage != nil {
 			usage = chunk.Usage
 		}
+		if chunk.Done {
+			completed = true
+		}
 		return onChunk(chunk)
 	})
+	if err == nil && !completed {
+		err = adaptor.ErrUnexpectedStreamEOF
+	}
 	return usage, err
 }
