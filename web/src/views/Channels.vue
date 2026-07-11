@@ -816,6 +816,15 @@ onMounted(() => {
             <div class="flex shrink-0 items-center gap-1.5">
               <input type="checkbox" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @change="toggleSelected(channel.id)" />
               <button type="button" class="btn btn-sm cursor-grab px-1 text-faint active:cursor-grabbing" :disabled="reordering || !canReorder" :aria-label="`拖动调整 ${channel.name} 的优先级`"><span aria-hidden="true">⠿</span></button>
+              <span class="relative flex h-2.5 w-2.5 shrink-0" :title="`熔断器：${breakerText(channel)}`" :aria-label="`熔断状态 ${breakerText(channel)}`">
+                <span v-if="breakerState(channel) === 'trip'" class="absolute inline-flex h-full w-full animate-ping rounded-full bg-trip/60" aria-hidden="true"></span>
+                <span class="relative inline-flex h-2.5 w-2.5 rounded-full" :class="{
+                  'bg-run': breakerState(channel) === 'run',
+                  'bg-test': breakerState(channel) === 'test',
+                  'bg-trip': breakerState(channel) === 'trip',
+                  'bg-faint': breakerState(channel) === 'off',
+                }" aria-hidden="true"></span>
+              </span>
               <span class="font-mono text-[11px] font-medium text-faint">{{ String(index + 1).padStart(2, '0') }}</span>
             </div>
 
@@ -832,25 +841,12 @@ onMounted(() => {
               </div>
             </div>
 
-            <div class="flex shrink-0 items-center gap-1.5" :title="`熔断器：${breakerText(channel)}`" :aria-label="`熔断状态 ${breakerText(channel)}`">
-              <span class="relative flex h-2.5 w-2.5">
-                <span v-if="breakerState(channel) === 'trip'" class="absolute inline-flex h-full w-full animate-ping rounded-full bg-trip/60" aria-hidden="true"></span>
-                <span class="relative inline-flex h-2.5 w-2.5 rounded-full" :class="{
-                  'bg-run': breakerState(channel) === 'run',
-                  'bg-test': breakerState(channel) === 'test',
-                  'bg-trip': breakerState(channel) === 'trip',
-                  'bg-faint': breakerState(channel) === 'off',
-                }" aria-hidden="true"></span>
-              </span>
-              <span class="hidden text-[11px] text-soft sm:inline">{{ breakerText(channel) }}</span>
-            </div>
-
             <div class="flex shrink-0 items-center gap-1.5">
+              <button v-if="breakerState(channel) === 'trip'" type="button" class="btn btn-danger btn-sm whitespace-nowrap" :disabled="resettingIds.has(channel.id)" :aria-label="`熔断器重置 ${channel.name}`" @click="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '处理中' : '熔断器重置' }}</button>
               <button type="button" class="btn btn-primary btn-sm whitespace-nowrap" :aria-label="`管理渠道 ${channel.name}`" @click="openEdit(channel)">管理</button>
               <ActionMenu>
                 <button role="menuitem" type="button" :disabled="checkupLoadingId !== null" @click.stop="checkupChannel(channel)">{{ checkupLoadingId === channel.id ? '检查中' : '运行检查' }}</button>
                 <button role="menuitem" type="button" :disabled="togglingIds.has(channel.id)" @click.stop="toggleChannel(channel)">{{ togglingIds.has(channel.id) ? '切换中' : channel.status === 1 ? '停用渠道' : '启用渠道' }}</button>
-                <button role="menuitem" type="button" :disabled="resettingIds.has(channel.id)" @click.stop="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '处理中' : breakerState(channel) === 'trip' ? '解除熔断' : '重置健康状态' }}</button>
                 <button role="menuitem" type="button" class="text-trip" :disabled="deletingIds.has(channel.id)" @click.stop="removeChannel(channel)">{{ deletingIds.has(channel.id) ? '删除中' : '删除渠道' }}</button>
               </ActionMenu>
             </div>
