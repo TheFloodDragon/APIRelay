@@ -2,6 +2,7 @@ package model
 
 import (
 	"testing"
+	"time"
 
 	"github.com/apirelay/apirelay/common/config"
 )
@@ -12,6 +13,8 @@ func setupLogTestDB(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 	DB.Exec("DELETE FROM logs")
+	DB.Exec("DELETE FROM settings")
+	invalidateModelHealthConfigCache()
 }
 
 func seedLog(t *testing.T, l *Log) *Log {
@@ -71,7 +74,7 @@ func TestListLogsFilters(t *testing.T) {
 
 func TestListModelHealthAggregatesByChannelAndModel(t *testing.T) {
 	setupLogTestDB(t)
-	base := int64(1_700_000_000_000)
+	base := time.Now().Add(-time.Minute).UnixMilli()
 	seedLog(t, &Log{RequestId: "ok-1", Type: LogTypeConsume, ChannelId: 1, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 100})
 	seedLog(t, &Log{RequestId: "ok-2", Type: LogTypeConsume, ChannelId: 1, SrcModel: "gpt-4o", Status: 302, CreatedAt: base + 200})
 	seedLog(t, &Log{RequestId: "bad-1", Type: LogTypeConsume, ChannelId: 1, SrcModel: "gpt-4o", Status: 429, Error: "rate limited", CreatedAt: base + 300})
@@ -100,6 +103,9 @@ func TestListModelHealthAggregatesByChannelAndModel(t *testing.T) {
 	if ch1.LastError != "dial timeout" {
 		t.Fatalf("last_error = %q, want dial timeout", ch1.LastError)
 	}
+	if ch1.HealthStatus != "unhealthy" || ch1.RecentCount != 100 || ch1.WindowHours != 24 {
+		t.Fatalf("policy fields = %+v", ch1)
+	}
 
 	byModel, err := ListModelHealthByModel()
 	if err != nil {
@@ -114,6 +120,46 @@ func TestListModelHealthAggregatesByChannelAndModel(t *testing.T) {
 	}
 	if all.LastUsedAt != base+500 || all.LastSuccessAt != base+500 || all.LastFailureAt != base+400 {
 		t.Fatalf("aggregate timestamps = %+v", all)
+	}
+}
+
+func TestListModelHealthAppliesTimeAndRecentCountPerAggregationKey(t *testing.T) {
+	setupLogTestDB(t)
+	if _, err := SaveModelHealthConfig(ModelHealthConfig{RecentCount: 2, WindowHours: 1, HealthyThreshold: 80, WarningThreshold: 50}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	now := time.Now()
+	seedLog(t, &Log{RequestId: "outside-window", Type: LogTypeError, ChannelId: 1, SrcModel: "model-a", Status: 500, Error: "old", CreatedAt: now.Add(-2 * time.Hour).UnixMilli()})
+	seedLog(t, &Log{RequestId: "ch1-trimmed", Type: LogTypeError, ChannelId: 1, SrcModel: "model-a", Status: 500, Error: "trimmed", CreatedAt: now.Add(-4 * time.Minute).UnixMilli()})
+	seedLog(t, &Log{RequestId: "ch1-fail", Type: LogTypeError, ChannelId: 1, SrcModel: "model-a", Status: 503, Error: "latest failure", CreatedAt: now.Add(-3 * time.Minute).UnixMilli()})
+	seedLog(t, &Log{RequestId: "ch1-ok", Type: LogTypeConsume, ChannelId: 1, SrcModel: "model-a", Status: 200, CreatedAt: now.Add(-2 * time.Minute).UnixMilli()})
+	seedLog(t, &Log{RequestId: "ch2-fail", Type: LogTypeError, ChannelId: 2, SrcModel: "model-a", Status: 429, Error: "limited", CreatedAt: now.Add(-90 * time.Second).UnixMilli()})
+	seedLog(t, &Log{RequestId: "ch2-ok", Type: LogTypeConsume, ChannelId: 2, SrcModel: "model-a", Status: 200, CreatedAt: now.Add(-time.Minute).UnixMilli()})
+
+	byChannel, err := ListModelHealthByChannel()
+	if err != nil {
+		t.Fatalf("list by channel: %v", err)
+	}
+	for _, channelID := range []int{1, 2} {
+		stat := byChannel[channelID]["model-a"]
+		if stat == nil || stat.Total != 2 || stat.Success != 1 || stat.Failed != 1 || stat.HealthStatus != "warning" {
+			t.Fatalf("channel %d stat = %+v", channelID, stat)
+		}
+	}
+	if got := byChannel[1]["model-a"].LastError; got != "latest failure" {
+		t.Fatalf("last error = %q", got)
+	}
+
+	byModel, err := ListModelHealthByModel()
+	if err != nil {
+		t.Fatalf("list by model: %v", err)
+	}
+	stat := byModel["model-a"]
+	if stat == nil || stat.Total != 2 || stat.Success != 1 || stat.Failed != 1 {
+		t.Fatalf("model stat = %+v", stat)
+	}
+	if stat.LastError != "limited" {
+		t.Fatalf("model last error = %q, want limited", stat.LastError)
 	}
 }
 

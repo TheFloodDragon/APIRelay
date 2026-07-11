@@ -99,6 +99,27 @@ func UpdateModelPrices(c *gin.Context) {
 	ok(c, prices)
 }
 
+// GetModelHealthConfig GET /api/settings/model-health
+// 返回全局模型健康统计策略。
+func GetModelHealthConfig(c *gin.Context) {
+	ok(c, model.GetModelHealthConfig())
+}
+
+// UpdateModelHealthConfig PUT /api/settings/model-health
+// 归一化并保存全局模型健康统计策略。
+func UpdateModelHealthConfig(c *gin.Context) {
+	var cfg model.ModelHealthConfig
+	if !bindJSON(c, &cfg) {
+		return
+	}
+	cfg, err := model.SaveModelHealthConfig(cfg)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, cfg)
+}
+
 // GetLoggingConfig GET /api/settings/logging
 // 返回全局完整日志配置。
 func GetLoggingConfig(c *gin.Context) {

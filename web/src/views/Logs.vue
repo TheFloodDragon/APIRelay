@@ -286,7 +286,7 @@ onMounted(load)
       <div>
         <div class="eyebrow">调用诊断中心</div>
         <h1 class="page-title">请求日志</h1>
-        <p class="page-description">沿客户端、APIRelay 与上游渠道还原每次调用；完整留痕开启时可查看请求与响应原文。</p>
+        <p class="page-description">沿客户端、APIRelay 与上游渠道还原每次调用，集中查看路由、耗时、计费与错误。</p>
       </div>
       <div class="page-actions">
         <button class="btn" type="button" :disabled="loading" @click="load">刷新</button>
@@ -450,7 +450,6 @@ onMounted(load)
                   </td>
                   <td>
                     <span class="chip" :class="statusChip(log.status)">HTTP {{ log.status || '—' }}</span>
-                    <div class="mt-1.5 font-mono text-[9px] uppercase tracking-wider" :class="log.has_full_record ? 'text-blue' : 'text-faint'">{{ log.has_full_record ? `Full · ${formatBytes(log.payload_compressed_size)}` : 'Summary' }}</div>
                   </td>
                   <td><span class="chip" :class="log._failover_chain.length > 1 ? 'chip-test' : ''">{{ log._failover_chain.length }}</span></td>
                 </tr>
@@ -576,7 +575,7 @@ onMounted(load)
             </article>
           </div>
           <div v-else class="rounded-xl border border-dashed border-line p-4 text-sm text-soft">
-            该日志产生时未开启完整留痕，只保留路由、计费、耗时和错误摘要。
+            该日志仅保留路由、计费、耗时和错误摘要。
           </div>
         </section>
       </div>

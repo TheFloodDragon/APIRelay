@@ -1,5 +1,5 @@
 <script setup>
-import { computed, getCurrentInstance, onMounted, ref } from 'vue'
+import { computed, getCurrentInstance, nextTick, onMounted, ref, watch } from 'vue'
 import api from '../api'
 import PageState from '../components/PageState.vue'
 
@@ -11,6 +11,7 @@ const tabs = [
   { id: 'testing', label: '模型测试' },
   { id: 'protocols', label: '协议规则' },
   { id: 'prices', label: '模型价格' },
+  { id: 'health', label: '模型健康' },
   { id: 'breaker', label: '熔断器' },
 ]
 const activeTab = ref('logging')
@@ -20,10 +21,13 @@ const prices = ref([])
 const testModel = ref('')
 const loadingSettings = ref(true)
 const settingsError = ref('')
-const savingRules = ref(false)
-const savingPrices = ref(false)
-const savingBreaker = ref(false)
-const savingLogging = ref(false)
+const hydrated = ref(false)
+const saveState = ref(Object.fromEntries(tabs.map((tab) => [tab.id, { status: 'idle', error: '' }])))
+const saveTimers = {}
+const saveInFlight = {}
+const savePending = {}
+const skipDebounce = {}
+const savedSnapshots = {}
 const logging = ref({
   enabled: false,
   sanitized_header_keys: ['Authorization', 'Proxy-Authorization', 'Cookie', 'Set-Cookie', 'X-API-Key'],
@@ -32,14 +36,18 @@ const logging = ref({
   record_upstream_resp: true,
   record_client_resp: true,
 })
-
 const network = ref({ mode: 'system', manual_url: '', no_proxy: '', effective_source: '', effective_proxy_url: '' })
 const networkTarget = ref('https://api.openai.com/v1/models')
 const networkResult = ref(null)
-const savingNetwork = ref(false)
 const testingNetwork = ref(false)
 const testPrompt = ref("Say 'hi' in one word.")
-const savingTestPrompt = ref(false)
+const modelHealth = ref({
+  recent_count: 100,
+  window_hours: 24,
+  healthy_threshold: 95,
+  warning_threshold: 70,
+})
+const modelHealthError = ref('')
 
 const defaultBreaker = {
   failure_threshold: 5,
@@ -70,6 +78,39 @@ const testResult = computed(() => {
 
 function notify(message, type = 'info') {
   proxy.$toast.add(message, type)
+}
+
+function snapshot(value) {
+  return JSON.stringify(value)
+}
+
+function setSaveState(section, status, error = '') {
+  saveState.value[section] = { status, error }
+}
+
+function saveStateLabel(section) {
+  const state = saveState.value[section]
+  if (state.status === 'saving') return '正在保存…'
+  if (state.status === 'saved') return '已保存'
+  if (state.status === 'error') return '保存失败'
+  if (state.status === 'invalid') return '请修正后自动保存'
+  return '自动保存'
+}
+
+function saveStateClass(section) {
+  const status = saveState.value[section].status
+  if (status === 'saved') return 'text-run'
+  if (status === 'error' || status === 'invalid') return 'text-trip'
+  if (status === 'saving') return 'text-blue'
+  return 'text-faint'
+}
+
+function sectionStatus(section) {
+  return {
+    text: saveStateLabel(section),
+    title: saveState.value[section].error || saveStateLabel(section),
+    class: saveStateClass(section),
+  }
 }
 
 function selectTab(id) {
@@ -103,21 +144,29 @@ function moveRule(index, direction) {
   const next = [...rules.value]
   ;[next[index], next[target]] = [next[target], next[index]]
   rules.value = next
+  saveImmediately('protocols')
 }
 
 function removeRule(index) {
   rules.value.splice(index, 1)
+  saveImmediately('protocols')
 }
 
 function addPrice() {
   prices.value.push({ model: '', input: 0, output: 0 })
 }
 
+function removePrice(index) {
+  prices.value.splice(index, 1)
+  saveImmediately('prices')
+}
+
 async function loadSettings() {
+  hydrated.value = false
   loadingSettings.value = true
   settingsError.value = ''
   try {
-    const [ruleData, protocolData, priceData, breakerData, loggingData, networkData, promptData] = await Promise.all([
+    const [ruleData, protocolData, priceData, breakerData, loggingData, networkData, promptData, healthData] = await Promise.all([
       api.get('/settings/protocol-rules'),
       api.get('/protocols'),
       api.get('/settings/model-prices'),
@@ -125,6 +174,7 @@ async function loadSettings() {
       api.get('/settings/logging'),
       api.get('/settings/network'),
       api.get('/settings/test-prompt'),
+      api.get('/settings/model-health'),
     ])
     rules.value = (ruleData || []).map((item) => ({
       pattern: item.pattern || '',
@@ -140,53 +190,203 @@ async function loadSettings() {
     logging.value = { ...logging.value, ...(loggingData || {}) }
     network.value = { ...network.value, ...(networkData || {}) }
     testPrompt.value = promptData?.prompt || testPrompt.value
+    modelHealth.value = { ...modelHealth.value, ...(healthData || {}) }
+    savedSnapshots.logging = snapshot(loggingPayload())
+    savedSnapshots.network = snapshot(networkPayload())
+    savedSnapshots.testing = snapshot(testPromptPayload())
+    savedSnapshots.protocols = snapshot(rulesPayload())
+    savedSnapshots.prices = snapshot(pricesPayload())
+    savedSnapshots.health = snapshot(modelHealthPayload())
+    savedSnapshots.breaker = snapshot(breakerPayload())
+    Object.keys(saveState.value).forEach((section) => setSaveState(section, 'idle'))
   } catch (error) {
     settingsError.value = error.message || '设置初始化失败'
   } finally {
+    await nextTick()
     loadingSettings.value = false
+    hydrated.value = !settingsError.value
   }
 }
 
-async function saveRules() {
-  savingRules.value = true
-  try {
-    const clean = rules.value
-      .filter((rule) => rule.pattern.trim() && rule.protocol)
-      .map((rule) => ({ pattern: rule.pattern.trim(), protocol: rule.protocol }))
-    await api.put('/settings/protocol-rules', clean)
-    rules.value = clean
-    notify('全局协议规则已保存', 'success')
-  } catch (error) {
-    notify(`协议规则保存失败: ${error.message}`, 'error')
-  } finally {
-    savingRules.value = false
+function loggingPayload() {
+  return {
+    ...logging.value,
+    sanitized_header_keys: ['Authorization', 'Proxy-Authorization', 'Cookie', 'Set-Cookie', 'X-API-Key'],
   }
 }
 
-async function savePrices() {
-  savingPrices.value = true
-  try {
-    const clean = prices.value
-      .filter((price) => price.model.trim())
-      .map((price) => ({
-        model: price.model.trim(),
-        input: Number(price.input) || 0,
-        output: Number(price.output) || 0,
-      }))
-    await api.put('/settings/model-prices', clean)
-    prices.value = clean
-    notify('全局模型价格已保存', 'success')
-  } catch (error) {
-    notify(`模型价格保存失败: ${error.message}`, 'error')
-  } finally {
-    savingPrices.value = false
+function networkPayload() {
+  const mode = network.value.mode
+  if (!['system', 'manual', 'direct'].includes(mode)) throw new Error('请选择有效的代理模式')
+  const manualUrl = network.value.manual_url.trim()
+  if (mode === 'manual') {
+    if (!manualUrl) throw new Error('手动代理模式下必须填写代理 URL')
+    try {
+      const parsed = new URL(manualUrl)
+      if (!['http:', 'https:', 'socks:', 'socks5:', 'socks5h:'].includes(parsed.protocol)) throw new Error()
+    } catch {
+      throw new Error('代理 URL 格式无效')
+    }
   }
+  return { mode, manual_url: manualUrl, no_proxy: network.value.no_proxy.trim() }
+}
+
+function testPromptPayload() {
+  const prompt = testPrompt.value.trim()
+  if (!prompt) throw new Error('测试提示词不能为空')
+  return { prompt }
+}
+
+function rulesPayload() {
+  const clean = []
+  for (const rule of rules.value) {
+    const pattern = rule.pattern.trim()
+    if (!pattern) continue
+    if (!rule.protocol) throw new Error('每条协议规则都必须选择上游协议')
+    try {
+      new RegExp(pattern)
+    } catch {
+      throw new Error(`正则表达式“${pattern}”无效`)
+    }
+    clean.push({ pattern, protocol: rule.protocol })
+  }
+  return clean
+}
+
+function pricesPayload() {
+  const clean = []
+  const models = new Set()
+  for (const price of prices.value) {
+    const model = price.model.trim()
+    const input = Number(price.input)
+    const output = Number(price.output)
+    if (!model && (!input && !output)) continue
+    if (!model) throw new Error('填写价格后必须指定模型名')
+    if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) throw new Error(`模型“${model}”的价格必须是非负数`)
+    if (models.has(model)) throw new Error(`模型“${model}”存在重复价格`)
+    models.add(model)
+    clean.push({ model, input, output })
+  }
+  return clean
+}
+
+function modelHealthPayload() {
+  const payload = {
+    recent_count: Number(modelHealth.value.recent_count),
+    window_hours: Number(modelHealth.value.window_hours),
+    healthy_threshold: Number(modelHealth.value.healthy_threshold),
+    warning_threshold: Number(modelHealth.value.warning_threshold),
+  }
+  if (!Number.isInteger(payload.recent_count) || payload.recent_count < 1) throw new Error('最近请求数必须是大于或等于 1 的整数')
+  if (!Number.isFinite(payload.window_hours) || payload.window_hours < 1) throw new Error('统计窗口必须大于或等于 1 小时')
+  if (!Number.isFinite(payload.healthy_threshold) || payload.healthy_threshold < 0 || payload.healthy_threshold > 100) throw new Error('健康阈值必须位于 0% 到 100% 之间')
+  if (!Number.isFinite(payload.warning_threshold) || payload.warning_threshold < 0 || payload.warning_threshold > 100) throw new Error('警告阈值必须位于 0% 到 100% 之间')
+  if (payload.warning_threshold > payload.healthy_threshold) throw new Error('警告阈值不能高于健康阈值')
+  return payload
+}
+
+function breakerPayload() {
+  const error = validateBreaker()
+  if (error) throw new Error(error)
+  return {
+    failure_threshold: Number(breaker.value.failure_threshold),
+    success_threshold: Number(breaker.value.success_threshold),
+    timeout_seconds: Number(breaker.value.timeout_seconds),
+    error_rate_threshold: Number(breaker.value.error_rate_threshold),
+    min_requests: Number(breaker.value.min_requests),
+    window_seconds: Number(breaker.value.window_seconds),
+    channel_max_retries: Number(breaker.value.channel_max_retries),
+  }
+}
+
+const saveDefinitions = {
+  logging: { endpoint: '/settings/logging', payload: loggingPayload },
+  network: { endpoint: '/settings/network', payload: networkPayload },
+  testing: { endpoint: '/settings/test-prompt', payload: testPromptPayload },
+  protocols: { endpoint: '/settings/protocol-rules', payload: rulesPayload },
+  prices: { endpoint: '/settings/model-prices', payload: pricesPayload },
+  health: { endpoint: '/settings/model-health', payload: modelHealthPayload },
+  breaker: { endpoint: '/settings/circuit-breaker', payload: breakerPayload },
+}
+
+async function persistSection(section) {
+  if (!hydrated.value || loadingSettings.value) return
+  if (saveInFlight[section]) {
+    savePending[section] = true
+    return
+  }
+
+  const definition = saveDefinitions[section]
+  let payload
+  try {
+    payload = definition.payload()
+  } catch (error) {
+    if (section === 'breaker') breakerError.value = error.message
+    if (section === 'health') modelHealthError.value = error.message
+    setSaveState(section, 'invalid', error.message)
+    return
+  }
+
+  const nextSnapshot = snapshot(payload)
+  if (nextSnapshot === savedSnapshots[section]) {
+    if (saveState.value[section].status === 'invalid') setSaveState(section, 'saved')
+    return
+  }
+
+  saveInFlight[section] = true
+  setSaveState(section, 'saving')
+  try {
+    const response = await api.put(definition.endpoint, payload)
+    savedSnapshots[section] = nextSnapshot
+    if (section === 'network' && response) {
+      network.value.effective_source = response.effective_source || network.value.effective_source
+      network.value.effective_proxy_url = response.effective_proxy_url ?? network.value.effective_proxy_url
+    }
+    if (section === 'breaker') breakerError.value = ''
+    if (section === 'health') modelHealthError.value = ''
+    setSaveState(section, 'saved')
+  } catch (error) {
+    const message = error.message || '保存失败'
+    if (section === 'breaker') breakerError.value = message
+    if (section === 'health') modelHealthError.value = message
+    setSaveState(section, 'error', message)
+  } finally {
+    saveInFlight[section] = false
+    if (savePending[section]) {
+      savePending[section] = false
+      persistSection(section)
+    }
+  }
+}
+
+function scheduleSave(section, delay = 450) {
+  if (!hydrated.value || loadingSettings.value) return
+  window.clearTimeout(saveTimers[section])
+  saveTimers[section] = window.setTimeout(() => persistSection(section), delay)
+}
+
+function saveImmediately(section) {
+  if (!hydrated.value || loadingSettings.value) return
+  skipDebounce[section] = true
+  window.clearTimeout(saveTimers[section])
+  persistSection(section)
+}
+
+function watchSection(source, section) {
+  watch(source, () => {
+    if (skipDebounce[section]) {
+      skipDebounce[section] = false
+      return
+    }
+    scheduleSave(section)
+  }, { deep: true })
 }
 
 function resetBreakerDefaults() {
   breaker.value = { ...defaultBreaker }
   breakerError.value = ''
-  notify('已恢复推荐默认值，保存后生效', 'info')
+  saveImmediately('breaker')
+  notify('已恢复推荐默认值并自动保存', 'info')
 }
 
 function validateBreaker() {
@@ -205,54 +405,6 @@ function validateBreaker() {
   const rate = Number(breaker.value.error_rate_threshold)
   if (!Number.isFinite(rate) || rate < 0 || rate > 1) return '错误率阈值必须位于 0 到 1 之间'
   return ''
-}
-
-async function saveBreaker() {
-  breakerError.value = validateBreaker()
-  if (breakerError.value) {
-    notify(breakerError.value, 'warn')
-    return
-  }
-  savingBreaker.value = true
-  try {
-    const clean = {
-      ...breaker.value,
-      failure_threshold: Number(breaker.value.failure_threshold),
-      success_threshold: Number(breaker.value.success_threshold),
-      timeout_seconds: Number(breaker.value.timeout_seconds),
-      error_rate_threshold: Number(breaker.value.error_rate_threshold),
-      min_requests: Number(breaker.value.min_requests),
-      window_seconds: Number(breaker.value.window_seconds),
-      channel_max_retries: Number(breaker.value.channel_max_retries),
-    }
-    const response = await api.put('/settings/circuit-breaker', clean)
-    breaker.value = { ...defaultBreaker, ...(response?.config || clean) }
-    breakerError.value = ''
-    notify('熔断器配置已保存', 'success')
-  } catch (error) {
-    breakerError.value = error.message || '熔断器配置保存失败'
-    notify(`熔断器配置保存失败: ${breakerError.value}`, 'error')
-  } finally {
-    savingBreaker.value = false
-  }
-}
-
-async function saveNetwork() {
-  savingNetwork.value = true
-  try {
-    const payload = {
-      mode: network.value.mode,
-      manual_url: network.value.manual_url.trim(),
-      no_proxy: network.value.no_proxy.trim(),
-    }
-    const response = await api.put('/settings/network', payload)
-    network.value = { ...network.value, ...(response || payload) }
-    notify('上游网络策略已热切换', 'success')
-  } catch (error) {
-    notify(`网络策略保存失败: ${error.message}`, 'error')
-  } finally {
-    savingNetwork.value = false
-  }
 }
 
 async function runNetworkTest() {
@@ -276,44 +428,15 @@ function stageLabel(stage) {
   return { config: '配置', dns: 'DNS', tcp: 'TCP', tcp_connected: 'TCP', tls: 'TLS', tls_connected: 'TLS', http: 'HTTP' }[stage] || stage || '等待'
 }
 
-async function saveTestPrompt() {
-  const prompt = testPrompt.value.trim()
-  if (!prompt) {
-    notify('测试提示词不能为空', 'warn')
-    return
-  }
-  savingTestPrompt.value = true
-  try {
-    const response = await api.put('/settings/test-prompt', { prompt })
-    testPrompt.value = response?.prompt || prompt
-    notify('全局测试提示词已保存', 'success')
-  } catch (error) {
-    notify(`测试提示词保存失败: ${error.message}`, 'error')
-  } finally {
-    savingTestPrompt.value = false
-  }
-}
+watchSection(logging, 'logging')
+watchSection(network, 'network')
+watchSection(testPrompt, 'testing')
+watchSection(rules, 'protocols')
+watchSection(prices, 'prices')
+watchSection(modelHealth, 'health')
+watchSection(breaker, 'breaker')
 
-async function saveLogging() {
-  savingLogging.value = true
-  try {
-    const payload = {
-      ...logging.value,
-      sanitized_header_keys: ['Authorization', 'Proxy-Authorization', 'Cookie', 'Set-Cookie', 'X-API-Key'],
-    }
-    const response = await api.put('/settings/logging', payload)
-    logging.value = { ...payload, ...(response || {}) }
-    notify(logging.value.enabled ? '完整调用留痕已开启' : '完整调用留痕已关闭', 'success')
-  } catch (error) {
-    notify(`完整日志配置保存失败: ${error.message}`, 'error')
-  } finally {
-    savingLogging.value = false
-  }
-}
-
-onMounted(() => {
-  loadSettings()
-})
+onMounted(loadSettings)
 </script>
 
 <template>
@@ -322,7 +445,7 @@ onMounted(() => {
       <div>
         <div class="eyebrow">Control plane settings</div>
         <h1 class="page-title">系统设置</h1>
-        <p class="page-description">管理调用留痕、上游网络、模型测试、协议匹配、计价与熔断策略。</p>
+        <p class="page-description">管理完整日志、上游网络、模型测试、协议匹配、计价、模型健康与熔断策略。</p>
       </div>
     </header>
 
@@ -360,11 +483,9 @@ onMounted(() => {
               <span class="dim-title">完整调用留痕</span>
               <span class="chip" :class="logging.enabled ? 'chip-run' : ''">{{ logging.enabled ? '正在记录' : '仅记录摘要' }}</span>
             </div>
-            <div class="mt-1 text-xs text-soft">保存后立即生效，无需重启服务</div>
+            <div class="mt-1 text-xs text-soft">修改后自动保存并立即生效，无需重启服务</div>
           </div>
-          <button class="btn btn-primary btn-sm" type="button" :disabled="savingLogging || loadingSettings" @click="saveLogging">
-            {{ savingLogging ? '保存中…' : '保存日志策略' }}
-          </button>
+          <span class="font-mono text-[11px]" :class="sectionStatus('logging').class" :title="sectionStatus('logging').title" aria-live="polite">{{ sectionStatus('logging').text }}</span>
         </div>
 
         <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
@@ -374,12 +495,12 @@ onMounted(() => {
               class="flex w-full items-center gap-4 rounded-xl border p-4 text-left transition"
               :class="logging.enabled ? 'border-blue/30 bg-blue-wash' : 'border-line bg-white hover:border-faint'"
               :aria-pressed="logging.enabled"
-              @click="logging.enabled = !logging.enabled"
+              @click="logging.enabled = !logging.enabled; saveImmediately('logging')"
             >
               <span class="switch" :class="{ 'switch-on': logging.enabled }" aria-hidden="true"></span>
               <span class="min-w-0 flex-1">
                 <span class="block font-medium text-ink">记录每次调用的完整链路</span>
-                <span class="mt-1 block text-xs leading-5 text-soft">包含客户端请求、最终上游请求、上游响应、客户端响应和流式 SSE 内容，并自动使用 gzip 压缩。</span>
+                <span class="mt-1 block text-xs leading-5 text-soft">包含客户端请求、最终上游请求、上游响应和客户端响应，并自动使用 gzip 压缩。</span>
               </span>
               <span class="font-mono text-[11px] uppercase tracking-wider" :class="logging.enabled ? 'text-blue' : 'text-faint'">{{ logging.enabled ? 'ON' : 'OFF' }}</span>
             </button>
@@ -388,7 +509,7 @@ onMounted(() => {
               <div class="mb-3 flex items-center justify-between gap-3">
                 <div>
                   <div class="dim-title">记录范围</div>
-                  <p class="mt-1 text-xs text-soft">可按链路阶段减少敏感内容和存储占用。</p>
+                  <p class="mt-1 text-xs text-soft">按链路阶段控制记录范围与存储占用。</p>
                 </div>
                 <span class="font-mono text-[10px] uppercase tracking-wider text-faint">gzip / json</span>
               </div>
@@ -399,7 +520,7 @@ onMounted(() => {
                   { key: 'record_upstream_resp', title: '上游响应', hint: '状态、响应头、正文或原始 SSE' },
                   { key: 'record_client_resp', title: '客户端响应', hint: '最终状态、响应头与实际输出内容' },
                 ]" :key="item.key" class="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-white p-3.5 hover:border-faint">
-                  <input v-model="logging[item.key]" type="checkbox" class="mt-1 accent-blue" />
+                  <input v-model="logging[item.key]" type="checkbox" class="mt-1 accent-blue" @change="saveImmediately('logging')" />
                   <span><span class="block text-[13px] font-medium text-ink">{{ item.title }}</span><span class="mt-1 block text-[11px] leading-5 text-soft">{{ item.hint }}</span></span>
                 </label>
               </div>
@@ -424,7 +545,7 @@ onMounted(() => {
           <div class="route-timeline mt-4 space-y-4 text-xs">
             <div><div class="font-medium text-ink">链路内采集</div><p class="mt-1 text-soft">流式内容边转发边记录，不改变 Flush 行为。</p></div>
             <div><div class="font-medium text-ink">异步压缩</div><p class="mt-1 text-soft">调用结束后序列化并以 gzip 压缩。</p></div>
-            <div><div class="font-medium text-ink">按需解压</div><p class="mt-1 text-soft">日志列表只读摘要，打开详情时才加载完整内容。</p></div>
+            <div><div class="font-medium text-ink">按需解压</div><p class="mt-1 text-soft">打开日志详情时才加载完整内容。</p></div>
           </div>
         </section>
       </aside>
@@ -440,8 +561,8 @@ onMounted(() => {
     >
       <div class="sheet overflow-hidden">
         <div class="sheet-head">
-          <div><div class="dim-title">上游连接策略</div><div class="mt-1 text-xs text-soft">保存后立即热切换，不中断进行中的请求</div></div>
-          <button class="btn btn-primary btn-sm" type="button" :disabled="savingNetwork || loadingSettings" @click="saveNetwork">{{ savingNetwork ? '切换中…' : '保存并应用' }}</button>
+          <div><div class="dim-title">上游连接策略</div><div class="mt-1 text-xs text-soft">修改后自动热切换，不中断进行中的请求</div></div>
+          <span class="font-mono text-[11px]" :class="sectionStatus('network').class" :title="sectionStatus('network').title" aria-live="polite">{{ sectionStatus('network').text }}</span>
         </div>
         <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
           <div class="space-y-5 p-4 sm:p-5">
@@ -449,7 +570,7 @@ onMounted(() => {
               <legend class="field-label">代理模式</legend>
               <div class="grid gap-2 sm:grid-cols-3">
                 <label v-for="mode in [{ value: 'system', title: '跟随系统', hint: '读取 Windows 当前用户代理' }, { value: 'manual', title: '手动代理', hint: '显式指定代理 URL' }, { value: 'direct', title: '直接连接', hint: '绕过全部代理' }]" :key="mode.value" class="cursor-pointer rounded-xl border p-3" :class="network.mode === mode.value ? 'border-blue/35 bg-blue-wash' : 'border-line bg-white'">
-                  <input v-model="network.mode" class="sr-only" type="radio" :value="mode.value" />
+                  <input v-model="network.mode" class="sr-only" type="radio" :value="mode.value" @change="saveImmediately('network')" />
                   <span class="block text-sm font-medium text-ink">{{ mode.title }}</span><span class="mt-1 block text-xs text-soft">{{ mode.hint }}</span>
                 </label>
               </div>
@@ -464,7 +585,7 @@ onMounted(() => {
         </PageState>
       </div>
       <aside class="sheet overflow-hidden">
-        <div class="sheet-head"><div><div class="dim-title">分段连通诊断</div><div class="mt-1 text-xs text-soft">使用左侧未保存的候选配置</div></div></div>
+        <div class="sheet-head"><div><div class="dim-title">分段连通诊断</div><div class="mt-1 text-xs text-soft">使用左侧当前候选配置</div></div></div>
         <div class="space-y-4 p-4">
           <label><span class="field-label">测试地址</span><input v-model="networkTarget" class="input input-mono" type="url" /></label>
           <button class="btn w-full" type="button" :disabled="testingNetwork" @click="runNetworkTest">{{ testingNetwork ? '诊断中…' : '运行 DNS / TCP / TLS / HTTP 诊断' }}</button>
@@ -482,7 +603,7 @@ onMounted(() => {
     </section>
 
     <section v-else-if="activeTab === 'testing'" id="settings-panel-testing" role="tabpanel" aria-labelledby="settings-tab-testing" tabindex="0" class="sheet overflow-hidden">
-      <div class="sheet-head"><div><div class="dim-title">模型测试提示词</div><div class="mt-1 text-xs text-soft">渠道未设置覆盖值时使用此全局默认</div></div><button class="btn btn-primary btn-sm" type="button" :disabled="savingTestPrompt || loadingSettings" @click="saveTestPrompt">{{ savingTestPrompt ? '保存中…' : '保存提示词' }}</button></div>
+      <div class="sheet-head"><div><div class="dim-title">模型测试提示词</div><div class="mt-1 text-xs text-soft">渠道未设置覆盖值时使用此全局默认</div></div><span class="font-mono text-[11px]" :class="sectionStatus('testing').class" :title="sectionStatus('testing').title" aria-live="polite">{{ sectionStatus('testing').text }}</span></div>
       <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
         <div class="grid gap-5 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_300px]">
           <label><span class="field-label">全局默认提示词</span><textarea v-model="testPrompt" class="input min-h-36 resize-y" maxlength="4000" placeholder="要求模型返回简短、可验证的回答"></textarea><span class="field-help">用于单模型测试与批量体检；建议保持输出短小以减少费用。</span></label>
@@ -504,9 +625,7 @@ onMounted(() => {
           <div class="dim-title">协议规则</div>
           <div class="mt-1 text-xs text-soft">正则首个命中，列表顺序即优先级</div>
         </div>
-        <button class="btn btn-primary btn-sm" type="button" :disabled="savingRules || loadingSettings" @click="saveRules">
-          {{ savingRules ? '保存中…' : '保存规则' }}
-        </button>
+        <span class="font-mono text-[11px]" :class="sectionStatus('protocols').class" :title="sectionStatus('protocols').title" aria-live="polite">{{ sectionStatus('protocols').text }}</span>
       </div>
 
       <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
@@ -530,7 +649,7 @@ onMounted(() => {
                   </label>
                   <label>
                     <span class="field-label">上游协议</span>
-                    <select v-model="rule.protocol" class="input">
+                    <select v-model="rule.protocol" class="input" @change="saveImmediately('protocols')">
                       <option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option>
                     </select>
                   </label>
@@ -584,9 +703,7 @@ onMounted(() => {
           <div class="dim-title">模型价格</div>
           <div class="mt-1 text-xs text-soft">单位为 USD / 1M tokens，default 可作默认价格</div>
         </div>
-        <button class="btn btn-primary btn-sm" type="button" :disabled="savingPrices || loadingSettings" @click="savePrices">
-          {{ savingPrices ? '保存中…' : '保存价格' }}
-        </button>
+        <span class="font-mono text-[11px]" :class="sectionStatus('prices').class" :title="sectionStatus('prices').title" aria-live="polite">{{ sectionStatus('prices').text }}</span>
       </div>
 
       <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
@@ -596,7 +713,7 @@ onMounted(() => {
             <article v-for="(price, index) in prices" :key="index" class="rounded-lg border border-line bg-white p-3">
               <div class="mb-3 flex items-center justify-between gap-2">
                 <span class="font-medium">价格 {{ index + 1 }}</span>
-                <button class="btn btn-danger btn-sm" type="button" :aria-label="`删除价格 ${index + 1}`" @click="prices.splice(index, 1)">删除</button>
+                <button class="btn btn-danger btn-sm" type="button" :aria-label="`删除价格 ${index + 1}`" @click="removePrice(index)">删除</button>
               </div>
               <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_160px]">
                 <label>
@@ -621,7 +738,52 @@ onMounted(() => {
     </section>
 
     <section
-      v-else
+      v-else-if="activeTab === 'health'"
+      id="settings-panel-health"
+      role="tabpanel"
+      aria-labelledby="settings-tab-health"
+      tabindex="0"
+      class="sheet"
+    >
+      <div class="sheet-head">
+        <div>
+          <div class="dim-title">模型健康判定</div>
+          <div class="mt-1 text-xs text-soft">按近期请求成功率划分健康、警告与异常状态</div>
+        </div>
+        <span class="font-mono text-[11px]" :class="sectionStatus('health').class" :title="sectionStatus('health').title" aria-live="polite">{{ sectionStatus('health').text }}</span>
+      </div>
+      <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
+        <div class="space-y-4 p-4 sm:p-5">
+          <p class="max-w-4xl text-xs leading-5 text-soft">仅统计指定时间窗口内最近的请求。成功率达到健康阈值显示为健康；低于健康阈值但达到警告阈值时显示警告；更低则视为异常。</p>
+          <div v-if="modelHealthError" class="rounded-lg border border-trip/30 bg-trip-wash px-3 py-2 text-sm text-trip" role="alert">{{ modelHealthError }}</div>
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">最近请求数</span>
+              <input v-model.number="modelHealth.recent_count" class="input input-mono" type="number" min="1" step="1" inputmode="numeric" />
+              <span class="field-help">每个模型最多纳入判定的近期请求数量。</span>
+            </label>
+            <label class="rounded-lg border border-line bg-white p-3">
+              <span class="field-label">统计窗口（小时）</span>
+              <input v-model.number="modelHealth.window_hours" class="input input-mono" type="number" min="1" step="1" inputmode="numeric" />
+              <span class="field-help">只使用此时间范围内的请求结果。</span>
+            </label>
+            <label class="rounded-lg border border-run/25 bg-run-wash p-3">
+              <span class="field-label text-run">健康阈值</span>
+              <input v-model.number="modelHealth.healthy_threshold" class="input input-mono" type="number" min="0" max="100" step="1" inputmode="decimal" />
+              <span class="field-help">成功率达到该百分比时判定为健康。</span>
+            </label>
+            <label class="rounded-lg border border-test/25 bg-test-wash p-3">
+              <span class="field-label text-test">警告阈值</span>
+              <input v-model.number="modelHealth.warning_threshold" class="input input-mono" type="number" min="0" max="100" step="1" inputmode="decimal" />
+              <span class="field-help">成功率低于该百分比时判定为异常，不得高于健康阈值。</span>
+            </label>
+          </div>
+        </div>
+      </PageState>
+    </section>
+
+    <section
+      v-else-if="activeTab === 'breaker'"
       id="settings-panel-breaker"
       role="tabpanel"
       aria-labelledby="settings-tab-breaker"
@@ -633,11 +795,9 @@ onMounted(() => {
           <div class="dim-title">熔断器</div>
           <div class="mt-1 text-xs text-soft">设置失败判断、恢复条件、统计窗口和重试次数</div>
         </div>
-        <div class="flex flex-wrap justify-end gap-2">
-          <button class="btn btn-sm" type="button" :disabled="savingBreaker || loadingSettings" @click="resetBreakerDefaults">恢复默认</button>
-          <button class="btn btn-primary btn-sm" type="button" :disabled="savingBreaker || loadingSettings" @click="saveBreaker">
-            {{ savingBreaker ? '保存中…' : '保存配置' }}
-          </button>
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          <span class="font-mono text-[11px]" :class="sectionStatus('breaker').class" :title="sectionStatus('breaker').title" aria-live="polite">{{ sectionStatus('breaker').text }}</span>
+          <button class="btn btn-sm" type="button" :disabled="loadingSettings" @click="resetBreakerDefaults">恢复默认</button>
         </div>
       </div>
 

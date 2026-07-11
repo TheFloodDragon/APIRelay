@@ -26,7 +26,27 @@ const SettingKeyNetwork = "network"
 // 全局模型连通性测试提示词的 Setting key。
 const SettingKeyTestPrompt = "test_prompt"
 
+// 全局模型健康统计策略的 Setting key。
+const SettingKeyModelHealth = "model_health"
+
 const DefaultTestPrompt = "Say 'hi' in one word."
+
+const (
+	DefaultModelHealthRecentCount      = 100
+	DefaultModelHealthWindowHours      = 24
+	DefaultModelHealthHealthyThreshold = 95.0
+	DefaultModelHealthWarningThreshold = 70.0
+	maxModelHealthRecentCount          = 10000
+	maxModelHealthWindowHours          = 24 * 365
+)
+
+// ModelHealthConfig 是持久化的模型健康统计策略。
+type ModelHealthConfig struct {
+	RecentCount      int     `json:"recent_count"`
+	WindowHours      int     `json:"window_hours"`
+	HealthyThreshold float64 `json:"healthy_threshold"`
+	WarningThreshold float64 `json:"warning_threshold"`
+}
 
 // NetworkConfig 是持久化的上游代理策略。
 type NetworkConfig struct {
@@ -81,6 +101,8 @@ func SetSetting(key, value string) error {
 			invalidateModelPricesCache()
 		case SettingKeyLogging:
 			invalidateLoggingConfigCache()
+		case SettingKeyModelHealth:
+			invalidateModelHealthConfigCache()
 		}
 	}
 	return err
@@ -256,6 +278,81 @@ func invalidateLoggingConfigCache() {
 	loggingConfigLoaded = false
 	loggingConfigCache = nil
 	loggingConfigMu.Unlock()
+}
+
+// ---- 全局模型健康策略缓存 ----
+
+var (
+	modelHealthConfigMu     sync.RWMutex
+	modelHealthConfigCache  ModelHealthConfig
+	modelHealthConfigLoaded bool
+)
+
+// NormalizeModelHealthConfig 为缺失值补默认值，并限制会导致过大查询或无效阈值的配置。
+func NormalizeModelHealthConfig(cfg ModelHealthConfig) ModelHealthConfig {
+	if cfg.RecentCount <= 0 {
+		cfg.RecentCount = DefaultModelHealthRecentCount
+	} else if cfg.RecentCount > maxModelHealthRecentCount {
+		cfg.RecentCount = maxModelHealthRecentCount
+	}
+	if cfg.WindowHours <= 0 {
+		cfg.WindowHours = DefaultModelHealthWindowHours
+	} else if cfg.WindowHours > maxModelHealthWindowHours {
+		cfg.WindowHours = maxModelHealthWindowHours
+	}
+	if cfg.HealthyThreshold <= 0 {
+		cfg.HealthyThreshold = DefaultModelHealthHealthyThreshold
+	} else if cfg.HealthyThreshold > 100 {
+		cfg.HealthyThreshold = 100
+	}
+	if cfg.WarningThreshold <= 0 {
+		cfg.WarningThreshold = DefaultModelHealthWarningThreshold
+	} else if cfg.WarningThreshold > 100 {
+		cfg.WarningThreshold = 100
+	}
+	if cfg.WarningThreshold > cfg.HealthyThreshold {
+		cfg.WarningThreshold = cfg.HealthyThreshold
+	}
+	return cfg
+}
+
+// GetModelHealthConfig 返回全局模型健康统计策略，带内存缓存。
+func GetModelHealthConfig() ModelHealthConfig {
+	modelHealthConfigMu.RLock()
+	if modelHealthConfigLoaded {
+		cfg := modelHealthConfigCache
+		modelHealthConfigMu.RUnlock()
+		return cfg
+	}
+	modelHealthConfigMu.RUnlock()
+
+	modelHealthConfigMu.Lock()
+	defer modelHealthConfigMu.Unlock()
+	if modelHealthConfigLoaded {
+		return modelHealthConfigCache
+	}
+	var cfg ModelHealthConfig
+	raw, _ := GetSetting(SettingKeyModelHealth)
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg)
+	}
+	cfg = NormalizeModelHealthConfig(cfg)
+	modelHealthConfigCache = cfg
+	modelHealthConfigLoaded = true
+	return cfg
+}
+
+// SaveModelHealthConfig 归一化并持久化模型健康统计策略。
+func SaveModelHealthConfig(cfg ModelHealthConfig) (ModelHealthConfig, error) {
+	cfg = NormalizeModelHealthConfig(cfg)
+	return cfg, SaveSettingJSON(SettingKeyModelHealth, cfg)
+}
+
+func invalidateModelHealthConfigCache() {
+	modelHealthConfigMu.Lock()
+	modelHealthConfigLoaded = false
+	modelHealthConfigCache = ModelHealthConfig{}
+	modelHealthConfigMu.Unlock()
 }
 
 // GetNetworkConfig 返回持久化的上游网络配置；未配置时默认跟随系统代理。

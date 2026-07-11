@@ -8,7 +8,6 @@ const route = useRoute()
 const toastRef = inject('toastRef')
 const loggingOut = ref(false)
 const navigationOpen = ref(false)
-const captureEnabled = ref(false)
 const serviceOnline = ref(true)
 const isLogin = computed(() => route.name === 'login')
 const username = computed(() => localStorage.getItem('apirelay_user') || '管理员')
@@ -26,8 +25,7 @@ function bindToast(instance) {
 async function loadRuntimeState() {
   if (!localStorage.getItem('apirelay_session')) return
   try {
-    const config = await api.get('/settings/logging')
-    captureEnabled.value = !!config?.enabled
+    await api.get('/settings/logging')
     serviceOnline.value = true
   } catch {
     serviceOnline.value = false
@@ -74,7 +72,6 @@ onMounted(() => {
           <div class="route-spine" aria-hidden="true"></div>
           <RouterLink v-for="item in sheets" :key="item.name" :to="item.path" class="route-link" :class="{ 'route-link-active': route.name === item.name }">
             <span class="route-node"><span></span></span><span>{{ item.label }}</span>
-            <span v-if="item.name === 'logs' && captureEnabled" class="ml-auto rounded bg-white/10 px-1.5 py-0.5 font-mono text-[9px] uppercase">Full</span>
           </RouterLink>
         </nav>
         <div class="border-t border-white/10 p-4">
@@ -90,15 +87,9 @@ onMounted(() => {
         <div class="mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">Routing control plane</div>
       </div>
 
-      <div class="mx-4 mb-5 grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-white/10 p-px">
-        <div class="bg-sidebar px-3 py-2.5">
-          <div class="text-[10px] uppercase tracking-wider text-white/35">Service</div>
-          <div class="mt-1 flex items-center gap-2 text-xs text-white/80"><i class="status-dot" :class="serviceOnline ? 'status-dot-live' : 'status-dot-off'"></i>{{ serviceOnline ? 'Online' : 'Unknown' }}</div>
-        </div>
-        <div class="bg-sidebar px-3 py-2.5">
-          <div class="text-[10px] uppercase tracking-wider text-white/35">Capture</div>
-          <div class="mt-1 flex items-center gap-2 text-xs text-white/80"><i class="status-dot" :class="captureEnabled ? 'status-dot-capture' : 'status-dot-idle'"></i>{{ captureEnabled ? 'Full' : 'Summary' }}</div>
-        </div>
+      <div class="mx-4 mb-5 overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
+        <div class="text-[10px] uppercase tracking-wider text-white/35">Service</div>
+        <div class="mt-1 flex items-center gap-2 text-xs text-white/80"><i class="status-dot" :class="serviceOnline ? 'status-dot-live' : 'status-dot-off'"></i>{{ serviceOnline ? 'Online' : 'Unknown' }}</div>
       </div>
 
       <nav class="route-nav flex-1 px-3" aria-label="主要导航">
@@ -112,7 +103,6 @@ onMounted(() => {
           <svg v-else-if="item.name === 'logs'" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8m-8 4h8m-8 4h5" /></svg>
           <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM19 13v-2l2-1-2-3-2 1a8 8 0 0 0-2-1l-.5-2h-5L9 7a8 8 0 0 0-2 1L5 7l-2 3 2 1v2l-2 1 2 3 2-1a8 8 0 0 0 2 1l.5 2h5l.5-2a8 8 0 0 0 2-1l2 1 2-3-2-1Z" /></svg>
           <span>{{ item.label }}</span>
-          <span v-if="item.name === 'logs' && captureEnabled" class="ml-auto rounded bg-white/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-white/70">Full</span>
         </RouterLink>
       </nav>
 
@@ -131,7 +121,7 @@ onMounted(() => {
         <span class="mx-4 h-3 w-px bg-line"></span>
         <span class="text-soft">{{ currentSheet?.label || 'APIRelay' }}</span>
         <span class="ml-auto flex items-center gap-4">
-          <span class="flex items-center gap-2 text-soft"><i class="status-dot" :class="captureEnabled ? 'status-dot-capture' : 'status-dot-idle'"></i>完整留痕 {{ captureEnabled ? '已开启' : '未开启' }}</span>
+          <span class="flex items-center gap-2 text-soft"><i class="status-dot" :class="serviceOnline ? 'status-dot-live' : 'status-dot-off'"></i>{{ serviceOnline ? '服务在线' : '状态未知' }}</span>
           <button class="text-blue transition hover:text-blue-deep" @click="loadRuntimeState">同步状态</button>
         </span>
       </div>

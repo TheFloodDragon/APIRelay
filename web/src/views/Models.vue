@@ -10,6 +10,7 @@ const loading = ref(true)
 const error = ref('')
 const q = ref('')
 const expandedModels = ref(new Set())
+const healthConfig = ref({ recent_count: 100, window_hours: 24, healthy_threshold: 95, warning_threshold: 70 })
 
 const filtered = computed(() => {
   const keyword = q.value.trim().toLowerCase()
@@ -88,8 +89,8 @@ function healthText(health) {
 function healthClass(health) {
   if (!hasHealth(health)) return ''
   const percent = healthPercent(health)
-  if (percent >= 95) return 'chip-run'
-  if (percent >= 70) return 'chip-test'
+  if (percent >= Number(healthConfig.value.healthy_threshold || 95)) return 'chip-run'
+  if (percent >= Number(healthConfig.value.warning_threshold || 70)) return 'chip-test'
   return 'chip-trip'
 }
 
@@ -116,7 +117,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    models.value = (await api.get('/models')) || []
+    const [modelData, healthData] = await Promise.all([
+      api.get('/models'),
+      api.get('/settings/model-health'),
+    ])
+    models.value = modelData || []
+    healthConfig.value = { ...healthConfig.value, ...(healthData || {}) }
   } catch (e) {
     error.value = e.message || '无法读取模型数据'
     proxy.$toast.add(`模型加载失败：${error.value}`, 'error')

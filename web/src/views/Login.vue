@@ -69,12 +69,12 @@ onMounted(checkService)
             <span>Client</span><span class="h-px w-14 bg-white/15"></span><span class="text-blue-grid">Relay</span><span class="h-px w-14 bg-white/15"></span><span>Upstream</span>
           </div>
           <h1 class="font-cond text-5xl font-semibold leading-[1.04] tracking-[-0.035em] xl:text-6xl">让每一次 API 调用<br /><span class="text-blue-grid">都有清晰路径。</span></h1>
-          <p class="mt-6 max-w-xl text-[15px] leading-7 text-white/55">统一维护上游渠道、模型映射、访问令牌和故障转移策略；从一个请求 ID 追踪完整调用链路。</p>
+          <p class="mt-6 max-w-xl text-[15px] leading-7 text-white/55">统一维护上游渠道、模型映射、访问令牌和故障转移策略；从一个请求 ID 追踪调用链路。</p>
 
           <div class="route-timeline mt-10 space-y-6 border-white/15 text-sm">
             <div><div class="text-white/90">协议自适应路由</div><div class="mt-1 text-xs text-white/40">OpenAI · Anthropic · Responses</div></div>
             <div><div class="text-white/90">渠道健康与自动故障转移</div><div class="mt-1 text-xs text-white/40">优先级、权重、熔断与恢复检查</div></div>
-            <div><div class="text-white/90">完整调用诊断</div><div class="mt-1 text-xs text-white/40">可选全量记录 · gzip 自动压缩 · 敏感头脱敏</div></div>
+            <div><div class="text-white/90">请求链路诊断</div><div class="mt-1 text-xs text-white/40">按请求 ID 定位上游响应与故障切换</div></div>
           </div>
         </div>
 

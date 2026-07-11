@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/apirelay/apirelay/common/logger"
 )
@@ -388,41 +389,41 @@ func ListModelLastUsed() (map[string]int64, error) {
 	return result, nil
 }
 
-// ModelHealthStat 是基于真实调用日志聚合的模型可用性统计。
+// ModelHealthStat 是基于真实调用日志和当前策略聚合的模型可用性统计。
 type ModelHealthStat struct {
-	ChannelId     int     `json:"channel_id,omitempty"`
-	Model         string  `json:"model,omitempty"`
-	Total         int64   `json:"total"`
-	Success       int64   `json:"success"`
-	Failed        int64   `json:"failed"`
-	Availability  float64 `json:"availability"` // 成功率百分比，0-100。
-	LastUsedAt    int64   `json:"last_used_at"`
-	LastSuccessAt int64   `json:"last_success_at"`
-	LastFailureAt int64   `json:"last_failure_at"`
-	LastError     string  `json:"last_error,omitempty"`
+	ChannelId        int     `json:"channel_id,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	Total            int64   `json:"total"`
+	Success          int64   `json:"success"`
+	Failed           int64   `json:"failed"`
+	Availability     float64 `json:"availability"` // 成功率百分比，0-100。
+	LastUsedAt       int64   `json:"last_used_at"`
+	LastSuccessAt    int64   `json:"last_success_at"`
+	LastFailureAt    int64   `json:"last_failure_at"`
+	LastError        string  `json:"last_error,omitempty"`
+	HealthStatus     string  `json:"health_status"` // unknown、healthy、warning 或 unhealthy。
+	RecentCount      int     `json:"recent_count"`
+	WindowHours      int     `json:"window_hours"`
+	HealthyThreshold float64 `json:"healthy_threshold"`
+	WarningThreshold float64 `json:"warning_threshold"`
 }
 
 // EmptyModelHealthStat 返回未调用模型的空健康对象，避免前端将无数据误判为 0% 不可用。
 func EmptyModelHealthStat(channelID int, modelName string) *ModelHealthStat {
-	return &ModelHealthStat{ChannelId: channelID, Model: modelName}
+	item := &ModelHealthStat{ChannelId: channelID, Model: modelName}
+	applyModelHealthPolicy(item, GetModelHealthConfig())
+	return item
 }
 
-// ListModelHealthByChannel 按 channel_id + src_model 聚合调用健康统计。
+// ListModelHealthByChannel 按 channel_id + src_model 聚合当前策略范围内的调用健康统计。
 func ListModelHealthByChannel() (map[int]map[string]*ModelHealthStat, error) {
-	var rows []*ModelHealthStat
-	if err := DB.Model(&Log{}).
-		Select(modelHealthSelect("channel_id, src_model AS model")).
-		Where("src_model <> ? AND type IN ?", "", []int{LogTypeConsume, LogTypeError}).
-		Group("channel_id, src_model").
-		Scan(&rows).Error; err != nil {
+	rows, cfg, err := listModelHealthSamples(true)
+	if err != nil {
 		return nil, err
 	}
-	finalizeModelHealth(rows)
-	if err := attachLastFailureErrors(rows, true); err != nil {
-		return nil, err
-	}
+	stats := aggregateModelHealth(rows, cfg, true)
 	result := make(map[int]map[string]*ModelHealthStat)
-	for _, item := range rows {
+	for _, item := range stats {
 		if result[item.ChannelId] == nil {
 			result[item.ChannelId] = make(map[string]*ModelHealthStat)
 		}
@@ -431,94 +432,110 @@ func ListModelHealthByChannel() (map[int]map[string]*ModelHealthStat, error) {
 	return result, nil
 }
 
-// ListModelHealthByModel 按 src_model 聚合跨渠道模型总览健康统计。
+// ListModelHealthByModel 按 src_model 聚合当前策略范围内的跨渠道模型健康统计。
 func ListModelHealthByModel() (map[string]*ModelHealthStat, error) {
-	var rows []*ModelHealthStat
-	if err := DB.Model(&Log{}).
-		Select(modelHealthSelect("src_model AS model")).
-		Where("src_model <> ? AND type IN ?", "", []int{LogTypeConsume, LogTypeError}).
-		Group("src_model").
-		Scan(&rows).Error; err != nil {
+	rows, cfg, err := listModelHealthSamples(false)
+	if err != nil {
 		return nil, err
 	}
-	finalizeModelHealth(rows)
-	if err := attachLastFailureErrors(rows, false); err != nil {
-		return nil, err
-	}
-	result := make(map[string]*ModelHealthStat, len(rows))
-	for _, item := range rows {
+	stats := aggregateModelHealth(rows, cfg, false)
+	result := make(map[string]*ModelHealthStat, len(stats))
+	for _, item := range stats {
 		result[item.Model] = item
 	}
 	return result, nil
 }
 
-func modelHealthSelect(prefix string) string {
-	success := modelHealthSuccessSQL()
-	failure := modelHealthFailureSQL()
-	return fmt.Sprintf(`%s,
-COUNT(*) AS total,
-COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END), 0) AS success,
-COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END), 0) AS failed,
-MAX(created_at) AS last_used_at,
-MAX(CASE WHEN %s THEN created_at ELSE 0 END) AS last_success_at,
-MAX(CASE WHEN %s THEN created_at ELSE 0 END) AS last_failure_at`, prefix, success, failure, success, failure)
+type modelHealthSample struct {
+	Id        int
+	ChannelId int
+	Model     string
+	CreatedAt int64
+	Type      int
+	Status    int
+	Error     string
+	Content   string
 }
 
-func modelHealthSuccessSQL() string {
-	return fmt.Sprintf("type = %d AND status >= 200 AND status < 400 AND COALESCE(error, '') = ''", LogTypeConsume)
+func listModelHealthSamples(byChannel bool) ([]modelHealthSample, ModelHealthConfig, error) {
+	cfg := GetModelHealthConfig()
+	partition := "src_model"
+	if byChannel {
+		partition = "channel_id, src_model"
+	}
+	cutoff := time.Now().Add(-time.Duration(cfg.WindowHours) * time.Hour).UnixMilli()
+	query := fmt.Sprintf(`SELECT id, channel_id, src_model AS model, created_at, type, status, error, content
+FROM (
+	SELECT id, channel_id, src_model, created_at, type, status, error, content,
+		ROW_NUMBER() OVER (PARTITION BY %s ORDER BY created_at DESC, id DESC) AS health_rank
+	FROM logs
+	WHERE src_model <> ? AND type IN (?, ?) AND created_at >= ?
+) AS ranked_health_logs
+WHERE health_rank <= ?
+ORDER BY created_at DESC, id DESC`, partition)
+	var rows []modelHealthSample
+	err := DB.Raw(query, "", LogTypeConsume, LogTypeError, cutoff, cfg.RecentCount).Scan(&rows).Error
+	return rows, cfg, err
 }
 
-func modelHealthFailureSQL() string {
-	return fmt.Sprintf("type = %d OR status < 200 OR status >= 400 OR COALESCE(error, '') <> ''", LogTypeError)
-}
-
-func finalizeModelHealth(rows []*ModelHealthStat) {
-	for _, item := range rows {
-		if item == nil || item.Total <= 0 {
-			continue
+func aggregateModelHealth(rows []modelHealthSample, cfg ModelHealthConfig, byChannel bool) []*ModelHealthStat {
+	byKey := make(map[string]*ModelHealthStat)
+	ordered := make([]*ModelHealthStat, 0)
+	for _, row := range rows {
+		key := modelHealthKey(row.ChannelId, row.Model, byChannel)
+		item := byKey[key]
+		if item == nil {
+			item = &ModelHealthStat{Model: row.Model}
+			if byChannel {
+				item.ChannelId = row.ChannelId
+			}
+			applyModelHealthPolicy(item, cfg)
+			byKey[key] = item
+			ordered = append(ordered, item)
 		}
+		item.Total++
+		if row.CreatedAt > item.LastUsedAt {
+			item.LastUsedAt = row.CreatedAt
+		}
+		if modelHealthSampleSucceeded(row) {
+			item.Success++
+			if row.CreatedAt > item.LastSuccessAt {
+				item.LastSuccessAt = row.CreatedAt
+			}
+		} else {
+			item.Failed++
+			if row.CreatedAt > item.LastFailureAt {
+				item.LastFailureAt = row.CreatedAt
+				item.LastError = compactLastError(row.Error, row.Content, row.Status)
+			}
+		}
+	}
+	for _, item := range ordered {
 		item.Availability = float64(item.Success) / float64(item.Total) * 100
+		applyModelHealthPolicy(item, cfg)
 	}
+	return ordered
 }
 
-func attachLastFailureErrors(rows []*ModelHealthStat, byChannel bool) error {
-	if len(rows) == 0 {
-		return nil
+func modelHealthSampleSucceeded(row modelHealthSample) bool {
+	return row.Type == LogTypeConsume && row.Status >= 200 && row.Status < 400 && strings.TrimSpace(row.Error) == ""
+}
+
+func applyModelHealthPolicy(item *ModelHealthStat, cfg ModelHealthConfig) {
+	item.RecentCount = cfg.RecentCount
+	item.WindowHours = cfg.WindowHours
+	item.HealthyThreshold = cfg.HealthyThreshold
+	item.WarningThreshold = cfg.WarningThreshold
+	switch {
+	case item.Total == 0:
+		item.HealthStatus = "unknown"
+	case item.Availability >= cfg.HealthyThreshold:
+		item.HealthStatus = "healthy"
+	case item.Availability >= cfg.WarningThreshold:
+		item.HealthStatus = "warning"
+	default:
+		item.HealthStatus = "unhealthy"
 	}
-	byKey := make(map[string]*ModelHealthStat, len(rows))
-	for _, item := range rows {
-		if item == nil || item.LastFailureAt == 0 {
-			continue
-		}
-		byKey[modelHealthKey(item.ChannelId, item.Model, byChannel)] = item
-	}
-	if len(byKey) == 0 {
-		return nil
-	}
-	type failureRow struct {
-		ChannelId int
-		Model     string
-		Status    int
-		Error     string
-		Content   string
-	}
-	var failures []failureRow
-	if err := DB.Model(&Log{}).
-		Select("channel_id, src_model AS model, status, error, content").
-		Where("src_model <> ? AND type IN ? AND ("+modelHealthFailureSQL()+")", "", []int{LogTypeConsume, LogTypeError}).
-		Order("created_at desc, id desc").
-		Scan(&failures).Error; err != nil {
-		return err
-	}
-	for _, failure := range failures {
-		key := modelHealthKey(failure.ChannelId, failure.Model, byChannel)
-		item, ok := byKey[key]
-		if !ok || item.LastError != "" {
-			continue
-		}
-		item.LastError = compactLastError(failure.Error, failure.Content, failure.Status)
-	}
-	return nil
 }
 
 func modelHealthKey(channelID int, modelName string, byChannel bool) string {

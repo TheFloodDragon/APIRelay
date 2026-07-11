@@ -13,6 +13,8 @@ func setupTestDB(t *testing.T) {
 	}
 	DB.Exec("DELETE FROM logs")
 	DB.Exec("DELETE FROM log_payloads")
+	DB.Exec("DELETE FROM settings")
+	invalidateModelHealthConfigCache()
 }
 
 func TestLoggingConfigDefault(t *testing.T) {
@@ -42,6 +44,36 @@ func TestLoggingConfigDefault(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected Authorization in default sanitized headers")
+	}
+}
+
+func TestModelHealthConfigDefaultsNormalizationAndPersistence(t *testing.T) {
+	setupTestDB(t)
+
+	defaults := GetModelHealthConfig()
+	if defaults.RecentCount != 100 || defaults.WindowHours != 24 || defaults.HealthyThreshold != 95 || defaults.WarningThreshold != 70 {
+		t.Fatalf("unexpected defaults: %+v", defaults)
+	}
+
+	normalized := NormalizeModelHealthConfig(ModelHealthConfig{
+		RecentCount:      20000,
+		WindowHours:      -1,
+		HealthyThreshold: 65,
+		WarningThreshold: 90,
+	})
+	if normalized.RecentCount != maxModelHealthRecentCount || normalized.WindowHours != 24 {
+		t.Fatalf("unexpected normalized limits: %+v", normalized)
+	}
+	if normalized.HealthyThreshold != 65 || normalized.WarningThreshold != 65 {
+		t.Fatalf("unexpected normalized thresholds: %+v", normalized)
+	}
+
+	saved, err := SaveModelHealthConfig(ModelHealthConfig{RecentCount: 25, WindowHours: 48, HealthyThreshold: 90, WarningThreshold: 60})
+	if err != nil {
+		t.Fatalf("save model health config: %v", err)
+	}
+	if got := GetModelHealthConfig(); got != saved {
+		t.Fatalf("persisted config = %+v, want %+v", got, saved)
 	}
 }
 

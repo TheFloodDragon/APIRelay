@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/apirelay/apirelay/common/config"
 	"github.com/apirelay/apirelay/model"
@@ -155,9 +156,10 @@ func setupControllerHealthTestDB(t *testing.T) *model.Channel {
 	if err := model.CreateChannel(ch); err != nil {
 		t.Fatal(err)
 	}
+	base := time.Now().Add(-time.Minute).UnixMilli()
 	logs := []*model.Log{
-		{RequestId: "ok", Type: model.LogTypeConsume, ChannelId: ch.Id, SrcModel: "gpt-4o", Status: 200, CreatedAt: 1_700_000_000_100},
-		{RequestId: "fail", Type: model.LogTypeError, ChannelId: ch.Id, SrcModel: "gpt-4o", Status: 503, Error: "upstream unavailable", CreatedAt: 1_700_000_000_200},
+		{RequestId: "ok", Type: model.LogTypeConsume, ChannelId: ch.Id, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 100},
+		{RequestId: "fail", Type: model.LogTypeError, ChannelId: ch.Id, SrcModel: "gpt-4o", Status: 503, Error: "upstream unavailable", CreatedAt: base + 200},
 	}
 	for _, item := range logs {
 		if err := model.CreateLog(item); err != nil {

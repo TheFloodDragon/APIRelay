@@ -41,10 +41,9 @@ const checkupChannelName = ref('')
 const checkupResults = ref([])
 const checkupSummary = ref(null)
 
-const expandedIds = ref(new Set())
 const selectedIds = ref(new Set())
-const modelMutating = ref(new Set())
 const globalTestPrompt = ref("Say 'hi' in one word.")
+const healthConfig = ref({ recent_count: 100, window_hours: 24, healthy_threshold: 95, warning_threshold: 70 })
 const bulkDeleting = ref(false)
 
 const togglingIds = ref(new Set())
@@ -53,6 +52,8 @@ const resettingIds = ref(new Set())
 const dragIndex = ref(null)
 const dropIndex = ref(null)
 const reordering = ref(false)
+const channelQuery = ref('')
+const statusFilter = ref('all')
 
 const blank = () => ({
   id: 0,
@@ -70,8 +71,27 @@ const blank = () => ({
 })
 const form = ref(blank())
 
-const sortedChannels = computed(() => channels.value)
-const allSelected = computed(() => channels.value.length > 0 && selectedIds.value.size === channels.value.length)
+const sortedChannels = computed(() => {
+  const query = channelQuery.value.trim().toLowerCase()
+  return channels.value.filter((channel) => {
+    const state = breakerState(channel)
+    if (statusFilter.value !== 'all' && state !== statusFilter.value) return false
+    if (!query) return true
+    const haystack = [channel.name, channel.group, typeName(channel.type), ...(channel._models || []).map((item) => item.name)]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    return haystack.includes(query)
+  })
+})
+const allSelected = computed(() => sortedChannels.value.length > 0 && sortedChannels.value.every((channel) => selectedIds.value.has(channel.id)))
+const canReorder = computed(() => statusFilter.value === 'all' && !channelQuery.value.trim())
+const channelSummary = computed(() => channels.value.reduce((summary, channel) => {
+  const state = breakerState(channel)
+  summary.total += 1
+  summary[state] = (summary[state] || 0) + 1
+  return summary
+}, { total: 0, run: 0, trip: 0, off: 0, test: 0 }))
 const enabledCount = computed(() => models.value.filter((model) => model.enabled && model.name.trim()).length)
 const hasModelTesting = computed(() => Object.values(testing.value).some(Boolean))
 const editorBusy = computed(() => saving.value || probing.value || batchTesting.value || hasModelTesting.value)
@@ -131,8 +151,8 @@ function healthPercent(health) {
 function healthClass(health) {
   if (!hasHealth(health)) return ''
   const percent = healthPercent(health)
-  if (percent >= 95) return 'chip-run'
-  if (percent >= 70) return 'chip-test'
+  if (percent >= Number(healthConfig.value.healthy_threshold || 95)) return 'chip-run'
+  if (percent >= Number(healthConfig.value.warning_threshold || 70)) return 'chip-test'
   return 'chip-trip'
 }
 
@@ -225,14 +245,16 @@ async function loadMeta() {
   if (metadataLoading.value) return
   metadataLoading.value = true
   try {
-    const [types, protocolList, promptData] = await Promise.all([
+    const [types, protocolList, promptData, healthData] = await Promise.all([
       api.get('/channel-types'),
       api.get('/protocols'),
       api.get('/settings/test-prompt'),
+      api.get('/settings/model-health'),
     ])
     channelTypes.value = types || []
     protocols.value = protocolList || []
     globalTestPrompt.value = promptData?.prompt || globalTestPrompt.value
+    healthConfig.value = { ...healthConfig.value, ...(healthData || {}) }
   } catch (error) {
     notify(`加载元数据失败：${error.message}`, 'error')
   } finally {
@@ -580,13 +602,6 @@ async function save() {
   }
 }
 
-function toggleExpanded(channelId) {
-  const next = new Set(expandedIds.value)
-  if (next.has(channelId)) next.delete(channelId)
-  else next.add(channelId)
-  expandedIds.value = next
-}
-
 function toggleSelected(channelId) {
   const next = new Set(selectedIds.value)
   if (next.has(channelId)) next.delete(channelId)
@@ -595,7 +610,10 @@ function toggleSelected(channelId) {
 }
 
 function toggleSelectAll() {
-  selectedIds.value = allSelected.value ? new Set() : new Set(channels.value.map((channel) => channel.id))
+  const next = new Set(selectedIds.value)
+  if (allSelected.value) sortedChannels.value.forEach((channel) => next.delete(channel.id))
+  else sortedChannels.value.forEach((channel) => next.add(channel.id))
+  selectedIds.value = next
 }
 
 async function bulkDeleteChannels() {
@@ -612,46 +630,6 @@ async function bulkDeleteChannels() {
     notify(`批量删除失败：${error.message}`, 'error')
   } finally {
     bulkDeleting.value = false
-  }
-}
-
-function syncChannelModelFields(channel) {
-  channel.model_configs = JSON.stringify(channel._models || [])
-  channel.models = (channel._models || []).filter((item) => item.enabled).map((item) => item.name).join(',')
-}
-
-async function toggleChannelModel(channel, item) {
-  const key = `${channel.id}:${item.name}`
-  if (modelMutating.value.has(key)) return
-  const previous = item.enabled
-  item.enabled = !previous
-  updateSet(modelMutating, key, true)
-  try {
-    await api.patch(`/channels/${channel.id}/models`, { models: [item.name], enabled: item.enabled })
-    syncChannelModelFields(channel)
-    notify(`模型 ${item.name} 已${item.enabled ? '启用' : '停用'}`, 'success')
-  } catch (error) {
-    item.enabled = previous
-    notify(`模型状态切换失败：${error.message}`, 'error')
-  } finally {
-    updateSet(modelMutating, key, false)
-  }
-}
-
-async function removeChannelModel(channel, item) {
-  const key = `${channel.id}:${item.name}`
-  if (modelMutating.value.has(key)) return
-  if (!confirm(`确认从「${channel.name}」删除模型 ${item.name}？`)) return
-  updateSet(modelMutating, key, true)
-  try {
-    await api.delete(`/channels/${channel.id}/models`, { data: { models: [item.name] } })
-    channel._models = channel._models.filter((model) => model.name !== item.name)
-    syncChannelModelFields(channel)
-    notify(`模型 ${item.name} 已删除`, 'success')
-  } catch (error) {
-    notify(`模型删除失败：${error.message}`, 'error')
-  } finally {
-    updateSet(modelMutating, key, false)
   }
 }
 
@@ -689,20 +667,21 @@ async function removeChannel(channel) {
 
 async function resetBreaker(channel) {
   if (resettingIds.value.has(channel.id)) return
+  const wasTripped = breakerState(channel) === 'trip'
   updateSet(resettingIds, channel.id, true)
   try {
     await api.post(`/channels/${channel.id}/health/reset`)
     channel.cooldown_until = 0
-    notify(`「${channel.name}」已解除熔断`, 'success')
+    notify(wasTripped ? `「${channel.name}」已解除熔断` : `「${channel.name}」健康状态已重置`, 'success')
   } catch (error) {
-    notify(`熔断复归失败：${error.message}`, 'error')
+    notify(`健康状态重置失败：${error.message}`, 'error')
   } finally {
     updateSet(resettingIds, channel.id, false)
   }
 }
 
 function onDragStart(index, event) {
-  if (reordering.value) {
+  if (reordering.value || !canReorder.value) {
     event.preventDefault()
     return
   }
@@ -783,15 +762,25 @@ onMounted(() => {
     </header>
 
     <section class="sheet min-w-0" aria-label="渠道列表">
-      <div class="sheet-head">
-        <div class="min-w-0">
-          <span class="dim-title">渠道列表</span>
-          <div class="mt-1 text-[12px] text-soft">按当前顺序分配优先级，可拖动调整。</div>
+      <div class="sheet-head items-end">
+        <div class="min-w-0 flex-1">
+          <span class="dim-title">路由运行台</span>
+          <div class="mt-1 text-[12px] text-soft">按状态筛选和管理渠道，连接凭据仅在编辑器内展示。</div>
+          <label class="mt-3 block max-w-xl">
+            <span class="sr-only">搜索渠道</span>
+            <input v-model="channelQuery" class="input input-mono" type="search" placeholder="搜索渠道、分组或模型" />
+          </label>
+          <div class="mt-3 flex flex-wrap gap-1.5" aria-label="渠道状态筛选">
+            <button type="button" class="chip" :class="statusFilter === 'all' ? 'chip-blue' : ''" @click="statusFilter = 'all'">全部 {{ channelSummary.total }}</button>
+            <button type="button" class="chip" :class="statusFilter === 'run' ? 'chip-run' : ''" @click="statusFilter = 'run'">运行 {{ channelSummary.run }}</button>
+            <button type="button" class="chip" :class="statusFilter === 'trip' ? 'chip-trip' : ''" @click="statusFilter = 'trip'">熔断 {{ channelSummary.trip }}</button>
+            <button type="button" class="chip" :class="statusFilter === 'off' ? 'chip-test' : ''" @click="statusFilter = 'off'">停用 {{ channelSummary.off }}</button>
+          </div>
         </div>
         <div class="flex flex-wrap items-center justify-end gap-2">
           <button v-if="selectedIds.size" type="button" class="btn btn-danger btn-sm" :disabled="bulkDeleting" @click="bulkDeleteChannels">{{ bulkDeleting ? '删除中' : `删除已选 ${selectedIds.size} 项` }}</button>
           <span v-if="reordering" class="chip chip-test" role="status">正在保存顺序</span>
-          <span v-else class="chip">{{ channels.length }} 个渠道</span>
+          <span v-else class="chip">显示 {{ sortedChannels.length }} / {{ channels.length }}</span>
         </div>
       </div>
 
@@ -802,162 +791,76 @@ onMounted(() => {
         empty-text="暂无渠道"
         @retry="load"
       >
-        <div class="hidden md:block">
-          <table class="table-eng w-full table-fixed" aria-label="渠道列表">
-            <thead>
-              <tr>
-                <th class="w-24"><label class="flex items-center gap-2"><input type="checkbox" :checked="allSelected" aria-label="选择全部渠道" @change="toggleSelectAll" />顺序</label></th>
-                <th class="w-28">状态</th>
-                <th class="w-[22%]">渠道</th>
-                <th>连接地址</th>
-                <th class="w-20 text-right">模型</th>
-                <th class="w-32">调用健康</th>
-                <th class="w-20 text-right">权重</th>
-                <th class="w-56 text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="(channel, index) in sortedChannels" :key="channel.id">
-              <tr
-                :class="[
-                  dragIndex === index ? 'opacity-40' : '',
-                  dropIndex === index && dragIndex !== null && dragIndex !== index ? 'outline outline-2 outline-blue outline-offset-[-2px]' : '',
-                  channel.status !== 1 ? 'text-soft' : '',
-                ]"
-                :draggable="!reordering"
-                @dragstart="onDragStart(index, $event)"
-                @dragover.prevent="onDragOver(index)"
-                @drop.prevent="onDrop(index)"
-                @dragend="onDragEnd"
-              >
-                <td>
-                  <div class="flex items-center gap-2">
-                    <input type="checkbox" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @change="toggleSelected(channel.id)" />
-                    <button type="button" class="btn btn-sm px-1" :aria-expanded="expandedIds.has(channel.id)" :aria-label="`${expandedIds.has(channel.id) ? '收起' : '展开'} ${channel.name} 的模型`" @click="toggleExpanded(channel.id)">{{ expandedIds.has(channel.id) ? '−' : '+' }}</button>
-                    <button
-                      type="button"
-                      class="btn btn-sm cursor-grab px-1 active:cursor-grabbing"
-                      :disabled="reordering"
-                      :aria-label="`拖动调整 ${channel.name} 的优先级`"
-                    >
-                      <span aria-hidden="true">⠿</span>
-                    </button>
-                    <span class="font-mono text-[13px] font-medium">{{ String(index + 1).padStart(2, '0') }}</span>
-                  </div>
-                </td>
-                <td>
-                  <div class="flex items-center gap-2">
-                    <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': channel.status === 1 }" :disabled="togglingIds.has(channel.id)" :aria-pressed="channel.status === 1" :aria-label="`${channel.status === 1 ? '停用' : '启用'}渠道 ${channel.name}`" @click="toggleChannel(channel)"><span aria-hidden="true"></span></button>
-                    <span class="chip" :class="{
-                      'chip-run': breakerState(channel) === 'run',
-                      'chip-test': breakerState(channel) === 'test',
-                      'chip-trip': breakerState(channel) === 'trip',
-                    }">{{ breakerText(channel) }}</span>
-                  </div>
-                </td>
-                <td>
-                  <div class="truncate font-cond text-[15px] font-semibold tracking-wide text-ink" :title="channel.name">{{ channel.name }}</div>
-                  <div class="mt-1 flex flex-wrap gap-1.5">
-                    <span class="chip chip-blue">{{ typeName(channel.type) }}</span>
-                    <span class="chip">{{ channel.group || 'default' }}</span>
-                    <span class="chip">ID {{ channel.id }}</span>
-                  </div>
-                </td>
-                <td>
-                  <code class="block break-all text-[11px] text-ink">{{ channel.base_url || '使用默认地址' }}</code>
-                  <div class="mt-1 truncate font-mono text-[11px] text-faint">Key：{{ maskedKey(channel.key) }}</div>
-                </td>
-                <td class="num">{{ modelCount(channel) }}</td>
-                <td><span class="chip" :class="healthClass(channelHealth(channel))" :title="healthTitle(channelHealth(channel))">{{ healthText(channelHealth(channel)) }}</span></td>
-                <td class="num">×{{ channel.weight }}</td>
-                <td>
-                  <div class="flex items-center justify-end gap-1.5">
-                    <button type="button" class="btn btn-sm" :disabled="checkupLoadingId !== null" :aria-label="`测试 ${channel.name}`" @click="checkupChannel(channel)">
-                      {{ checkupLoadingId === channel.id ? '测试中' : '测试' }}
-                    </button>
-                    <button type="button" class="btn btn-sm" :aria-label="`编辑渠道 ${channel.name}`" @click="openEdit(channel)">编辑</button>
-                    <ActionMenu>
-                      <button role="menuitem" type="button" :disabled="!channel.key" @click.stop="copyKey(channel)">复制 Key</button>
-                      <button role="menuitem" type="button" :disabled="togglingIds.has(channel.id)" @click.stop="toggleChannel(channel)">{{ togglingIds.has(channel.id) ? '切换中' : channel.status === 1 ? '停用' : '启用' }}</button>
-                      <button role="menuitem" type="button" :disabled="resettingIds.has(channel.id)" @click.stop="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '处理中' : '解除熔断' }}</button>
-                      <button role="menuitem" type="button" class="text-trip" :disabled="deletingIds.has(channel.id)" @click.stop="removeChannel(channel)">{{ deletingIds.has(channel.id) ? '删除中' : '删除' }}</button>
-                    </ActionMenu>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="expandedIds.has(channel.id)">
-                <td colspan="8" class="!p-0">
-                  <div class="border-y border-line bg-canvas/70 px-5 py-4">
-                    <div class="mb-3 flex items-center justify-between gap-3"><span class="dim-title">渠道模型</span><span class="text-xs text-soft">{{ channel._models.length }} 个配置</span></div>
-                    <div v-if="channel._models.length" class="grid gap-2 lg:grid-cols-2">
-                      <article v-for="item in channel._models" :key="item.name" class="flex min-w-0 items-center gap-3 rounded-lg border border-line bg-white p-3">
-                        <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': item.enabled }" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" :aria-pressed="item.enabled" :aria-label="`${item.enabled ? '停用' : '启用'}模型 ${item.name}`" @click="toggleChannelModel(channel, item)"><span aria-hidden="true"></span></button>
-                        <div class="min-w-0 flex-1"><code class="block truncate text-xs text-ink" :title="item.name">{{ item.name }}</code><div class="mt-1 truncate text-[11px] text-soft">{{ item.protocol || '继承协议' }} · → {{ item.upstream || item.name }}</div></div>
-                        <span class="chip shrink-0" :class="healthClass(modelHealth(channel, item))" :title="healthTitle(modelHealth(channel, item))">{{ healthText(modelHealth(channel, item)) }}</span>
-                        <span class="chip shrink-0" :class="item.enabled && channel.status === 1 ? 'chip-run' : ''">{{ item.enabled ? '启用' : '停用' }}</span>
-                        <button type="button" class="btn btn-danger btn-sm shrink-0" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="removeChannelModel(channel, item)">删除</button>
-                      </article>
-                    </div>
-                    <div v-else class="rounded-lg border border-dashed border-line py-6 text-center text-sm text-soft">此渠道尚未配置模型</div>
-                  </div>
-                </td>
-              </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="grid gap-3 p-3 md:hidden">
+        <div class="divide-y divide-line">
           <article
             v-for="(channel, index) in sortedChannels"
             :key="channel.id"
-            class="min-w-0 border border-line bg-white p-3"
-            :draggable="!reordering"
+            class="channel-row group relative flex min-w-0 items-center gap-3 px-3 py-3 transition-all duration-150"
+            :class="[
+              channel.status !== 1 ? 'opacity-70' : '',
+              dragIndex === index ? 'channel-row-dragging' : '',
+              dropIndex === index && dragIndex !== null && dragIndex !== index ? 'channel-row-dropzone' : '',
+            ]"
+            :draggable="!reordering && canReorder"
             @dragstart="onDragStart(index, $event)"
             @dragover.prevent="onDragOver(index)"
             @drop.prevent="onDrop(index)"
             @dragend="onDragEnd"
           >
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-2">
-                  <input type="checkbox" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @change="toggleSelected(channel.id)" />
-                  <button type="button" class="btn btn-sm px-1" :aria-expanded="expandedIds.has(channel.id)" @click="toggleExpanded(channel.id)">{{ expandedIds.has(channel.id) ? '−' : '+' }}</button>
-                  <button type="button" class="btn btn-sm cursor-grab px-1" :disabled="reordering" :aria-label="`拖动调整 ${channel.name} 的顺序`">⠿</button>
-                  <span class="font-mono text-[11px] text-faint">#{{ index + 1 }}</span>
-                  <span class="chip" :class="{ 'chip-run': breakerState(channel) === 'run', 'chip-test': breakerState(channel) === 'test', 'chip-trip': breakerState(channel) === 'trip' }">{{ breakerText(channel) }}</span>
-                </div>
-                <h2 class="mt-2 break-words font-medium text-ink">{{ channel.name }}</h2>
+            <span
+              v-if="dropIndex === index && dragIndex !== null && dragIndex !== index"
+              class="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-blue"
+              aria-hidden="true"
+            ></span>
+
+            <div class="flex shrink-0 items-center gap-1.5">
+              <input type="checkbox" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @change="toggleSelected(channel.id)" />
+              <button type="button" class="btn btn-sm cursor-grab px-1 text-faint active:cursor-grabbing" :disabled="reordering || !canReorder" :aria-label="`拖动调整 ${channel.name} 的优先级`"><span aria-hidden="true">⠿</span></button>
+              <span class="font-mono text-[11px] font-medium text-faint">{{ String(index + 1).padStart(2, '0') }}</span>
+            </div>
+
+            <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': channel.status === 1 }" :disabled="togglingIds.has(channel.id)" :aria-pressed="channel.status === 1" :aria-label="`${channel.status === 1 ? '停用' : '启用'}渠道 ${channel.name}`" @click="toggleChannel(channel)"><span aria-hidden="true"></span></button>
+
+            <div class="min-w-0 flex-1">
+              <div class="truncate font-cond text-[15px] font-semibold tracking-wide text-ink" :title="channel.name">{{ channel.name }}</div>
+              <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                <span class="chip chip-blue">{{ typeName(channel.type) }}</span>
+                <span class="chip">{{ channel.group || 'default' }}</span>
+                <span class="chip">{{ modelCount(channel) }} 模型</span>
+                <span class="chip">×{{ channel.weight }}</span>
+                <span class="chip" :class="healthClass(channelHealth(channel))" :title="healthTitle(channelHealth(channel))">{{ healthText(channelHealth(channel)) }}</span>
               </div>
+            </div>
+
+            <div class="flex shrink-0 items-center gap-1.5" :title="`熔断器：${breakerText(channel)}`" :aria-label="`熔断状态 ${breakerText(channel)}`">
+              <span class="relative flex h-2.5 w-2.5">
+                <span v-if="breakerState(channel) === 'trip'" class="absolute inline-flex h-full w-full animate-ping rounded-full bg-trip/60" aria-hidden="true"></span>
+                <span class="relative inline-flex h-2.5 w-2.5 rounded-full" :class="{
+                  'bg-run': breakerState(channel) === 'run',
+                  'bg-test': breakerState(channel) === 'test',
+                  'bg-trip': breakerState(channel) === 'trip',
+                  'bg-faint': breakerState(channel) === 'off',
+                }" aria-hidden="true"></span>
+              </span>
+              <span class="hidden text-[11px] text-soft sm:inline">{{ breakerText(channel) }}</span>
+            </div>
+
+            <div class="flex shrink-0 items-center gap-1.5">
+              <button type="button" class="btn btn-primary btn-sm whitespace-nowrap" :aria-label="`管理渠道 ${channel.name}`" @click="openEdit(channel)">管理</button>
               <ActionMenu>
-                <button role="menuitem" type="button" :disabled="!channel.key" @click.stop="copyKey(channel)">复制 Key</button>
-                <button role="menuitem" type="button" :disabled="togglingIds.has(channel.id)" @click.stop="toggleChannel(channel)">{{ channel.status === 1 ? '停用' : '启用' }}</button>
-                <button role="menuitem" type="button" :disabled="resettingIds.has(channel.id)" @click.stop="resetBreaker(channel)">解除熔断</button>
-                <button role="menuitem" type="button" class="text-trip" :disabled="deletingIds.has(channel.id)" @click.stop="removeChannel(channel)">删除</button>
+                <button role="menuitem" type="button" :disabled="checkupLoadingId !== null" @click.stop="checkupChannel(channel)">{{ checkupLoadingId === channel.id ? '检查中' : '运行检查' }}</button>
+                <button role="menuitem" type="button" :disabled="togglingIds.has(channel.id)" @click.stop="toggleChannel(channel)">{{ togglingIds.has(channel.id) ? '切换中' : channel.status === 1 ? '停用渠道' : '启用渠道' }}</button>
+                <button role="menuitem" type="button" :disabled="resettingIds.has(channel.id)" @click.stop="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '处理中' : breakerState(channel) === 'trip' ? '解除熔断' : '重置健康状态' }}</button>
+                <button role="menuitem" type="button" class="text-trip" :disabled="deletingIds.has(channel.id)" @click.stop="removeChannel(channel)">{{ deletingIds.has(channel.id) ? '删除中' : '删除渠道' }}</button>
               </ActionMenu>
             </div>
-            <div class="mt-2 flex flex-wrap gap-1">
-              <span class="chip chip-blue">{{ typeName(channel.type) }}</span>
-              <span class="chip">{{ channel.group || 'default' }}</span>
-              <span class="chip">{{ modelCount(channel) }} 个模型</span>
-              <span class="chip" :class="healthClass(channelHealth(channel))" :title="healthTitle(channelHealth(channel))">健康 {{ healthText(channelHealth(channel)) }}</span>
-              <span class="chip">权重 {{ channel.weight }}</span>
-            </div>
-            <code class="mt-3 block break-all text-[11px] text-soft">{{ channel.base_url || '使用默认地址' }}</code>
-            <div class="mt-3 grid grid-cols-2 gap-2">
-              <button type="button" class="btn btn-sm" :disabled="checkupLoadingId !== null" @click="checkupChannel(channel)">{{ checkupLoadingId === channel.id ? '测试中' : '测试' }}</button>
-              <button type="button" class="btn btn-sm" @click="openEdit(channel)">编辑</button>
-            </div>
-            <div v-if="expandedIds.has(channel.id)" class="mt-3 space-y-2 border-t border-line pt-3">
-              <div v-for="item in channel._models" :key="item.name" class="flex min-w-0 items-center gap-2 rounded border border-line p-2">
-                <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': item.enabled }" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="toggleChannelModel(channel, item)"><span></span></button>
-                <div class="min-w-0 flex-1"><code class="block truncate text-xs">{{ item.name }}</code><span class="block truncate text-[10px] text-soft">→ {{ item.upstream || item.name }}</span></div>
-                <span class="chip shrink-0" :class="healthClass(modelHealth(channel, item))" :title="healthTitle(modelHealth(channel, item))">{{ healthText(modelHealth(channel, item)) }}</span>
-                <button type="button" class="btn btn-danger btn-sm" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="removeChannelModel(channel, item)">删除</button>
-              </div>
-              <div v-if="!channel._models.length" class="text-center text-xs text-soft">暂无模型</div>
-            </div>
           </article>
+        </div>
+
+        <div v-if="channels.length && !sortedChannels.length" class="m-3 rounded-xl border border-dashed border-line bg-white px-4 py-10 text-center">
+          <div class="font-medium text-ink">没有匹配的渠道</div>
+          <p class="mt-1 text-xs text-soft">尝试清空搜索词或切换运行状态。</p>
+          <button type="button" class="btn btn-sm mt-3" @click="channelQuery = ''; statusFilter = 'all'">清除筛选</button>
         </div>
       </PageState>
     </section>
@@ -981,20 +884,20 @@ onMounted(() => {
       @close="closeEditor"
     >
       <div class="min-w-0 space-y-4">
-        <div class="flex gap-1 overflow-x-auto border-b border-line" role="tablist" aria-label="渠道配置">
-          <button type="button" class="tab-button" :class="{ 'tab-button-active': editorTab === 'connection' }" role="tab" :aria-selected="editorTab === 'connection'" @click="editorTab = 'connection'">连接</button>
-          <button type="button" class="tab-button" :class="{ 'tab-button-active': editorTab === 'models' }" role="tab" :aria-selected="editorTab === 'models'" @click="editorTab = 'models'">模型</button>
-          <button type="button" class="tab-button" :class="{ 'tab-button-active': editorTab === 'routing' }" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'">路由与请求头</button>
+        <div class="segmented" role="tablist" aria-label="渠道配置">
+          <button type="button" role="tab" :aria-selected="editorTab === 'connection'" @click="editorTab = 'connection'">连接</button>
+          <button type="button" role="tab" :aria-selected="editorTab === 'models'" @click="editorTab = 'models'">模型</button>
+          <button type="button" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'">路由与请求头</button>
         </div>
-        <section v-show="editorTab === 'connection'" class="border border-line bg-white" aria-labelledby="nameplate-heading">
-          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-ink bg-panel px-3 py-2">
+        <section v-show="editorTab === 'connection'" class="rounded-xl border border-line bg-white" aria-labelledby="nameplate-heading">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
             <div>
-              <div id="nameplate-heading" class="font-cond text-sm font-semibold tracking-wide">连接设置</div>
+              <div id="nameplate-heading" class="dim-title">连接设置</div>
               <div class="mt-0.5 text-[12px] text-soft">配置渠道名称、地址和访问凭据。</div>
             </div>
             <span class="chip" :class="form.status === 1 ? 'chip-run' : ''">{{ form.status === 1 ? '启用' : '停用' }}</span>
           </div>
-          <div class="grid gap-3 p-3 md:grid-cols-2 xl:grid-cols-4">
+          <div class="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
             <div class="xl:col-span-2">
               <label class="field-label" for="channel-name">渠道名称 *</label>
               <input id="channel-name" v-model="form.name" class="input" placeholder="例：OpenAI 主账号" autocomplete="off" data-autofocus />
@@ -1043,10 +946,10 @@ onMounted(() => {
           </div>
         </section>
 
-        <section v-show="editorTab === 'models'" class="border border-line bg-white" aria-labelledby="circuits-heading">
-          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-ink bg-panel px-3 py-2">
+        <section v-show="editorTab === 'models'" class="rounded-xl border border-line bg-white" aria-labelledby="circuits-heading">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
             <div>
-              <div id="circuits-heading" class="font-cond text-sm font-semibold tracking-wide">模型配置</div>
+              <div id="circuits-heading" class="dim-title">模型配置</div>
               <div class="mt-0.5 text-[12px] text-soft">维护模型名称、协议、映射和价格。</div>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -1195,9 +1098,9 @@ onMounted(() => {
         </section>
 
         <div v-show="editorTab === 'routing'" class="grid gap-4 lg:grid-cols-2">
-          <section class="border border-ink bg-white" aria-labelledby="rules-heading">
-            <div class="border-b border-ink bg-panel px-3 py-2">
-              <div id="rules-heading" class="font-cond text-sm font-semibold tracking-wide">协议路由规则</div>
+          <section class="rounded-xl border border-line bg-white" aria-labelledby="rules-heading">
+            <div class="border-b border-line px-3 py-2.5">
+              <div id="rules-heading" class="dim-title">协议路由规则</div>
               <div class="mt-0.5 text-[12px] text-soft">按模型名称匹配目标协议。</div>
             </div>
             <div class="space-y-2 p-3">
@@ -1213,9 +1116,9 @@ onMounted(() => {
             </div>
           </section>
 
-          <section class="border border-ink bg-white" aria-labelledby="advanced-heading">
-            <div class="border-b border-ink bg-panel px-3 py-2">
-              <div id="advanced-heading" class="font-cond text-sm font-semibold tracking-wide">权重与请求复写</div>
+          <section class="rounded-xl border border-line bg-white" aria-labelledby="advanced-heading">
+            <div class="border-b border-line px-3 py-2.5">
+              <div id="advanced-heading" class="dim-title">权重与请求复写</div>
               <div class="mt-0.5 text-[12px] text-soft">设置负载权重，并在协议转换后复写发往上游的请求头与请求体。</div>
             </div>
             <div class="grid gap-3 p-3">
@@ -1295,3 +1198,21 @@ onMounted(() => {
     </Modal>
   </div>
 </template>
+
+<style scoped>
+.channel-row {
+  background: #fff;
+}
+
+.channel-row.channel-row-dragging {
+  opacity: 0.55;
+  transform: scale(0.99);
+  box-shadow: var(--shadow-lift, 0 12px 28px -12px rgba(15, 23, 42, 0.35));
+  background: var(--color-panel, #f3f5f7);
+  cursor: grabbing;
+}
+
+.channel-row.channel-row-dropzone {
+  background: var(--color-blue-wash, #eef4ff);
+}
+</style>
