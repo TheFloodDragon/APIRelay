@@ -12,6 +12,9 @@ const total = ref(0)
 const loading = ref(true)
 const error = ref('')
 const selectedLog = ref(null)
+const fullPayload = ref(null)
+const detailLoading = ref(false)
+const detailError = ref('')
 const showMoreFilters = ref(false)
 let loadSeq = 0
 
@@ -21,6 +24,10 @@ const filters = ref({
   token_name: '',
   channel_id: '',
   status: '',
+  status_min: '',
+  status_max: '',
+  is_stream: '',
+  has_full_record: '',
   request_id: '',
   upstream_request_id: '',
   range: '24h',
@@ -47,7 +54,7 @@ const activeFilterCount = computed(() => Object.entries(filters.value).filter(([
   if (key === 'range') return value && value !== '24h'
   return String(value || '').trim()
 }).length)
-const moreFilterCount = computed(() => ['request_id', 'upstream_request_id', 'channel_id']
+const moreFilterCount = computed(() => ['request_id', 'upstream_request_id', 'channel_id', 'status_min', 'status_max', 'is_stream', 'has_full_record']
   .filter((key) => String(filters.value[key] || '').trim()).length)
 
 const fetchLogs = takeLatest((params) => api.get('/logs', { params }))
@@ -61,6 +68,14 @@ function fmt(ms) {
 
 function cost(micro) {
   return micro ? `$${(micro / 1_000_000).toFixed(4)}` : '—'
+}
+
+function formatBytes(value) {
+  const bytes = Number(value) || 0
+  if (!bytes) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MiB`
 }
 
 function parseFailoverChain(content) {
@@ -137,6 +152,7 @@ async function load() {
     }))
     total.value = data.total || 0
     selectedLog.value = null
+    fullPayload.value = null
   } catch (err) {
     if (seq === loadSeq) error.value = err.message || '日志读取失败'
   } finally {
@@ -151,8 +167,8 @@ function applyFilters() {
 
 function clearFilters() {
   filters.value = {
-    type: '', model: '', token_name: '', channel_id: '', status: '',
-    request_id: '', upstream_request_id: '', range: '24h',
+    type: '', model: '', token_name: '', channel_id: '', status: '', status_min: '', status_max: '',
+    is_stream: '', has_full_record: '', request_id: '', upstream_request_id: '', range: '24h',
   }
   showMoreFilters.value = false
   page.value = 1
@@ -165,8 +181,43 @@ function applyQuick(type, status = '') {
   applyFilters()
 }
 
-function openDetails(log) {
+async function openDetails(log) {
   selectedLog.value = log
+  fullPayload.value = null
+  detailError.value = ''
+  if (!log.has_full_record) return
+  detailLoading.value = true
+  try {
+    const data = await api.get(`/logs/${log.id}`)
+    selectedLog.value = { ...log, ...(data?.log || {}) }
+    fullPayload.value = data?.payload || null
+  } catch (err) {
+    detailError.value = err.message || '完整调用内容读取失败'
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+function prettyPayload(value) {
+  if (!value) return ''
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    if (parsed && typeof parsed.body === 'string') {
+      try { parsed.body = JSON.parse(parsed.body) } catch { /* 保留原始文本或 SSE */ }
+    }
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function payloadTitle(key) {
+  return {
+    client_request: '客户端请求',
+    upstream_request: '上游请求',
+    upstream_response: '上游响应',
+    client_response: '客户端响应',
+  }[key] || key
 }
 
 function previousPage() {
@@ -212,6 +263,12 @@ function buildDiagnosticPackage(log) {
     })
     lines.push('', '```json', JSON.stringify(attempts, null, 2), '```')
   }
+  if (fullPayload.value) {
+    for (const key of ['client_request', 'upstream_request', 'upstream_response', 'client_response']) {
+      if (!fullPayload.value[key]) continue
+      lines.push('', `## ${payloadTitle(key)}`, '```json', prettyPayload(fullPayload.value[key]), '```')
+    }
+  }
   return lines.join('\n')
 }
 
@@ -227,9 +284,9 @@ onMounted(load)
   <div class="min-w-0 space-y-5">
     <header class="page-header">
       <div>
-        <div class="eyebrow">请求日志</div>
-        <h1 class="page-title">日志</h1>
-        <p class="page-description">查看调用结果、协议转换和故障转移记录。</p>
+        <div class="eyebrow">调用诊断中心</div>
+        <h1 class="page-title">请求日志</h1>
+        <p class="page-description">沿客户端、APIRelay 与上游渠道还原每次调用；完整留痕开启时可查看请求与响应原文。</p>
       </div>
       <div class="page-actions">
         <button class="btn" type="button" :disabled="loading" @click="load">刷新</button>
@@ -290,7 +347,7 @@ onMounted(load)
           </button>
         </div>
 
-        <div v-show="showMoreFilters" id="log-more-filters" class="grid gap-3 rounded-lg border border-line bg-ghost/40 p-3 sm:grid-cols-3">
+        <div v-show="showMoreFilters" id="log-more-filters" class="grid gap-3 rounded-xl border border-line bg-ghost/40 p-3 sm:grid-cols-2 xl:grid-cols-4">
           <label>
             <span class="field-label">请求 ID</span>
             <input v-model="filters.request_id" class="input input-mono" placeholder="req..." />
@@ -302,6 +359,26 @@ onMounted(load)
           <label>
             <span class="field-label">渠道 ID</span>
             <input v-model="filters.channel_id" class="input input-mono" inputmode="numeric" placeholder="42" />
+          </label>
+          <label>
+            <span class="field-label">响应模式</span>
+            <select v-model="filters.is_stream" class="input">
+              <option value="">全部</option><option value="true">流式</option><option value="false">非流式</option>
+            </select>
+          </label>
+          <label>
+            <span class="field-label">完整记录</span>
+            <select v-model="filters.has_full_record" class="input">
+              <option value="">全部</option><option value="true">有完整内容</option><option value="false">仅摘要</option>
+            </select>
+          </label>
+          <label>
+            <span class="field-label">最低状态码</span>
+            <input v-model="filters.status_min" class="input input-mono" inputmode="numeric" placeholder="400" />
+          </label>
+          <label>
+            <span class="field-label">最高状态码</span>
+            <input v-model="filters.status_max" class="input input-mono" inputmode="numeric" placeholder="599" />
           </label>
         </div>
 
@@ -371,7 +448,10 @@ onMounted(load)
                     <div>{{ log.use_time_ms || 0 }} ms</div>
                     <div class="text-xs text-soft">首字 {{ log.first_byte_ms || 0 }} ms</div>
                   </td>
-                  <td><span class="chip" :class="statusChip(log.status)">HTTP {{ log.status || '—' }}</span></td>
+                  <td>
+                    <span class="chip" :class="statusChip(log.status)">HTTP {{ log.status || '—' }}</span>
+                    <div class="mt-1.5 font-mono text-[9px] uppercase tracking-wider" :class="log.has_full_record ? 'text-blue' : 'text-faint'">{{ log.has_full_record ? `Full · ${formatBytes(log.payload_compressed_size)}` : 'Summary' }}</div>
+                  </td>
                   <td><span class="chip" :class="log._failover_chain.length > 1 ? 'chip-test' : ''">{{ log._failover_chain.length }}</span></td>
                 </tr>
               </tbody>
@@ -414,7 +494,7 @@ onMounted(load)
       </nav>
     </PageState>
 
-    <Drawer :open="!!selectedLog" title="日志详情" @close="selectedLog = null">
+    <Drawer :open="!!selectedLog" title="调用诊断" @close="selectedLog = null; fullPayload = null">
       <div v-if="selectedLog" class="space-y-5">
         <section>
           <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -472,6 +552,32 @@ onMounted(load)
             </li>
           </ol>
           <div v-else class="rounded-lg border border-dashed border-line p-4 text-sm text-soft">该日志没有故障转移步骤。</div>
+        </section>
+
+        <section>
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-base font-semibold">完整调用内容</h3>
+              <p class="mt-1 text-xs text-soft">客户端 → APIRelay → 上游 → 客户端</p>
+            </div>
+            <span class="chip" :class="selectedLog.has_full_record ? 'chip-blue' : ''">{{ selectedLog.has_full_record ? `gzip ${formatBytes(selectedLog.payload_original_size)} → ${formatBytes(selectedLog.payload_compressed_size)}` : '仅摘要' }}</span>
+          </div>
+
+          <div v-if="detailLoading" class="rounded-xl border border-line bg-ghost/40 p-5 text-center text-sm text-soft">正在解压完整调用内容…</div>
+          <div v-else-if="detailError" class="rounded-xl border border-trip/25 bg-trip-wash p-4 text-sm text-trip">{{ detailError }}</div>
+          <div v-else-if="fullPayload" class="route-timeline space-y-5">
+            <article v-for="key in ['client_request', 'upstream_request', 'upstream_response', 'client_response']" :key="key">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <h4 class="font-cond text-sm font-semibold text-ink">{{ payloadTitle(key) }}</h4>
+                <button v-if="fullPayload[key]" class="btn btn-sm" type="button" @click="copyText(prettyPayload(fullPayload[key])).then(ok => proxy.$toast.add(ok ? '内容已复制' : '复制失败', ok ? 'success' : 'error'))">复制</button>
+              </div>
+              <pre v-if="fullPayload[key]" class="log-code">{{ prettyPayload(fullPayload[key]) }}</pre>
+              <div v-else class="rounded-xl border border-dashed border-line px-4 py-3 text-xs text-soft">此阶段未配置记录或没有可记录内容。</div>
+            </article>
+          </div>
+          <div v-else class="rounded-xl border border-dashed border-line p-4 text-sm text-soft">
+            该日志产生时未开启完整留痕，只保留路由、计费、耗时和错误摘要。
+          </div>
         </section>
       </div>
       <template #footer>

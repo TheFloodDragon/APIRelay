@@ -74,4 +74,32 @@ type RelayInfo struct {
 	// 计时
 	StartAtMs   int64
 	FirstByteMs int
+
+	// FullLogCapture 完整日志采集（开启 logging 时使用）
+	FullLogCapture *FullLogCapture
+}
+
+// FullLogCapture 在内存中采集一次转发的完整请求/响应数据（用于审计与调试）
+type FullLogCapture struct {
+	// 客户端请求
+	ClientMethod  string            `json:"client_method"`
+	ClientPath    string            `json:"client_path"`
+	ClientQuery   string            `json:"client_query"`
+	ClientHeaders map[string]string `json:"client_headers"`
+	ClientBody    []byte            `json:"client_body"`
+
+	// 最终上游请求
+	UpstreamURL     string            `json:"upstream_url"`
+	UpstreamHeaders map[string]string `json:"upstream_headers"`
+	UpstreamBody    []byte            `json:"upstream_body"`
+
+	// 上游响应
+	UpstreamStatus      int               `json:"upstream_status"`
+	UpstreamRespHeaders map[string]string `json:"upstream_resp_headers"`
+	UpstreamRespBody    []byte            `json:"upstream_resp_body"`
+
+	// 返回客户端响应
+	ClientRespStatus  int               `json:"client_resp_status"`
+	ClientRespHeaders map[string]string `json:"client_resp_headers"`
+	ClientRespBody    []byte            `json:"client_resp_body"`
 }

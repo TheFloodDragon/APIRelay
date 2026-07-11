@@ -185,8 +185,9 @@ onMounted(load)
   <div class="space-y-5">
     <header class="page-header">
       <div>
-        <h1 class="page-title">总览</h1>
-        <p class="page-description">查看当前渠道与模型供给，以及最近 7 天的请求和费用。</p>
+        <div class="eyebrow">Live routing overview</div>
+        <h1 class="page-title">路由总览</h1>
+        <p class="page-description">监看模型供给、渠道健康与最近 7 天的调用态势。</p>
       </div>
       <div class="page-actions">
         <button class="btn" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button>

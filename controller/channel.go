@@ -101,6 +101,77 @@ func DeleteChannel(c *gin.Context) {
 	ok(c, gin.H{"deleted": id})
 }
 
+// BulkDeleteChannels POST /api/channels/bulk-delete
+func BulkDeleteChannels(c *gin.Context) {
+	var req struct {
+		IDs []int `json:"ids"`
+	}
+	if !bindJSON(c, &req) {
+		return
+	}
+	if len(req.IDs) == 0 {
+		fail(c, http.StatusBadRequest, "ids 不能为空")
+		return
+	}
+	if err := model.DeleteChannels(req.IDs); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, gin.H{"deleted": len(req.IDs)})
+}
+
+// UpdateChannelStatus PATCH /api/channels/:id/status
+func UpdateChannelStatus(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !bindJSON(c, &req) {
+		return
+	}
+	channel, err := model.UpdateChannelStatus(id, req.Enabled)
+	if err != nil {
+		fail(c, http.StatusNotFound, "供应商不存在")
+		return
+	}
+	ok(c, channel)
+}
+
+// UpdateChannelModelStatus PATCH /api/channels/:id/models
+func UpdateChannelModelStatus(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var req struct {
+		Models  []string `json:"models"`
+		Enabled bool     `json:"enabled"`
+	}
+	if !bindJSON(c, &req) {
+		return
+	}
+	channel, err := model.UpdateChannelModelStates(id, req.Models, req.Enabled)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	ok(c, channel)
+}
+
+// DeleteChannelModels DELETE /api/channels/:id/models
+func DeleteChannelModels(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var req struct {
+		Models []string `json:"models"`
+	}
+	if !bindJSON(c, &req) {
+		return
+	}
+	channel, err := model.DeleteChannelModels(id, req.Models)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	ok(c, channel)
+}
+
 // ReorderChannels POST /api/channels/reorder
 // 按给定 ID 顺序重排供应商优先级（首位最高）。
 func ReorderChannels(c *gin.Context) {
@@ -182,7 +253,8 @@ func TestChannelModel(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		Prompt string `json:"prompt"`
 	}
 	if !bindJSON(c, &req) {
 		return
@@ -191,7 +263,7 @@ func TestChannelModel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "缺少 model")
 		return
 	}
-	ok(c, relay.TestModel(ch, req.Model))
+	ok(c, relay.TestModelWithPrompt(c.Request.Context(), ch, req.Model, req.Prompt))
 }
 
 // TestChannelByConfig POST /api/channels/test
@@ -199,7 +271,8 @@ func TestChannelModel(c *gin.Context) {
 func TestChannelByConfig(c *gin.Context) {
 	var req struct {
 		model.Channel
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		Prompt string `json:"prompt"`
 	}
 	if !bindJSON(c, &req) {
 		return
@@ -212,7 +285,7 @@ func TestChannelByConfig(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "缺少 model")
 		return
 	}
-	ok(c, relay.TestModel(&ch, req.Model))
+	ok(c, relay.TestModelWithPrompt(c.Request.Context(), &ch, req.Model, req.Prompt))
 }
 
 // batchTestSummary 批量测试汇总。
@@ -250,6 +323,7 @@ func TestChannelAllModels(c *gin.Context) {
 	}
 	var req struct {
 		Models []string `json:"models"`
+		Prompt string   `json:"prompt"`
 	}
 	// body 可选，绑定失败不阻断（使用默认启用模型）。
 	_ = c.ShouldBindJSON(&req)
@@ -263,7 +337,7 @@ func TestChannelAllModels(c *gin.Context) {
 		return
 	}
 
-	results := relay.TestModels(c.Request.Context(), ch, models, 0)
+	results := relay.TestModelsWithPrompt(c.Request.Context(), ch, models, 0, req.Prompt)
 	ok(c, gin.H{"results": results, "summary": summarizeResults(results)})
 }
 
@@ -274,6 +348,7 @@ func TestChannelBatchByConfig(c *gin.Context) {
 	var req struct {
 		model.Channel
 		Models []string `json:"models"`
+		Prompt string   `json:"prompt"`
 	}
 	if !bindJSON(c, &req) {
 		return
@@ -286,6 +361,6 @@ func TestChannelBatchByConfig(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "缺少 models")
 		return
 	}
-	results := relay.TestModels(c.Request.Context(), &ch, req.Models, 0)
+	results := relay.TestModelsWithPrompt(c.Request.Context(), &ch, req.Models, 0, req.Prompt)
 	ok(c, gin.H{"results": results, "summary": summarizeResults(results)})
 }

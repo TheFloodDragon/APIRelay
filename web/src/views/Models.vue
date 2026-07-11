@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, getCurrentInstance } from 'vue'
-import api from '../api'
+import api, { fmtTime } from '../api'
 import StatCell from '../components/StatCell.vue'
 import PageState from '../components/PageState.vue'
 
@@ -98,7 +98,7 @@ onMounted(load)
       <div>
         <div class="eyebrow">模型管理</div>
         <h1 class="page-title">模型与渠道绑定</h1>
-        <p class="page-description">按模型查看可用渠道、协议分布和上游模型映射。</p>
+        <p class="page-description">按最近使用时间排列，查看模型的可用渠道、协议分布和上游映射。</p>
       </div>
       <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
         <label class="min-w-0 sm:w-64">
@@ -139,10 +139,11 @@ onMounted(load)
             <table class="table-eng table-fixed">
               <thead>
                 <tr>
-                  <th class="w-[34%]">模型</th>
-                  <th class="w-[16%]">可用渠道</th>
-                  <th class="w-[24%]">协议分布</th>
-                  <th class="w-[26%]">上游映射</th>
+                  <th class="w-[28%]">模型</th>
+                  <th class="w-[15%]">最近使用</th>
+                  <th class="w-[13%]">可用渠道</th>
+                  <th class="w-[20%]">协议分布</th>
+                  <th class="w-[24%]">上游映射</th>
                 </tr>
               </thead>
               <tbody>
@@ -163,6 +164,9 @@ onMounted(load)
                         </span>
                       </button>
                     </td>
+                    <td class="font-mono text-xs text-soft" :title="model.last_used_at ? new Date(model.last_used_at).toLocaleString() : '尚未调用'">
+                      {{ model.last_used_at ? fmtTime(model.last_used_at) : '未使用' }}
+                    </td>
                     <td>
                       <span class="chip" :class="anyEnabled(model) ? 'chip-run' : ''">
                         {{ enabledProviders(model).length }} / {{ providersFor(model).length }}
@@ -174,7 +178,7 @@ onMounted(load)
                     </td>
                   </tr>
                   <tr v-if="isExpanded(model)">
-                    <td colspan="4" class="bg-canvas/60 !p-0">
+                    <td colspan="5" class="bg-canvas/60 !p-0">
                       <div v-if="providersFor(model).length" class="divide-y divide-line">
                         <div
                           v-for="(provider, index) in providersFor(model)"
@@ -219,6 +223,10 @@ onMounted(load)
               </button>
 
               <dl class="space-y-3 border-t border-line px-4 py-3">
+                <div class="mobile-kv">
+                  <dt>最近使用</dt>
+                  <dd class="font-mono text-xs">{{ model.last_used_at ? fmtTime(model.last_used_at) : '未使用' }}</dd>
+                </div>
                 <div class="mobile-kv">
                   <dt>可用渠道</dt>
                   <dd><span class="chip" :class="anyEnabled(model) ? 'chip-run' : ''">{{ enabledProviders(model).length }} / {{ providersFor(model).length }}</span></dd>

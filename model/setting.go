@@ -17,12 +17,42 @@ const SettingKeyProtocolRules = "protocol_rules"
 // 全局模型价格表的 Setting key。
 const SettingKeyModelPrices = "model_prices"
 
+// 全局日志详情配置的 Setting key。
+const SettingKeyLogging = "logging"
+
+// 全局上游网络策略的 Setting key。
+const SettingKeyNetwork = "network"
+
+// 全局模型连通性测试提示词的 Setting key。
+const SettingKeyTestPrompt = "test_prompt"
+
+const DefaultTestPrompt = "Say 'hi' in one word."
+
+// NetworkConfig 是持久化的上游代理策略。
+type NetworkConfig struct {
+	Mode      string `json:"mode"`
+	ManualURL string `json:"manual_url"`
+	NoProxy   string `json:"no_proxy"`
+}
+
 // ModelPrice 是「模型名 -> input/output 价格（USD / 1M tokens）」的条目。
 // Model 为 "default" 时作为兜底价格。
 type ModelPrice struct {
 	Model  string  `json:"model"`
 	Input  float64 `json:"input"`
 	Output float64 `json:"output"`
+}
+
+// LoggingConfig 是全局完整日志配置。
+// 开启后记录请求/响应 headers/body 等详情，便于调试与审计。
+// 敏感 headers（Authorization、Cookie 等）始终脱敏。
+type LoggingConfig struct {
+	Enabled               bool     `json:"enabled"`
+	SanitizedHeaderKeys   []string `json:"sanitized_header_keys"`   // 需脱敏的 header 键（默认含 Authorization、Cookie 等）
+	RecordClientRequest   bool     `json:"record_client_request"`   // 记录客户端请求（method/path/query/headers/body）
+	RecordUpstreamRequest bool     `json:"record_upstream_request"` // 记录最终上游请求（URL/headers/body）
+	RecordUpstreamResp    bool     `json:"record_upstream_resp"`    // 记录上游响应（status/headers/body）
+	RecordClientResp      bool     `json:"record_client_resp"`      // 记录返回客户端响应（status/headers/body）
 }
 
 // GetSetting 读取设置值，不存在返回空字符串。
@@ -49,6 +79,8 @@ func SetSetting(key, value string) error {
 			invalidateProtocolRulesCache()
 		case SettingKeyModelPrices:
 			invalidateModelPricesCache()
+		case SettingKeyLogging:
+			invalidateLoggingConfigCache()
 		}
 	}
 	return err
@@ -151,6 +183,111 @@ func invalidateModelPricesCache() {
 	modelPricesLoaded = false
 	modelPricesCache = nil
 	modelPricesMu.Unlock()
+}
+
+// ---- 全局日志详情配置缓存 ----
+
+var (
+	loggingConfigMu     sync.RWMutex
+	loggingConfigCache  *LoggingConfig
+	loggingConfigLoaded bool
+)
+
+// NormalizeLoggingConfig 强制保留凭据类请求头脱敏，避免管理 API 将敏感值明文落库。
+func NormalizeLoggingConfig(cfg LoggingConfig) LoggingConfig {
+	mandatory := []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "X-API-Key"}
+	seen := make(map[string]struct{}, len(cfg.SanitizedHeaderKeys)+len(mandatory))
+	keys := make([]string, 0, len(cfg.SanitizedHeaderKeys)+len(mandatory))
+	for _, key := range append(mandatory, cfg.SanitizedHeaderKeys...) {
+		if key == "" {
+			continue
+		}
+		normalized := key
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		keys = append(keys, key)
+	}
+	cfg.SanitizedHeaderKeys = keys
+	return cfg
+}
+
+// GetLoggingConfig 返回全局日志配置，带内存缓存。
+func GetLoggingConfig() *LoggingConfig {
+	loggingConfigMu.RLock()
+	if loggingConfigLoaded {
+		cfg := loggingConfigCache
+		loggingConfigMu.RUnlock()
+		return cfg
+	}
+	loggingConfigMu.RUnlock()
+
+	loggingConfigMu.Lock()
+	defer loggingConfigMu.Unlock()
+	if loggingConfigLoaded { // double-check
+		return loggingConfigCache
+	}
+	raw, _ := GetSetting(SettingKeyLogging)
+	var cfg LoggingConfig
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg)
+	} else {
+		// 默认值：关闭完整日志，敏感 headers 需脱敏
+		cfg = LoggingConfig{
+			Enabled: false,
+			SanitizedHeaderKeys: []string{
+				"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "X-API-Key",
+			},
+			RecordClientRequest:   true,
+			RecordUpstreamRequest: true,
+			RecordUpstreamResp:    true,
+			RecordClientResp:      true,
+		}
+	}
+	cfg = NormalizeLoggingConfig(cfg)
+	loggingConfigCache = &cfg
+	loggingConfigLoaded = true
+	return &cfg
+}
+
+func invalidateLoggingConfigCache() {
+	loggingConfigMu.Lock()
+	loggingConfigLoaded = false
+	loggingConfigCache = nil
+	loggingConfigMu.Unlock()
+}
+
+// GetNetworkConfig 返回持久化的上游网络配置；未配置时默认跟随系统代理。
+func GetNetworkConfig() NetworkConfig {
+	cfg := NetworkConfig{Mode: "system"}
+	raw, _ := GetSetting(SettingKeyNetwork)
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg)
+	}
+	if cfg.Mode == "" {
+		cfg.Mode = "system"
+	}
+	return cfg
+}
+
+// SaveNetworkConfig 保存上游网络配置。
+func SaveNetworkConfig(cfg NetworkConfig) error {
+	return SaveSettingJSON(SettingKeyNetwork, cfg)
+}
+
+// GetTestPrompt 返回全局测试提示词；未设置时使用稳定的短回复提示。
+func GetTestPrompt() string {
+	value, _ := GetSetting(SettingKeyTestPrompt)
+	if value == "" {
+		return DefaultTestPrompt
+	}
+	return value
+}
+
+// SaveTestPrompt 保存全局测试提示词。
+func SaveTestPrompt(value string) error {
+	return SetSetting(SettingKeyTestPrompt, value)
 }
 
 // UnmarshalSetting 将 JSON 字符串反序列化为对象

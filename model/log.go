@@ -1,6 +1,12 @@
 package model
 
-import "github.com/apirelay/apirelay/common/logger"
+import (
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
+
+	"github.com/apirelay/apirelay/common/logger"
+)
 
 // Log 是一条调用日志（核心需求：运行调用日志完善）。
 type Log struct {
@@ -38,6 +44,34 @@ type Log struct {
 	Ip      string `json:"ip" gorm:"size:64"`
 	Error   string `json:"error" gorm:"type:text"`
 	Content string `json:"content" gorm:"type:text"`
+
+	// HasFullRecord 标记本条日志是否有关联的完整请求/响应详情。
+	HasFullRecord         bool `json:"has_full_record" gorm:"index"`
+	PayloadOriginalSize   int  `json:"payload_original_size"`
+	PayloadCompressedSize int  `json:"payload_compressed_size"`
+}
+
+// LogPayload 存储一条日志的完整请求/响应详情，gzip 压缩 JSON 后存入 blob。
+type LogPayload struct {
+	LogId            int    `json:"-" gorm:"primaryKey;index"`
+	CompressedData   []byte `json:"-" gorm:"type:blob"`
+	OriginalSize     int    `json:"original_size"`
+	CompressedSize   int    `json:"compressed_size"`
+	CompressionAlgo  string `json:"compression_algo" gorm:"size:16"` // "gzip"
+	ClientRequest    string `json:"client_request" gorm:"-"`
+	UpstreamRequest  string `json:"upstream_request" gorm:"-"`
+	UpstreamResponse string `json:"upstream_response" gorm:"-"`
+	ClientResponse   string `json:"client_response" gorm:"-"`
+	FailoverAttempts string `json:"failover_attempts" gorm:"-"` // 切换渠道失败记录
+}
+
+// FullLogData 是 LogPayload 展开的数据结构（未压缩）
+type FullLogData struct {
+	ClientRequest    string `json:"client_request,omitempty"`
+	UpstreamRequest  string `json:"upstream_request,omitempty"`
+	UpstreamResponse string `json:"upstream_response,omitempty"`
+	ClientResponse   string `json:"client_response,omitempty"`
+	FailoverAttempts string `json:"failover_attempts,omitempty"`
 }
 
 const (
@@ -58,6 +92,195 @@ func CreateLog(l *Log) error {
 	return nil
 }
 
+// CreateLogPayload gzip 压缩并写入完整日志载荷。
+func CreateLogPayload(logID int, data *FullLogData) error {
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	originalSize := len(jsonBytes)
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(jsonBytes); err != nil {
+		return err
+	}
+	if err := gw.Close(); err != nil {
+		return err
+	}
+	compressed := buf.Bytes()
+
+	payload := &LogPayload{
+		LogId:           logID,
+		CompressedData:  compressed,
+		OriginalSize:    originalSize,
+		CompressedSize:  len(compressed),
+		CompressionAlgo: "gzip",
+	}
+	if err := DB.Create(payload).Error; err != nil {
+		return err
+	}
+	return DB.Model(&Log{}).Where("id = ?", logID).Updates(map[string]any{
+		"has_full_record":         true,
+		"payload_original_size":   originalSize,
+		"payload_compressed_size": len(compressed),
+	}).Error
+}
+
+// GetLogPayload 读取并解压指定日志的完整载荷。
+func GetLogPayload(logID int) (*FullLogData, error) {
+	var payload LogPayload
+	if err := DB.Where("log_id = ?", logID).First(&payload).Error; err != nil {
+		return nil, err
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(payload.CompressedData))
+	if err != nil {
+		return nil, err
+	}
+	defer gr.Close()
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(gr); err != nil {
+		return nil, err
+	}
+	var data FullLogData
+	if err := json.Unmarshal(buf.Bytes(), &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+// saveFullLogPayloadSync 同步保存完整日志载荷（内部使用）。
+// capture 是 interface{}，实际为 *relaycommon.FullLogCapture，避免循环依赖。
+func saveFullLogPayloadSync(logID int, capture interface{}) error {
+	if capture == nil {
+		return nil
+	}
+
+	// 序列化各部分（使用 JSON 作为中间格式避免类型依赖）
+	captureJSON, err := json.Marshal(capture)
+	if err != nil {
+		return err
+	}
+
+	// 解析为通用结构
+	var genericCapture captureData
+	if err := json.Unmarshal(captureJSON, &genericCapture); err != nil {
+		return err
+	}
+
+	// 序列化各部分为 JSON 字符串
+	data := &FullLogData{
+		ClientRequest:    serializeClientReq(&genericCapture),
+		UpstreamRequest:  serializeUpstreamReq(&genericCapture),
+		UpstreamResponse: serializeUpstreamResp(&genericCapture),
+		ClientResponse:   serializeClientResp(&genericCapture),
+	}
+
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	originalSize := len(jsonBytes)
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(jsonBytes); err != nil {
+		return err
+	}
+	if err := gw.Close(); err != nil {
+		return err
+	}
+	compressed := buf.Bytes()
+
+	payload := &LogPayload{
+		LogId:           logID,
+		CompressedData:  compressed,
+		OriginalSize:    originalSize,
+		CompressedSize:  len(compressed),
+		CompressionAlgo: "gzip",
+	}
+	if err := DB.Create(payload).Error; err != nil {
+		return err
+	}
+	return DB.Model(&Log{}).Where("id = ?", logID).Updates(map[string]any{
+		"has_full_record":         true,
+		"payload_original_size":   originalSize,
+		"payload_compressed_size": len(compressed),
+	}).Error
+}
+
+type captureData struct {
+	ClientMethod        string            `json:"client_method"`
+	ClientPath          string            `json:"client_path"`
+	ClientQuery         string            `json:"client_query"`
+	ClientHeaders       map[string]string `json:"client_headers"`
+	ClientBody          []byte            `json:"client_body"`
+	UpstreamURL         string            `json:"upstream_url"`
+	UpstreamHeaders     map[string]string `json:"upstream_headers"`
+	UpstreamBody        []byte            `json:"upstream_body"`
+	UpstreamStatus      int               `json:"upstream_status"`
+	UpstreamRespHeaders map[string]string `json:"upstream_resp_headers"`
+	UpstreamRespBody    []byte            `json:"upstream_resp_body"`
+	ClientRespStatus    int               `json:"client_resp_status"`
+	ClientRespHeaders   map[string]string `json:"client_resp_headers"`
+	ClientRespBody      []byte            `json:"client_resp_body"`
+}
+
+func serializeClientReq(c *captureData) string {
+	if c.ClientHeaders == nil && len(c.ClientBody) == 0 {
+		return ""
+	}
+	data := map[string]any{
+		"method":  c.ClientMethod,
+		"path":    c.ClientPath,
+		"query":   c.ClientQuery,
+		"headers": c.ClientHeaders,
+		"body":    string(c.ClientBody),
+	}
+	b, _ := json.Marshal(data)
+	return string(b)
+}
+
+func serializeUpstreamReq(c *captureData) string {
+	if c.UpstreamHeaders == nil && len(c.UpstreamBody) == 0 {
+		return ""
+	}
+	data := map[string]any{
+		"url":     c.UpstreamURL,
+		"headers": c.UpstreamHeaders,
+		"body":    string(c.UpstreamBody),
+	}
+	b, _ := json.Marshal(data)
+	return string(b)
+}
+
+func serializeUpstreamResp(c *captureData) string {
+	if c.UpstreamRespHeaders == nil && len(c.UpstreamRespBody) == 0 {
+		return ""
+	}
+	data := map[string]any{
+		"status":  c.UpstreamStatus,
+		"headers": c.UpstreamRespHeaders,
+		"body":    string(c.UpstreamRespBody),
+	}
+	b, _ := json.Marshal(data)
+	return string(b)
+}
+
+func serializeClientResp(c *captureData) string {
+	if c.ClientRespHeaders == nil && len(c.ClientRespBody) == 0 {
+		return ""
+	}
+	data := map[string]any{
+		"status":  c.ClientRespStatus,
+		"headers": c.ClientRespHeaders,
+		"body":    string(c.ClientRespBody),
+	}
+	b, _ := json.Marshal(data)
+	return string(b)
+}
+
 // LogQuery 日志筛选条件。
 type LogQuery struct {
 	UserId            int
@@ -68,6 +291,10 @@ type LogQuery struct {
 	UpstreamRequestId string
 	Type              int
 	Status            int
+	StatusMin         int   // 状态码最小值（包含）
+	StatusMax         int   // 状态码最大值（包含）
+	HasFullRecord     *bool // nil: 不筛选；true: 仅有详情；false: 仅无详情
+	IsStream          *bool // nil: 不筛选；true: 仅流式；false: 仅非流式
 	StartTime         int64
 	EndTime           int64
 	Page              int
@@ -101,6 +328,18 @@ func ListLogs(q *LogQuery) ([]*Log, int64, error) {
 	if q.Status > 0 {
 		tx = tx.Where("status = ?", q.Status)
 	}
+	if q.StatusMin > 0 {
+		tx = tx.Where("status >= ?", q.StatusMin)
+	}
+	if q.StatusMax > 0 {
+		tx = tx.Where("status <= ?", q.StatusMax)
+	}
+	if q.HasFullRecord != nil {
+		tx = tx.Where("has_full_record = ?", *q.HasFullRecord)
+	}
+	if q.IsStream != nil {
+		tx = tx.Where("is_stream = ?", *q.IsStream)
+	}
 	if q.StartTime > 0 {
 		tx = tx.Where("created_at >= ?", q.StartTime)
 	}
@@ -125,6 +364,26 @@ func ListLogs(q *LogQuery) ([]*Log, int64, error) {
 		Limit(q.PageSize).
 		Find(&logs).Error
 	return logs, total, err
+}
+
+func ListModelLastUsed() (map[string]int64, error) {
+	type row struct {
+		Model      string
+		LastUsedAt int64
+	}
+	var rows []row
+	if err := DB.Model(&Log{}).
+		Select("src_model AS model, MAX(created_at) AS last_used_at").
+		Where("src_model <> ''").
+		Group("src_model").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	result := make(map[string]int64, len(rows))
+	for _, item := range rows {
+		result[item.Model] = item.LastUsedAt
+	}
+	return result, nil
 }
 
 // LogStat 仪表盘统计聚合结果。

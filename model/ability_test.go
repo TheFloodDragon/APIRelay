@@ -153,3 +153,49 @@ func TestDeleteChannelDeletesAbilities(t *testing.T) {
 		t.Fatalf("channels after delete = %d, want 0", channelCount)
 	}
 }
+
+func TestIncrementalChannelAndModelUpdatesSyncAbilities(t *testing.T) {
+	setupAbilityTestDB(t)
+	ch := &Channel{Name: "incremental", Type: 1, Status: ChannelStatusEnabled, Group: "default",
+		ModelConfigs: `[{"name":"a","enabled":true},{"name":"b","enabled":true}]`}
+	if err := CreateChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpdateChannelStatus(ch.Id, false); err != nil {
+		t.Fatal(err)
+	}
+	var enabledCount int64
+	if err := DB.Model(&Ability{}).Where("channel_id = ? AND enabled = ?", ch.Id, true).Count(&enabledCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if enabledCount != 0 {
+		t.Fatalf("enabled abilities after channel disable = %d", enabledCount)
+	}
+	if _, err := UpdateChannelModelStates(ch.Id, []string{"b"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpdateChannelStatus(ch.Id, true); err != nil {
+		t.Fatal(err)
+	}
+	var abilities []Ability
+	if err := DB.Where("channel_id = ?", ch.Id).Find(&abilities).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(abilities) != 1 || abilities[0].Model != "a" || !abilities[0].Enabled {
+		t.Fatalf("unexpected abilities: %+v", abilities)
+	}
+	updated, err := DeleteChannelModels(ch.Id, []string{"a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.ModelConfigList()) != 1 || updated.ModelConfigList()[0].Name != "b" {
+		t.Fatalf("unexpected remaining models: %+v", updated.ModelConfigList())
+	}
+	abilities = nil
+	if err := DB.Where("channel_id = ?", ch.Id).Find(&abilities).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(abilities) != 0 {
+		t.Fatalf("disabled-only channel should have no abilities: %+v", abilities)
+	}
+}

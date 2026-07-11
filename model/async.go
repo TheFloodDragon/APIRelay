@@ -17,14 +17,19 @@ import (
 // 保证日志与计费不丢失。进程退出前调用 StopAsyncWorker 优雅 flush。
 
 type asyncTask struct {
-	log    *Log // 非 nil 时落库
-	settle *settleTask
+	log     *Log // 非 nil 时落库
+	settle  *settleTask
+	payload *payloadTask // 完整日志载荷（落库后保存）
 }
 
 type settleTask struct {
 	tokenID  int
 	reserved int64
 	actual   int64
+}
+
+type payloadTask struct {
+	capture interface{} // 避免循环依赖，实际是 *relaycommon.FullLogCapture
 }
 
 var (
@@ -77,9 +82,12 @@ func StopAsyncWorker() {
 }
 
 func processAsyncTask(t asyncTask) {
+	var logID int
 	if t.log != nil {
 		if err := CreateLog(t.log); err != nil {
 			logger.L().Error("async create log failed", zap.Error(err))
+		} else {
+			logID = t.log.Id
 		}
 	}
 	if t.settle != nil {
@@ -90,6 +98,12 @@ func processAsyncTask(t asyncTask) {
 				zap.Int64("actual", t.settle.actual),
 				zap.Error(err),
 			)
+		}
+	}
+	// 保存完整日志载荷（必须在 log 创建后）
+	if t.payload != nil && logID > 0 && t.payload.capture != nil {
+		if err := saveFullLogPayloadSync(logID, t.payload.capture); err != nil {
+			logger.L().Error("async save log payload failed", zap.Int("log_id", logID), zap.Error(err))
 		}
 	}
 }
@@ -165,6 +179,23 @@ func AsyncSettle(tokenID int, reserved, actual int64) {
 // AsyncLogAndSettle 在一个任务里同时落库日志与结算配额。
 func AsyncLogAndSettle(l *Log, tokenID int, reserved, actual int64) {
 	t := asyncTask{log: l}
+	if tokenID > 0 && (reserved != 0 || actual != 0) {
+		t.settle = &settleTask{tokenID: tokenID, reserved: reserved, actual: actual}
+	}
+	enqueue(t)
+}
+
+// AsyncLogWithPayload 异步写入日志并保存完整载荷。
+func AsyncLogWithPayload(l *Log, capture interface{}) {
+	if l == nil {
+		return
+	}
+	enqueue(asyncTask{log: l, payload: &payloadTask{capture: capture}})
+}
+
+// AsyncLogAndSettleWithPayload 异步写入日志、结算配额并保存完整载荷。
+func AsyncLogAndSettleWithPayload(l *Log, tokenID int, reserved, actual int64, capture interface{}) {
+	t := asyncTask{log: l, payload: &payloadTask{capture: capture}}
 	if tokenID > 0 && (reserved != 0 || actual != 0) {
 		t.settle = &settleTask{tokenID: tokenID, reserved: reserved, actual: actual}
 	}

@@ -69,6 +69,7 @@ func migrate() error {
 		&Ability{},
 		&Token{},
 		&Log{},
+		&LogPayload{},
 		&Setting{},
 		&ChannelHealth{},
 	)

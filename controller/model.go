@@ -2,6 +2,7 @@ package controller
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/apirelay/apirelay/constant"
 	"github.com/apirelay/apirelay/model"
@@ -12,8 +13,9 @@ import (
 
 // AggregatedModel 是按显示名聚合后的模型条目。
 type AggregatedModel struct {
-	Name      string                 `json:"name"`
-	Providers []AggregatedModelOwner `json:"providers"`
+	Name       string                 `json:"name"`
+	LastUsedAt int64                  `json:"last_used_at"`
+	Providers  []AggregatedModelOwner `json:"providers"`
 }
 
 // AggregatedModelOwner 描述提供某模型的一个供应商。
@@ -35,6 +37,12 @@ func ListAggregatedModels(c *gin.Context) {
 		return
 	}
 
+	lastUsed, err := model.ListModelLastUsed()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	grouped := map[string]*AggregatedModel{}
 	order := []string{}
 	for _, ch := range channels {
@@ -44,7 +52,7 @@ func ListAggregatedModels(c *gin.Context) {
 			}
 			agg, ok := grouped[m.Name]
 			if !ok {
-				agg = &AggregatedModel{Name: m.Name}
+				agg = &AggregatedModel{Name: m.Name, LastUsedAt: lastUsed[m.Name]}
 				grouped[m.Name] = agg
 				order = append(order, m.Name)
 			}
@@ -63,6 +71,12 @@ func ListAggregatedModels(c *gin.Context) {
 	for _, name := range order {
 		out = append(out, grouped[name])
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].LastUsedAt == out[j].LastUsedAt {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].LastUsedAt > out[j].LastUsedAt
+	})
 	ok(c, out)
 }
 

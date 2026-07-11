@@ -4,7 +4,9 @@ import (
 	"github.com/apirelay/apirelay/common/config"
 	"github.com/apirelay/apirelay/controller"
 	"github.com/apirelay/apirelay/middleware"
+	"github.com/apirelay/apirelay/model"
 	"github.com/apirelay/apirelay/relay"
+	"github.com/apirelay/apirelay/relay/adaptor"
 	"github.com/apirelay/apirelay/web"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +16,12 @@ import (
 func Setup(cfg *config.Config) (*gin.Engine, error) {
 	gin.SetMode(gin.ReleaseMode)
 	if err := controller.InitAuth(cfg.Auth); err != nil {
+		return nil, err
+	}
+	networkCfg := model.GetNetworkConfig()
+	if _, err := adaptor.UpdateNetworkConfig(adaptor.NetworkConfig{
+		Mode: networkCfg.Mode, ManualURL: networkCfg.ManualURL, NoProxy: networkCfg.NoProxy,
+	}); err != nil {
 		return nil, err
 	}
 
@@ -90,7 +98,11 @@ func registerAdminRoutes(r *gin.Engine, cfg *config.Config) {
 		api.GET("/channels", controller.ListChannels)
 		api.POST("/channels", controller.CreateChannel)
 		api.POST("/channels/reorder", controller.ReorderChannels)
+		api.POST("/channels/bulk-delete", controller.BulkDeleteChannels)
 		api.PUT("/channels/:id", controller.UpdateChannel)
+		api.PATCH("/channels/:id/status", controller.UpdateChannelStatus)
+		api.PATCH("/channels/:id/models", controller.UpdateChannelModelStatus)
+		api.DELETE("/channels/:id/models", controller.DeleteChannelModels)
 		api.DELETE("/channels/:id", controller.DeleteChannel)
 		api.GET("/channels/:id/models", controller.ProbeChannelModels)
 		api.POST("/channels/probe-models", controller.ProbeModelsByConfig)
@@ -103,12 +115,17 @@ func registerAdminRoutes(r *gin.Engine, cfg *config.Config) {
 
 		api.GET("/models", controller.ListAggregatedModels)
 
-		api.GET("/settings/config-file", controller.GetConfigFile)
-		api.PUT("/settings/config-file", controller.UpdateConfigFile)
 		api.GET("/settings/protocol-rules", controller.GetProtocolRules)
 		api.PUT("/settings/protocol-rules", controller.UpdateProtocolRules)
 		api.GET("/settings/model-prices", controller.GetModelPrices)
 		api.PUT("/settings/model-prices", controller.UpdateModelPrices)
+		api.GET("/settings/logging", controller.GetLoggingConfig)
+		api.PUT("/settings/logging", controller.UpdateLoggingConfig)
+		api.GET("/settings/network", controller.GetNetworkConfig)
+		api.PUT("/settings/network", controller.UpdateNetworkConfig)
+		api.POST("/settings/network/test", controller.TestNetworkConfig)
+		api.GET("/settings/test-prompt", controller.GetTestPrompt)
+		api.PUT("/settings/test-prompt", controller.UpdateTestPrompt)
 		api.GET("/settings/circuit-breaker", controller.GetCircuitBreakerConfig)
 		api.PUT("/settings/circuit-breaker", controller.UpdateCircuitBreakerConfig)
 		api.GET("/settings/health-stats", controller.GetAllChannelHealthStats)
@@ -118,5 +135,6 @@ func registerAdminRoutes(r *gin.Engine, cfg *config.Config) {
 		api.DELETE("/tokens/:id", controller.DeleteToken)
 
 		api.GET("/logs", controller.ListLogs)
+		api.GET("/logs/:id", controller.GetLogDetail)
 	}
 }

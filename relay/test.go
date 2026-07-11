@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,12 +42,16 @@ type ModelTestResult struct {
 //
 // 这是向后兼容的签名，等价于 TestModelWithContext(context.Background(), ...)。
 func TestModel(ch *model.Channel, displayModel string) *ModelTestResult {
-	return TestModelWithContext(context.Background(), ch, displayModel)
+	return TestModelWithPrompt(context.Background(), ch, displayModel, "")
 }
 
-// TestModelWithContext 与 TestModel 相同，但使用调用方传入的 context，
-// 以便批量测试为每个模型施加独立超时/取消。
+// TestModelWithContext 与 TestModel 相同，但使用调用方传入的 context。
 func TestModelWithContext(ctx context.Context, ch *model.Channel, displayModel string) *ModelTestResult {
+	return TestModelWithPrompt(ctx, ch, displayModel, "")
+}
+
+// TestModelWithPrompt 使用显式提示词测试模型；空值按渠道覆盖、全局默认的顺序回退。
+func TestModelWithPrompt(ctx context.Context, ch *model.Channel, displayModel, prompt string) *ModelTestResult {
 	res := &ModelTestResult{Model: displayModel}
 	if ch == nil {
 		res.Error = "供应商不存在"
@@ -54,6 +59,13 @@ func TestModelWithContext(ctx context.Context, ch *model.Channel, displayModel s
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	testPrompt := strings.TrimSpace(prompt)
+	if testPrompt == "" {
+		testPrompt = strings.TrimSpace(ch.TestPrompt)
+	}
+	if testPrompt == "" {
+		testPrompt = model.GetTestPrompt()
 	}
 
 	apiType := ResolveAPIType(ch, displayModel)
@@ -86,7 +98,7 @@ func TestModelWithContext(ctx context.Context, ch *model.Channel, displayModel s
 		Model:     displayModel,
 		MaxTokens: &maxTok,
 		Messages: []dto.UnifiedMessage{
-			{Role: dto.RoleUser, Content: "Say 'hi' in one word."},
+			{Role: dto.RoleUser, Content: testPrompt},
 		},
 	}
 
@@ -143,6 +155,11 @@ func TestModelWithContext(ctx context.Context, ch *model.Channel, displayModel s
 // 使用带缓冲 channel 做并发限流（concurrency<=0 时用默认值），
 // 每个模型在独立的 30s 超时 context 下执行。结果按 models 的输入顺序返回。
 func TestModels(ctx context.Context, ch *model.Channel, models []string, concurrency int) []*ModelTestResult {
+	return TestModelsWithPrompt(ctx, ch, models, concurrency, "")
+}
+
+// TestModelsWithPrompt 并发批量测试并为全部模型使用同一显式提示词。
+func TestModelsWithPrompt(ctx context.Context, ch *model.Channel, models []string, concurrency int, prompt string) []*ModelTestResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -168,7 +185,7 @@ func TestModels(ctx context.Context, ch *model.Channel, models []string, concurr
 
 			mctx, cancel := context.WithTimeout(ctx, defaultTestTimeout)
 			defer cancel()
-			results[idx] = TestModelWithContext(mctx, ch, displayModel)
+			results[idx] = TestModelWithPrompt(mctx, ch, displayModel, prompt)
 		}(i, m)
 	}
 	wg.Wait()

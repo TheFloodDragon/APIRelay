@@ -41,6 +41,12 @@ const checkupChannelName = ref('')
 const checkupResults = ref([])
 const checkupSummary = ref(null)
 
+const expandedIds = ref(new Set())
+const selectedIds = ref(new Set())
+const modelMutating = ref(new Set())
+const globalTestPrompt = ref("Say 'hi' in one word.")
+const bulkDeleting = ref(false)
+
 const togglingIds = ref(new Set())
 const deletingIds = ref(new Set())
 const resettingIds = ref(new Set())
@@ -57,6 +63,7 @@ const blank = () => ({
   group: 'default',
   header_override: '',
   body_override: '',
+  test_prompt: '',
   priority: 0,
   weight: 1,
   status: 1,
@@ -64,6 +71,7 @@ const blank = () => ({
 const form = ref(blank())
 
 const sortedChannels = computed(() => channels.value)
+const allSelected = computed(() => channels.value.length > 0 && selectedIds.value.size === channels.value.length)
 const enabledCount = computed(() => models.value.filter((model) => model.enabled && model.name.trim()).length)
 const hasModelTesting = computed(() => Object.values(testing.value).some(Boolean))
 const editorBusy = computed(() => saving.value || probing.value || batchTesting.value || hasModelTesting.value)
@@ -155,7 +163,9 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    channels.value = (await api.get('/channels')) || []
+    const data = (await api.get('/channels')) || []
+    channels.value = data.map((channel) => ({ ...channel, _models: parseModels(channel) }))
+    selectedIds.value = new Set([...selectedIds.value].filter((id) => channels.value.some((channel) => channel.id === id)))
   } catch (error) {
     loadError.value = error.message || '渠道清单加载失败'
     notify(`加载失败：${loadError.value}`, 'error')
@@ -168,12 +178,14 @@ async function loadMeta() {
   if (metadataLoading.value) return
   metadataLoading.value = true
   try {
-    const [types, protocolList] = await Promise.all([
+    const [types, protocolList, promptData] = await Promise.all([
       api.get('/channel-types'),
       api.get('/protocols'),
+      api.get('/settings/test-prompt'),
     ])
     channelTypes.value = types || []
     protocols.value = protocolList || []
+    globalTestPrompt.value = promptData?.prompt || globalTestPrompt.value
   } catch (error) {
     notify(`加载元数据失败：${error.message}`, 'error')
   } finally {
@@ -243,7 +255,7 @@ function openCreate() {
 
 function openEdit(channel) {
   form.value = { ...blank(), ...channel, key: channel.key || '' }
-  models.value = parseModels(channel)
+  models.value = (Array.isArray(channel._models) ? channel._models : parseModels(channel)).map((item) => ({ ...item }))
   rules.value = parseRules(channel)
   resetEditorState()
   showEditor.value = true
@@ -292,6 +304,8 @@ function testPayload() {
     protocol_rules: JSON.stringify(rules.value.filter((rule) => rule.pattern.trim() && rule.protocol)),
     header_override: form.value.header_override || '',
     body_override: form.value.body_override || '',
+    test_prompt: form.value.test_prompt || '',
+    prompt: form.value.test_prompt?.trim() || globalTestPrompt.value,
   }
 }
 
@@ -411,7 +425,9 @@ async function checkupChannel(channel) {
   checkupResults.value = []
   checkupSummary.value = null
   try {
-    const response = await api.post(`/channels/${channel.id}/test-all`, {})
+    const response = await api.post(`/channels/${channel.id}/test-all`, {
+      prompt: channel.test_prompt?.trim() || globalTestPrompt.value,
+    })
     checkupResults.value = response.results || []
     checkupSummary.value = response.summary || null
     showCheckup.value = true
@@ -517,6 +533,81 @@ async function save() {
   }
 }
 
+function toggleExpanded(channelId) {
+  const next = new Set(expandedIds.value)
+  if (next.has(channelId)) next.delete(channelId)
+  else next.add(channelId)
+  expandedIds.value = next
+}
+
+function toggleSelected(channelId) {
+  const next = new Set(selectedIds.value)
+  if (next.has(channelId)) next.delete(channelId)
+  else next.add(channelId)
+  selectedIds.value = next
+}
+
+function toggleSelectAll() {
+  selectedIds.value = allSelected.value ? new Set() : new Set(channels.value.map((channel) => channel.id))
+}
+
+async function bulkDeleteChannels() {
+  const ids = [...selectedIds.value]
+  if (!ids.length || bulkDeleting.value) return
+  if (!confirm(`确认删除选中的 ${ids.length} 个渠道？\n\n渠道及其模型路由将一并删除，此操作不可撤销。`)) return
+  bulkDeleting.value = true
+  try {
+    await api.post('/channels/bulk-delete', { ids })
+    selectedIds.value = new Set()
+    notify(`已删除 ${ids.length} 个渠道`, 'success')
+    await load()
+  } catch (error) {
+    notify(`批量删除失败：${error.message}`, 'error')
+  } finally {
+    bulkDeleting.value = false
+  }
+}
+
+function syncChannelModelFields(channel) {
+  channel.model_configs = JSON.stringify(channel._models || [])
+  channel.models = (channel._models || []).filter((item) => item.enabled).map((item) => item.name).join(',')
+}
+
+async function toggleChannelModel(channel, item) {
+  const key = `${channel.id}:${item.name}`
+  if (modelMutating.value.has(key)) return
+  const previous = item.enabled
+  item.enabled = !previous
+  updateSet(modelMutating, key, true)
+  try {
+    await api.patch(`/channels/${channel.id}/models`, { models: [item.name], enabled: item.enabled })
+    syncChannelModelFields(channel)
+    notify(`模型 ${item.name} 已${item.enabled ? '启用' : '停用'}`, 'success')
+  } catch (error) {
+    item.enabled = previous
+    notify(`模型状态切换失败：${error.message}`, 'error')
+  } finally {
+    updateSet(modelMutating, key, false)
+  }
+}
+
+async function removeChannelModel(channel, item) {
+  const key = `${channel.id}:${item.name}`
+  if (modelMutating.value.has(key)) return
+  if (!confirm(`确认从「${channel.name}」删除模型 ${item.name}？`)) return
+  updateSet(modelMutating, key, true)
+  try {
+    await api.delete(`/channels/${channel.id}/models`, { data: { models: [item.name] } })
+    channel._models = channel._models.filter((model) => model.name !== item.name)
+    syncChannelModelFields(channel)
+    notify(`模型 ${item.name} 已删除`, 'success')
+  } catch (error) {
+    notify(`模型删除失败：${error.message}`, 'error')
+  } finally {
+    updateSet(modelMutating, key, false)
+  }
+}
+
 async function toggleChannel(channel) {
   if (togglingIds.value.has(channel.id)) return
   const previous = channel.status
@@ -524,7 +615,7 @@ async function toggleChannel(channel) {
   updateSet(togglingIds, channel.id, true)
   channel.status = nextStatus
   try {
-    await api.put(`/channels/${channel.id}`, { ...channel, status: nextStatus })
+    await api.patch(`/channels/${channel.id}/status`, { enabled: nextStatus === 1 })
     notify(`「${channel.name}」已${nextStatus === 1 ? '启用' : '停用'}`, 'success')
   } catch (error) {
     channel.status = previous
@@ -628,13 +719,13 @@ onMounted(() => {
 
 <template>
   <div class="space-y-5">
-    <header class="flex flex-wrap items-end justify-between gap-3">
+    <header class="page-header">
       <div class="min-w-0">
-        <div class="eyebrow">渠道管理</div>
-        <h1 class="mt-0.5 font-cond text-2xl font-semibold tracking-wide">上游渠道</h1>
-        <p class="mt-1 max-w-2xl text-[13px] text-soft">维护上游连接、模型和路由规则，并快速查看每个渠道的可用状态。</p>
+        <div class="eyebrow">Upstream routing</div>
+        <h1 class="page-title">上游渠道</h1>
+        <p class="page-description">维护连接、模型与请求复写规则，并按优先级编排故障转移路径。</p>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div class="page-actions">
         <button type="button" class="btn" :disabled="loading" aria-label="刷新渠道列表" @click="load">
           {{ loading ? '刷新中' : '刷新' }}
         </button>
@@ -650,8 +741,11 @@ onMounted(() => {
           <span class="dim-title">渠道列表</span>
           <div class="mt-1 text-[12px] text-soft">按当前顺序分配优先级，可拖动调整。</div>
         </div>
-        <span v-if="reordering" class="chip chip-test" role="status">正在保存顺序</span>
-        <span v-else class="chip">{{ channels.length }} 个渠道</span>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <button v-if="selectedIds.size" type="button" class="btn btn-danger btn-sm" :disabled="bulkDeleting" @click="bulkDeleteChannels">{{ bulkDeleting ? '删除中' : `删除已选 ${selectedIds.size} 项` }}</button>
+          <span v-if="reordering" class="chip chip-test" role="status">正在保存顺序</span>
+          <span v-else class="chip">{{ channels.length }} 个渠道</span>
+        </div>
       </div>
 
       <PageState
@@ -665,7 +759,7 @@ onMounted(() => {
           <table class="table-eng w-full table-fixed" aria-label="渠道列表">
             <thead>
               <tr>
-                <th class="w-20">顺序</th>
+                <th class="w-24"><label class="flex items-center gap-2"><input type="checkbox" :checked="allSelected" aria-label="选择全部渠道" @change="toggleSelectAll" />顺序</label></th>
                 <th class="w-28">状态</th>
                 <th class="w-[22%]">渠道</th>
                 <th>连接地址</th>
@@ -675,9 +769,8 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
+              <template v-for="(channel, index) in sortedChannels" :key="channel.id">
               <tr
-                v-for="(channel, index) in sortedChannels"
-                :key="channel.id"
                 :class="[
                   dragIndex === index ? 'opacity-40' : '',
                   dropIndex === index && dragIndex !== null && dragIndex !== index ? 'outline outline-2 outline-blue outline-offset-[-2px]' : '',
@@ -691,6 +784,8 @@ onMounted(() => {
               >
                 <td>
                   <div class="flex items-center gap-2">
+                    <input type="checkbox" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @change="toggleSelected(channel.id)" />
+                    <button type="button" class="btn btn-sm px-1" :aria-expanded="expandedIds.has(channel.id)" :aria-label="`${expandedIds.has(channel.id) ? '收起' : '展开'} ${channel.name} 的模型`" @click="toggleExpanded(channel.id)">{{ expandedIds.has(channel.id) ? '−' : '+' }}</button>
                     <button
                       type="button"
                       class="btn btn-sm cursor-grab px-1 active:cursor-grabbing"
@@ -703,11 +798,14 @@ onMounted(() => {
                   </div>
                 </td>
                 <td>
-                  <span class="chip" :class="{
-                    'chip-run': breakerState(channel) === 'run',
-                    'chip-test': breakerState(channel) === 'test',
-                    'chip-trip': breakerState(channel) === 'trip',
-                  }">{{ breakerText(channel) }}</span>
+                  <div class="flex items-center gap-2">
+                    <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': channel.status === 1 }" :disabled="togglingIds.has(channel.id)" :aria-pressed="channel.status === 1" :aria-label="`${channel.status === 1 ? '停用' : '启用'}渠道 ${channel.name}`" @click="toggleChannel(channel)"><span aria-hidden="true"></span></button>
+                    <span class="chip" :class="{
+                      'chip-run': breakerState(channel) === 'run',
+                      'chip-test': breakerState(channel) === 'test',
+                      'chip-trip': breakerState(channel) === 'trip',
+                    }">{{ breakerText(channel) }}</span>
+                  </div>
                 </td>
                 <td>
                   <div class="truncate font-cond text-[15px] font-semibold tracking-wide text-ink" :title="channel.name">{{ channel.name }}</div>
@@ -738,6 +836,23 @@ onMounted(() => {
                   </div>
                 </td>
               </tr>
+              <tr v-if="expandedIds.has(channel.id)">
+                <td colspan="7" class="!p-0">
+                  <div class="border-y border-line bg-canvas/70 px-5 py-4">
+                    <div class="mb-3 flex items-center justify-between gap-3"><span class="dim-title">渠道模型</span><span class="text-xs text-soft">{{ channel._models.length }} 个配置</span></div>
+                    <div v-if="channel._models.length" class="grid gap-2 lg:grid-cols-2">
+                      <article v-for="item in channel._models" :key="item.name" class="flex min-w-0 items-center gap-3 rounded-lg border border-line bg-white p-3">
+                        <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': item.enabled }" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" :aria-pressed="item.enabled" :aria-label="`${item.enabled ? '停用' : '启用'}模型 ${item.name}`" @click="toggleChannelModel(channel, item)"><span aria-hidden="true"></span></button>
+                        <div class="min-w-0 flex-1"><code class="block truncate text-xs text-ink" :title="item.name">{{ item.name }}</code><div class="mt-1 truncate text-[11px] text-soft">{{ item.protocol || '继承协议' }} · → {{ item.upstream || item.name }}</div></div>
+                        <span class="chip shrink-0" :class="item.enabled && channel.status === 1 ? 'chip-run' : ''">{{ item.enabled ? '启用' : '停用' }}</span>
+                        <button type="button" class="btn btn-danger btn-sm shrink-0" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="removeChannelModel(channel, item)">删除</button>
+                      </article>
+                    </div>
+                    <div v-else class="rounded-lg border border-dashed border-line py-6 text-center text-sm text-soft">此渠道尚未配置模型</div>
+                  </div>
+                </td>
+              </tr>
+              </template>
             </tbody>
           </table>
         </div>
@@ -756,6 +871,8 @@ onMounted(() => {
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
+                  <input type="checkbox" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @change="toggleSelected(channel.id)" />
+                  <button type="button" class="btn btn-sm px-1" :aria-expanded="expandedIds.has(channel.id)" @click="toggleExpanded(channel.id)">{{ expandedIds.has(channel.id) ? '−' : '+' }}</button>
                   <button type="button" class="btn btn-sm cursor-grab px-1" :disabled="reordering" :aria-label="`拖动调整 ${channel.name} 的顺序`">⠿</button>
                   <span class="font-mono text-[11px] text-faint">#{{ index + 1 }}</span>
                   <span class="chip" :class="{ 'chip-run': breakerState(channel) === 'run', 'chip-test': breakerState(channel) === 'test', 'chip-trip': breakerState(channel) === 'trip' }">{{ breakerText(channel) }}</span>
@@ -779,6 +896,14 @@ onMounted(() => {
             <div class="mt-3 grid grid-cols-2 gap-2">
               <button type="button" class="btn btn-sm" :disabled="checkupLoadingId !== null" @click="checkupChannel(channel)">{{ checkupLoadingId === channel.id ? '测试中' : '测试' }}</button>
               <button type="button" class="btn btn-sm" @click="openEdit(channel)">编辑</button>
+            </div>
+            <div v-if="expandedIds.has(channel.id)" class="mt-3 space-y-2 border-t border-line pt-3">
+              <div v-for="item in channel._models" :key="item.name" class="flex min-w-0 items-center gap-2 rounded border border-line p-2">
+                <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': item.enabled }" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="toggleChannelModel(channel, item)"><span></span></button>
+                <div class="min-w-0 flex-1"><code class="block truncate text-xs">{{ item.name }}</code><span class="block truncate text-[10px] text-soft">→ {{ item.upstream || item.name }}</span></div>
+                <button type="button" class="btn btn-danger btn-sm" :disabled="modelMutating.has(`${channel.id}:${item.name}`)" @click="removeChannelModel(channel, item)">删除</button>
+              </div>
+              <div v-if="!channel._models.length" class="text-center text-xs text-soft">暂无模型</div>
             </div>
           </article>
         </div>
@@ -857,6 +982,11 @@ onMounted(() => {
                 <button type="button" class="btn shrink-0" :disabled="!form.key" aria-label="复制编辑器中的 API Key" @click="copyKey(form)">复制</button>
               </div>
               <p class="mt-1 text-[12px] text-soft">上游凭据按现有数据结构保存；复制操作使用安全上下文与兼容降级。</p>
+            </div>
+            <div class="md:col-span-2 xl:col-span-4">
+              <label class="field-label" for="channel-test-prompt">测试提示词覆盖</label>
+              <textarea id="channel-test-prompt" v-model="form.test_prompt" class="input min-h-24 resize-y" maxlength="4000" :placeholder="`留空继承全局：${globalTestPrompt}`"></textarea>
+              <p class="mt-1 text-[12px] text-soft">单测与批量体检优先使用此内容；留空时继承设置页中的全局默认。</p>
             </div>
           </div>
         </section>
@@ -988,6 +1118,7 @@ onMounted(() => {
                     <th>模型</th>
                     <th class="w-24">结果</th>
                     <th class="w-28">协议</th>
+                    <th>上游模型</th>
                     <th class="w-24 text-right">延迟</th>
                     <th>说明</th>
                   </tr>
@@ -1001,6 +1132,7 @@ onMounted(() => {
                       <span v-else class="chip chip-trip">失败</span>
                     </td>
                     <td><code class="text-[12px]">{{ row.result?.protocol || '—' }}</code></td>
+                    <td><code class="break-all text-[12px]">{{ row.result?.upstream || row.model.upstream || row.model.name }}</code></td>
                     <td class="num">{{ row.result?.latency_ms ? `${row.result.latency_ms} ms` : '—' }}</td>
                     <td class="max-w-md break-words text-[12px] text-soft">{{ row.result?.success ? (row.result.reply || '连通正常') : (row.result?.error || '等待试验结果') }}</td>
                   </tr>
@@ -1096,6 +1228,7 @@ onMounted(() => {
             </div>
             <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-soft">
               <span>协议：<code>{{ result.protocol || '—' }}</code></span>
+              <span>上游：<code>{{ result.upstream || result.model }}</code></span>
               <span>延迟：<code>{{ result.success && result.latency_ms ? `${result.latency_ms} ms` : '—' }}</code></span>
             </div>
             <p class="mt-2 break-words text-xs leading-5 text-soft">{{ result.success ? (result.reply || '连通正常') : (result.error || '未返回错误说明') }}</p>

@@ -38,6 +38,8 @@ type Channel struct {
 	// BodyOverride JSON 对象：在协议转换后、发往上游前，深合并进最终请求体。
 	// object 与 object 递归合并，其余类型（数组/标量/null）整体替换；顶层 stream 受保护不可覆盖。
 	BodyOverride string `json:"body_override" gorm:"type:text"`
+	// TestPrompt 覆盖全局默认测试提示词；为空时继承全局设置。
+	TestPrompt string `json:"test_prompt" gorm:"type:text"`
 	// CooldownUntil 冷却截止毫秒时间戳，0 表示未冷却（不持久化调度可放内存，这里持久化便于观察）
 	CooldownUntil int64 `json:"cooldown_until" gorm:"default:0"`
 	CreatedAt     int64 `json:"created_at"`
@@ -351,6 +353,105 @@ func DeleteChannel(id int) error {
 		}
 		return tx.Delete(&Channel{}, id).Error
 	})
+}
+
+// DeleteChannels 批量删除渠道及其 Ability 索引。
+func DeleteChannels(ids []int) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("channel_id IN ?", ids).Delete(&Ability{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", ids).Delete(&Channel{}).Error
+	})
+}
+
+// UpdateChannelStatus 只更新渠道状态，并同步 Ability 可用状态。
+func UpdateChannelStatus(id int, enabled bool) (*Channel, error) {
+	var channel Channel
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&channel, id).Error; err != nil {
+			return err
+		}
+		status := ChannelStatusDisabled
+		if enabled {
+			status = ChannelStatusEnabled
+		}
+		channel.Status = status
+		channel.UpdatedAt = nowMilli()
+		if err := tx.Model(&Channel{}).Where("id = ?", id).Updates(map[string]any{
+			"status": status, "updated_at": channel.UpdatedAt,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&Ability{}).Where("channel_id = ?", id).Update("enabled", enabled).Error
+	})
+	return &channel, err
+}
+
+// UpdateChannelModelStates 增量启用或禁用指定模型，并重建该渠道 Ability。
+func UpdateChannelModelStates(id int, names []string, enabled bool) (*Channel, error) {
+	return mutateChannelModels(id, names, func(item ChannelModel) (ChannelModel, bool) {
+		item.Enabled = enabled
+		return item, true
+	})
+}
+
+// DeleteChannelModels 删除渠道中的指定模型，并重建该渠道 Ability。
+func DeleteChannelModels(id int, names []string) (*Channel, error) {
+	return mutateChannelModels(id, names, func(item ChannelModel) (ChannelModel, bool) {
+		return item, false
+	})
+}
+
+func mutateChannelModels(id int, names []string, mutate func(ChannelModel) (ChannelModel, bool)) (*Channel, error) {
+	nameSet := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			nameSet[name] = struct{}{}
+		}
+	}
+	if len(nameSet) == 0 {
+		return nil, fmt.Errorf("models 不能为空")
+	}
+	var channel Channel
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&channel, id).Error; err != nil {
+			return err
+		}
+		configs := channel.ModelConfigList()
+		updated := make([]ChannelModel, 0, len(configs))
+		matched := 0
+		for _, item := range configs {
+			if _, hit := nameSet[item.Name]; !hit {
+				updated = append(updated, item)
+				continue
+			}
+			matched++
+			if next, keep := mutate(item); keep {
+				updated = append(updated, next)
+			}
+		}
+		if matched == 0 {
+			return fmt.Errorf("指定模型不存在")
+		}
+		data, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		channel.ModelConfigs = string(data)
+		channel.backfillModels()
+		channel.UpdatedAt = nowMilli()
+		if err := tx.Model(&Channel{}).Where("id = ?", id).Updates(map[string]any{
+			"model_configs": channel.ModelConfigs, "models": channel.Models, "updated_at": channel.UpdatedAt,
+		}).Error; err != nil {
+			return err
+		}
+		return syncChannelAbilitiesTx(tx, &channel)
+	})
+	return &channel, err
 }
 
 // GetChannelByID 按 ID 查询渠道。

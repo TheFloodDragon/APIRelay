@@ -108,11 +108,23 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 	info.Context = ctx
 	out := GetOutbound(ep)
 
+	// 在读取正文前建立采集器和响应包装，确保解析失败、超限等早期错误也能被记录。
+	info.FullLogCapture = initFullLogCapture(c, nil)
+	if info.FullLogCapture != nil {
+		cfg := model.GetLoggingConfig()
+		if cfg.RecordClientResp {
+			originalWriter := c.Writer
+			c.Writer = &captureResponseWriter{ResponseWriter: originalWriter, capture: info.FullLogCapture, cfg: cfg}
+			defer func() { c.Writer = originalWriter }()
+		}
+	}
+
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			out.WriteError(c, http.StatusRequestEntityTooLarge, "request body too large")
+			r.logError(info, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
 		category := classifyRelayError(ctx, err)
@@ -126,12 +138,18 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 			return
 		}
 		out.WriteError(c, http.StatusBadRequest, "read body failed")
+		r.logError(info, http.StatusBadRequest, "read body failed: "+err.Error())
 		return
+	}
+
+	if info.FullLogCapture != nil && model.GetLoggingConfig().RecordClientRequest {
+		info.FullLogCapture.ClientBody = append([]byte(nil), body...)
 	}
 
 	ir, err := parse(body)
 	if err != nil {
 		out.WriteError(c, http.StatusBadRequest, "请求体解析失败："+err.Error())
+		r.logError(info, http.StatusBadRequest, "request body parse failed: "+err.Error())
 		return
 	}
 	info.OriginModel = ir.Model
@@ -139,6 +157,7 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 
 	if ir.Model == "" {
 		out.WriteError(c, http.StatusBadRequest, "请求缺少 model 字段")
+		r.logError(info, http.StatusBadRequest, "request missing model")
 		return
 	}
 
@@ -452,6 +471,21 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 		}
 	}
 
+	// 采集上游请求（在 DoRequest 前）
+	if info.FullLogCapture != nil && shouldCaptureFullLog() {
+		cfg := model.GetLoggingConfig()
+		// 构建临时 request 以获取 URL 和 headers
+		url, _ := adp.GetRequestURL(info)
+		tmpReq, _ := http.NewRequest(http.MethodPost, url, nil)
+		if tmpReq != nil {
+			_ = adp.SetupRequestHeader(info, tmpReq.Header)
+			headers, body := captureUpstreamRequest(tmpReq, reqBody, cfg)
+			info.FullLogCapture.UpstreamURL = url
+			info.FullLogCapture.UpstreamHeaders = headers
+			info.FullLogCapture.UpstreamBody = body
+		}
+	}
+
 	resp, err := adp.DoRequest(info, bytes.NewReader(reqBody))
 	if err != nil {
 		switch category := classifyRelayError(relayContext(info), err); category {
@@ -467,8 +501,20 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 	}
 	defer resp.Body.Close()
 
+	// 采集上游响应 status 和 headers
+	if info.FullLogCapture != nil && shouldCaptureFullLog() {
+		cfg := model.GetLoggingConfig()
+		info.FullLogCapture.UpstreamStatus = resp.StatusCode
+		if cfg.RecordUpstreamResp {
+			info.FullLogCapture.UpstreamRespHeaders = sanitizeHeaders(resp.Header, cfg.SanitizedHeaderKeys)
+		}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if info.FullLogCapture != nil && model.GetLoggingConfig().RecordUpstreamResp {
+			info.FullLogCapture.UpstreamRespBody = append([]byte(nil), respBody...)
+		}
 		retryable := isRetryableStatus(resp.StatusCode)
 		// 记录详细错误（含上游响应体）用于日志与故障转移决策；
 		// 对客户端的友好提示在 friendlyUpstreamError 中生成。
@@ -499,12 +545,21 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, ir *dto.Unifi
 	if len(body) == 0 {
 		return http.StatusBadGateway, true, errEmptyUpstreamResponse
 	}
+
+	// 采集上游响应 body
+	if info.FullLogCapture != nil && shouldCaptureFullLog() {
+		cfg := model.GetLoggingConfig()
+		if cfg.RecordUpstreamResp {
+			info.FullLogCapture.UpstreamRespBody = body
+		}
+	}
+
 	uniResp, err := adp.ConvertResponse(info, body)
 	if err != nil {
 		return http.StatusBadGateway, false, fmt.Errorf("convert response: %w", err)
 	}
 
-	// 按对外协议序列化
+	// 按对外协议序列化；入口响应写出器会采集最终状态、响应头与正文。
 	out.WriteResponse(c, uniResp, info.OriginModel)
 
 	r.logConsume(info, ir, &uniResp.Usage, billing)
@@ -516,6 +571,20 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 	if info.UpstreamRequestId != "" {
 		c.Writer.Header().Set("X-Request-Id", info.UpstreamRequestId)
 	}
+
+	// 流式上游正文用 TeeReader 边消费边采集，不改变 adaptor 的读取与取消语义。
+	var upstreamCaptureBuf *bytes.Buffer
+	if info.FullLogCapture != nil {
+		cfg := model.GetLoggingConfig()
+		if cfg.RecordUpstreamResp {
+			upstreamCaptureBuf = &bytes.Buffer{}
+			originalBody := resp.Body
+			resp.Body = &teeReadCloser{Reader: io.TeeReader(originalBody, upstreamCaptureBuf), closer: originalBody}
+			info.FullLogCapture.UpstreamStatus = resp.StatusCode
+			info.FullLogCapture.UpstreamRespHeaders = sanitizeHeaders(resp.Header, cfg.SanitizedHeaderKeys)
+		}
+	}
+
 	var writer StreamWriter
 	firstByte := false
 	chunkCount := 0
@@ -531,6 +600,9 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 		chunkCount++
 		return writer.WriteChunk(c, chunk)
 	})
+	if upstreamCaptureBuf != nil {
+		info.FullLogCapture.UpstreamRespBody = append([]byte(nil), upstreamCaptureBuf.Bytes()...)
+	}
 
 	if err != nil {
 		// 已经开始写流则尝试完成协议尾；首包前失败时不写头，允许故障转移。
@@ -648,11 +720,23 @@ func (r *Relayer) logConsume(info *RelayInfo, ir *dto.UnifiedRequest, usage *dto
 	// 结算额度（预扣 -> 实际）并异步落库，避免阻塞响应。
 	info.Settled = true
 	if billing != nil && billing.TokenID() > 0 {
-		billing.AsyncLogAndSettle(l, quota)
+		if info.FullLogCapture != nil {
+			billing.AsyncLogAndSettleWithPayload(l, quota, info.FullLogCapture)
+		} else {
+			billing.AsyncLogAndSettle(l, quota)
+		}
 	} else if info.TokenId > 0 {
-		model.AsyncLogAndSettle(l, info.TokenId, info.ReservedQuota, quota)
+		if info.FullLogCapture != nil {
+			model.AsyncLogAndSettleWithPayload(l, info.TokenId, info.ReservedQuota, quota, info.FullLogCapture)
+		} else {
+			model.AsyncLogAndSettle(l, info.TokenId, info.ReservedQuota, quota)
+		}
 	} else {
-		model.AsyncLog(l)
+		if info.FullLogCapture != nil {
+			model.AsyncLogWithPayload(l, info.FullLogCapture)
+		} else {
+			model.AsyncLog(l)
+		}
 	}
 }
 
@@ -680,7 +764,11 @@ func (r *Relayer) logError(info *RelayInfo, status int, errMsg string) {
 		l.ChannelName = info.Channel.Name
 		l.ApiType = apiTypeLabel(info)
 	}
-	model.AsyncLog(l)
+	if info.FullLogCapture != nil {
+		model.AsyncLogWithPayload(l, info.FullLogCapture)
+	} else {
+		model.AsyncLog(l)
+	}
 }
 
 // logAttemptFailure 记录单个供应商的转发失败（切换渠道前）。

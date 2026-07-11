@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,6 +59,25 @@ func TestTestModel_Success(t *testing.T) {
 	}
 	if res.Usage == nil || res.Usage.TotalTokens != 6 {
 		t.Errorf("usage = %+v", res.Usage)
+	}
+}
+
+func TestTestModelWithPromptUsesExplicitPrompt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"content":"explicit prompt"`) {
+			t.Errorf("request body does not contain explicit prompt: %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+	ch := &model.Channel{
+		Name: "prompt", Type: 1, BaseURL: srv.URL, Key: "k", Group: "default",
+		ModelConfigs: `[{"name":"gpt-4o","enabled":true}]`, TestPrompt: "channel prompt",
+	}
+	if result := TestModelWithPrompt(context.Background(), ch, "gpt-4o", "explicit prompt"); !result.Success {
+		t.Fatalf("expected success, got %s", result.Error)
 	}
 }
 

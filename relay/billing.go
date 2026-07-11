@@ -90,6 +90,24 @@ func (b *BillingSession) AsyncLogAndSettle(l *model.Log, actual int64) {
 	model.AsyncLogAndSettle(l, b.tokenID, reserved, actual)
 }
 
+// AsyncLogAndSettleWithPayload 异步写消费日志、结算额度并保存完整载荷。
+func (b *BillingSession) AsyncLogAndSettleWithPayload(l *model.Log, actual int64, capture interface{}) {
+	reserved, ok := b.markSettled()
+	if !ok {
+		if capture != nil {
+			model.AsyncLogWithPayload(l, capture)
+		} else {
+			model.AsyncLog(l)
+		}
+		return
+	}
+	if capture != nil {
+		model.AsyncLogAndSettleWithPayload(l, b.tokenID, reserved, actual, capture)
+	} else {
+		model.AsyncLogAndSettle(l, b.tokenID, reserved, actual)
+	}
+}
+
 // Refund 失败路径退款，重复调用仅第一次生效；已结算的会话不会退款。
 func (b *BillingSession) Refund() bool {
 	if b == nil {
