@@ -11,10 +11,15 @@ defineEmits(['retry'])
 </script>
 
 <template>
-  <div v-if="loading" class="flex min-h-52 items-center justify-center rounded-lg border border-line bg-white" role="status" aria-live="polite">
-    <div class="text-center">
-      <span class="mx-auto block h-7 w-7 animate-spin rounded-full border-2 border-line border-t-blue" aria-hidden="true"></span>
-      <p class="mt-3 text-sm text-soft">正在加载，请稍候</p>
+  <div v-if="loading" class="min-h-52 rounded-lg border border-line bg-white p-5" role="status" aria-live="polite">
+    <span class="sr-only">正在加载，请稍候</span>
+    <div class="state-skeleton mx-auto max-w-4xl" aria-hidden="true">
+      <div class="flex items-center gap-3">
+        <span class="h-9 w-9 rounded-lg"></span>
+        <div class="flex-1 space-y-2"><span class="block h-3 w-32 rounded"></span><span class="block h-2.5 w-52 max-w-full rounded"></span></div>
+      </div>
+      <div class="mt-5 grid gap-3 sm:grid-cols-3"><span class="h-16 rounded-lg"></span><span class="h-16 rounded-lg"></span><span class="h-16 rounded-lg"></span></div>
+      <div class="mt-4 space-y-2"><span class="block h-10 rounded-lg"></span><span class="block h-10 rounded-lg"></span></div>
     </div>
   </div>
 
@@ -38,3 +43,9 @@ defineEmits(['retry'])
 
   <slot v-else />
 </template>
+
+<style scoped>
+.state-skeleton span { background: linear-gradient(100deg, #eef2f7 20%, #f8fafd 42%, #eef2f7 64%); background-size: 220% 100%; animation: skeleton-flow 1.35s ease-in-out infinite; }
+@keyframes skeleton-flow { to { background-position-x: -220%; } }
+@media (prefers-reduced-motion: reduce) { .state-skeleton span { animation: none; } }
+</style>

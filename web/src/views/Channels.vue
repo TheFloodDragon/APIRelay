@@ -78,7 +78,7 @@ const sortedChannels = computed(() => {
     const state = breakerState(channel)
     if (statusFilter.value !== 'all' && state !== statusFilter.value) return false
     if (!query) return true
-    const haystack = [channel.name, channel.group, typeName(channel.type), ...(channel._models || []).map((item) => item.name)]
+    const haystack = [channel.name, channel.group, channel.base_url, typeName(channel.type), ...(channel._models || []).map((item) => item.name)]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -92,6 +92,15 @@ const channelSummary = computed(() => channels.value.reduce((summary, channel) =
   summary[state] = (summary[state] || 0) + 1
   return summary
 }, { total: 0, run: 0, trip: 0, off: 0, test: 0 }))
+const routeSegments = computed(() => [
+  { key: 'run', label: '运行', count: channelSummary.value.run, tone: 'run' },
+  { key: 'test', label: '检查', count: channelSummary.value.test, tone: 'test' },
+  { key: 'trip', label: '熔断', count: channelSummary.value.trip, tone: 'trip' },
+  { key: 'off', label: '停用', count: channelSummary.value.off, tone: 'off' },
+].map((item) => ({
+  ...item,
+  percent: channelSummary.value.total ? Math.round((item.count / channelSummary.value.total) * 100) : 0,
+})))
 const enabledCount = computed(() => models.value.filter((model) => model.enabled && model.name.trim()).length)
 const hasModelTesting = computed(() => Object.values(testing.value).some(Boolean))
 const editorBusy = computed(() => saving.value || probing.value || batchTesting.value || hasModelTesting.value)
@@ -103,6 +112,20 @@ const canSave = computed(() => Boolean(
   && headerValidation.value.valid
   && bodyValidation.value.valid
 ))
+const saveHint = computed(() => {
+  if (!form.value.name.trim()) return '填写渠道名称后可保存'
+  if (!form.value.base_url.trim()) return '填写 Base URL 后可保存'
+  if (!String(form.value.key || '').trim()) return '填写 API Key 后可保存'
+  if (!enabledCount.value) return '至少启用一个模型后可保存'
+  if (!headerValidation.value.valid) return '修正请求头配置后可保存'
+  if (!bodyValidation.value.valid) return '修正请求体配置后可保存'
+  return '配置完整，可以保存'
+})
+const editorSteps = computed(() => ({
+  connection: Boolean(form.value.name.trim() && form.value.base_url.trim() && String(form.value.key || '').trim()),
+  models: enabledCount.value > 0,
+  routing: headerValidation.value.valid && bodyValidation.value.valid,
+}))
 const customHeaderCount = computed(() => headerValidation.value.valid ? headerValidation.value.allowedCount : 0)
 const checkupRate = computed(() => {
   const summary = checkupSummary.value
@@ -116,6 +139,17 @@ const testRecordRows = computed(() => models.value
 function typeName(type) {
   const found = channelTypes.value.find((item) => item.value === type)
   return found ? found.name : String(type)
+}
+
+function displayEndpoint(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '未配置地址'
+  try {
+    const url = new URL(raw)
+    return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
+  } catch {
+    return raw.replace(/^https?:\/\//, '')
+  }
 }
 
 function modelCount(channel) {
@@ -719,26 +753,49 @@ onMounted(() => {
       </div>
     </header>
 
-    <section class="sheet min-w-0" aria-label="渠道列表">
-      <div class="sheet-head items-end">
-        <div class="min-w-0 flex-1">
-          <span class="dim-title">路由运行台</span>
-          <div class="mt-1 text-[12px] text-soft">按状态筛选和管理渠道，连接凭据仅在编辑器内展示。</div>
-          <label class="mt-3 block max-w-xl">
-            <span class="sr-only">搜索渠道</span>
-            <input v-model="channelQuery" class="input input-mono" type="search" placeholder="搜索渠道、分组或模型" />
-          </label>
-          <div class="mt-3 flex flex-wrap gap-1.5" aria-label="渠道状态筛选">
-            <button type="button" class="chip" :class="statusFilter === 'all' ? 'chip-blue' : ''" @click="statusFilter = 'all'">全部 {{ channelSummary.total }}</button>
-            <button type="button" class="chip" :class="statusFilter === 'run' ? 'chip-run' : ''" @click="statusFilter = 'run'">运行 {{ channelSummary.run }}</button>
-            <button type="button" class="chip" :class="statusFilter === 'trip' ? 'chip-trip' : ''" @click="statusFilter = 'trip'">熔断 {{ channelSummary.trip }}</button>
-            <button type="button" class="chip" :class="statusFilter === 'off' ? 'chip-test' : ''" @click="statusFilter = 'off'">停用 {{ channelSummary.off }}</button>
+    <section class="sheet channel-console min-w-0 overflow-hidden" aria-label="渠道列表">
+      <div class="border-b border-line bg-white px-4 py-4 sm:px-5">
+        <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <span class="dim-title">路由运行台</span>
+              <span class="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">{{ channelSummary.total }} feeders online</span>
+            </div>
+            <div class="mt-1 text-[12px] text-soft">点击母线区段快速筛选；列表顺序即故障转移优先级。</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button v-if="selectedIds.size" type="button" class="btn btn-danger btn-sm" :disabled="bulkDeleting" @click="bulkDeleteChannels">{{ bulkDeleting ? '删除中' : `删除已选 ${selectedIds.size} 项` }}</button>
+            <span v-if="reordering" class="chip chip-test" role="status">正在同步优先级</span>
+            <span v-else class="chip">显示 {{ sortedChannels.length }} / {{ channels.length }}</span>
           </div>
         </div>
-        <div class="flex flex-wrap items-center justify-end gap-2">
-          <button v-if="selectedIds.size" type="button" class="btn btn-danger btn-sm" :disabled="bulkDeleting" @click="bulkDeleteChannels">{{ bulkDeleting ? '删除中' : `删除已选 ${selectedIds.size} 项` }}</button>
-          <span v-if="reordering" class="chip chip-test" role="status">正在保存顺序</span>
-          <span v-else class="chip">显示 {{ sortedChannels.length }} / {{ channels.length }}</span>
+
+        <div class="route-bus mt-4" aria-label="路由状态母线">
+          <button
+            v-for="segment in routeSegments"
+            :key="segment.key"
+            type="button"
+            class="route-bus-segment"
+            :class="[`route-bus-${segment.tone}`, statusFilter === segment.key ? 'route-bus-active' : '']"
+            :style="{ '--segment-grow': Math.max(segment.count, 1) }"
+            :aria-pressed="statusFilter === segment.key"
+            @click="statusFilter = statusFilter === segment.key ? 'all' : segment.key"
+          >
+            <span class="route-bus-line" aria-hidden="true"></span>
+            <span class="route-bus-copy"><b>{{ segment.count }}</b><span>{{ segment.label }} · {{ segment.percent }}%</span></span>
+          </button>
+        </div>
+
+        <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(280px,1fr)_auto] lg:items-center">
+          <label class="relative block">
+            <span class="pointer-events-none absolute inset-y-0 left-3 flex items-center text-faint" aria-hidden="true">⌕</span>
+            <span class="sr-only">搜索渠道</span>
+            <input v-model="channelQuery" class="input input-mono pl-9" type="search" placeholder="搜索渠道、分组、地址或模型" />
+          </label>
+          <div class="flex flex-wrap gap-1.5" aria-label="渠道状态筛选">
+            <button type="button" class="chip" :class="statusFilter === 'all' ? 'chip-blue' : ''" :aria-pressed="statusFilter === 'all'" @click="statusFilter = 'all'">全部 {{ channelSummary.total }}</button>
+            <button v-for="segment in routeSegments" :key="`filter-${segment.key}`" type="button" class="chip" :class="statusFilter === segment.key ? `chip-${segment.tone === 'off' ? 'test' : segment.tone}` : ''" :aria-pressed="statusFilter === segment.key" @click="statusFilter = segment.key">{{ segment.label }} {{ segment.count }}</button>
+          </div>
         </div>
       </div>
 
@@ -749,64 +806,68 @@ onMounted(() => {
         empty-text="暂无渠道"
         @retry="load"
       >
-        <div class="divide-y divide-line">
+        <div class="channel-list p-2 sm:p-3">
           <article
             v-for="(channel, index) in sortedChannels"
             :key="channel.id"
-            class="channel-row group relative flex min-w-0 items-center gap-3 px-3 py-3 transition-all duration-150"
+            class="channel-row group relative grid min-w-0 gap-3 rounded-xl border border-transparent px-3 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center sm:px-4"
             :class="[
-              channel.status !== 1 ? 'opacity-70' : '',
+              channel.status !== 1 ? 'channel-row-off' : '',
               dragIndex === index ? 'channel-row-dragging' : '',
               dropIndex === index && dragIndex !== null && dragIndex !== index ? 'channel-row-dropzone' : '',
             ]"
             :draggable="!reordering && canReorder"
+            :style="{ '--row-index': index }"
             @dragstart="onDragStart(index, $event)"
             @dragover.prevent="onDragOver(index)"
             @drop.prevent="onDrop(index)"
             @dragend="onDragEnd"
           >
-            <span
-              v-if="dropIndex === index && dragIndex !== null && dragIndex !== index"
-              class="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-blue"
-              aria-hidden="true"
-            ></span>
+            <span v-if="dropIndex === index && dragIndex !== null && dragIndex !== index" class="channel-drop-line" aria-hidden="true"></span>
 
-            <div class="flex shrink-0 items-center gap-1.5">
+            <div class="flex items-center gap-2 sm:self-stretch">
               <input type="checkbox" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @change="toggleSelected(channel.id)" />
-              <button type="button" class="btn btn-sm cursor-grab px-1 text-faint active:cursor-grabbing" :disabled="reordering || !canReorder" :aria-label="`拖动调整 ${channel.name} 的优先级`"><span aria-hidden="true">⠿</span></button>
-              <span class="relative flex h-2.5 w-2.5 shrink-0" :title="`熔断器：${breakerText(channel)}`" :aria-label="`熔断状态 ${breakerText(channel)}`">
-                <span v-if="breakerState(channel) === 'trip'" class="absolute inline-flex h-full w-full animate-ping rounded-full bg-trip/60" aria-hidden="true"></span>
-                <span class="relative inline-flex h-2.5 w-2.5 rounded-full" :class="{
-                  'bg-run': breakerState(channel) === 'run',
-                  'bg-test': breakerState(channel) === 'test',
-                  'bg-trip': breakerState(channel) === 'trip',
-                  'bg-faint': breakerState(channel) === 'off',
-                }" aria-hidden="true"></span>
-              </span>
-              <span class="font-mono text-[11px] font-medium text-faint">{{ String(index + 1).padStart(2, '0') }}</span>
+              <button type="button" class="channel-grip" :disabled="reordering || !canReorder" :aria-label="`拖动调整 ${channel.name} 的优先级`"><span aria-hidden="true">⠿</span></button>
+              <div class="channel-priority" :title="`优先级 ${index + 1}`">
+                <span class="channel-priority-line" aria-hidden="true"></span>
+                <b>{{ String(index + 1).padStart(2, '0') }}</b>
+              </div>
             </div>
 
-            <button type="button" class="channel-switch shrink-0" :class="{ 'channel-switch-on': channel.status === 1 }" :disabled="togglingIds.has(channel.id)" :aria-pressed="channel.status === 1" :aria-label="`${channel.status === 1 ? '停用' : '启用'}渠道 ${channel.name}`" @click="toggleChannel(channel)"><span aria-hidden="true"></span></button>
-
-            <div class="min-w-0 flex-1">
-              <div class="truncate font-cond text-[15px] font-semibold tracking-wide text-ink" :title="channel.name">{{ channel.name }}</div>
-              <div class="mt-1 flex flex-wrap items-center gap-1.5">
+            <div class="min-w-0">
+              <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span class="channel-state-dot" :class="`channel-state-${breakerState(channel)}`" :title="breakerText(channel)" aria-hidden="true"><i></i></span>
+                <button type="button" class="min-w-0 truncate text-left font-cond text-[16px] font-semibold tracking-[0.01em] text-ink transition-colors hover:text-blue" :title="channel.name" @click="openEdit(channel)">{{ channel.name }}</button>
+                <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-faint">{{ breakerText(channel) }}</span>
+              </div>
+              <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-soft">
+                <span class="font-mono" :title="channel.base_url">{{ displayEndpoint(channel.base_url) }}</span>
+                <span aria-hidden="true" class="text-line">/</span>
+                <span>{{ channel.group || 'default' }} 分组</span>
+                <span aria-hidden="true" class="text-line">/</span>
+                <span>{{ modelCount(channel) }} 个模型</span>
+              </div>
+              <div class="mt-2 flex flex-wrap items-center gap-1.5">
                 <span class="chip chip-blue">{{ typeName(channel.type) }}</span>
-                <span class="chip">{{ channel.group || 'default' }}</span>
-                <span class="chip">{{ modelCount(channel) }} 模型</span>
-                <span class="chip">×{{ channel.weight }}</span>
+                <span class="chip">权重 ×{{ channel.weight }}</span>
                 <span class="chip" :class="healthClass(channelHealth(channel))" :title="healthTitle(channelHealth(channel))">{{ healthText(channelHealth(channel)) }}</span>
               </div>
             </div>
 
-            <div class="flex shrink-0 items-center gap-1.5">
-              <button v-if="breakerState(channel) === 'trip'" type="button" class="btn btn-danger btn-sm whitespace-nowrap" :disabled="resettingIds.has(channel.id)" :aria-label="`熔断器重置 ${channel.name}`" @click="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '处理中' : '熔断器重置' }}</button>
-              <button type="button" class="btn btn-primary btn-sm whitespace-nowrap" :aria-label="`管理渠道 ${channel.name}`" @click="openEdit(channel)">管理</button>
-              <ActionMenu>
-                <button role="menuitem" type="button" :disabled="checkupLoadingId !== null" @click.stop="checkupChannel(channel)">{{ checkupLoadingId === channel.id ? '检查中' : '运行检查' }}</button>
-                <button role="menuitem" type="button" :disabled="togglingIds.has(channel.id)" @click.stop="toggleChannel(channel)">{{ togglingIds.has(channel.id) ? '切换中' : channel.status === 1 ? '停用渠道' : '启用渠道' }}</button>
-                <button role="menuitem" type="button" class="text-trip" :disabled="deletingIds.has(channel.id)" @click.stop="removeChannel(channel)">{{ deletingIds.has(channel.id) ? '删除中' : '删除渠道' }}</button>
-              </ActionMenu>
+            <div class="flex items-center justify-between gap-2 border-t border-line/70 pt-3 sm:justify-end sm:border-0 sm:pt-0">
+              <div class="flex items-center gap-2 sm:mr-1">
+                <span class="text-[11px] text-soft">{{ channel.status === 1 ? '启用' : '停用' }}</span>
+                <button type="button" class="channel-switch" :class="{ 'channel-switch-on': channel.status === 1 }" :disabled="togglingIds.has(channel.id)" :aria-pressed="channel.status === 1" :aria-label="`${channel.status === 1 ? '停用' : '启用'}渠道 ${channel.name}`" @click="toggleChannel(channel)"><span aria-hidden="true"></span></button>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <button v-if="breakerState(channel) === 'trip'" type="button" class="btn btn-danger btn-sm whitespace-nowrap" :disabled="resettingIds.has(channel.id)" :aria-label="`熔断器重置 ${channel.name}`" @click="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '处理中' : '重置' }}</button>
+                <button type="button" class="btn btn-primary btn-sm whitespace-nowrap" :aria-label="`管理渠道 ${channel.name}`" @click="openEdit(channel)">管理</button>
+                <ActionMenu>
+                  <button role="menuitem" type="button" :disabled="checkupLoadingId !== null" @click.stop="checkupChannel(channel)">{{ checkupLoadingId === channel.id ? '检查中' : '运行检查' }}</button>
+                  <button role="menuitem" type="button" :disabled="togglingIds.has(channel.id)" @click.stop="toggleChannel(channel)">{{ togglingIds.has(channel.id) ? '切换中' : channel.status === 1 ? '停用渠道' : '启用渠道' }}</button>
+                  <button role="menuitem" type="button" class="text-trip" :disabled="deletingIds.has(channel.id)" @click.stop="removeChannel(channel)">{{ deletingIds.has(channel.id) ? '删除中' : '删除渠道' }}</button>
+                </ActionMenu>
+              </div>
             </div>
           </article>
         </div>
@@ -838,10 +899,12 @@ onMounted(() => {
       @close="closeEditor"
     >
       <div class="min-w-0 space-y-4">
-        <div class="segmented" role="tablist" aria-label="渠道配置">
-          <button type="button" role="tab" :aria-selected="editorTab === 'connection'" @click="editorTab = 'connection'">连接</button>
-          <button type="button" role="tab" :aria-selected="editorTab === 'models'" @click="editorTab = 'models'">模型</button>
-          <button type="button" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'">路由与请求头</button>
+        <div class="editor-tabs" role="tablist" aria-label="渠道配置">
+          <button type="button" role="tab" :aria-selected="editorTab === 'connection'" @click="editorTab = 'connection'"><span class="editor-step" :class="editorSteps.connection ? 'editor-step-done' : ''">1</span><span>连接</span></button>
+          <span class="editor-connector" aria-hidden="true"></span>
+          <button type="button" role="tab" :aria-selected="editorTab === 'models'" @click="editorTab = 'models'"><span class="editor-step" :class="editorSteps.models ? 'editor-step-done' : ''">2</span><span>模型</span></button>
+          <span class="editor-connector" aria-hidden="true"></span>
+          <button type="button" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'"><span class="editor-step" :class="editorSteps.routing ? 'editor-step-done' : 'editor-step-warn'">3</span><span>路由与复写</span></button>
         </div>
         <section v-show="editorTab === 'connection'" class="rounded-xl border border-line bg-white" aria-labelledby="nameplate-heading">
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
@@ -926,13 +989,21 @@ onMounted(() => {
           </div>
 
           <div class="p-3">
-            <div v-if="batchTesting || batchSummary" class="mb-3 flex flex-wrap items-center gap-2" aria-live="polite">
-              <span v-if="batchTesting" class="chip chip-test">执行中 {{ batchDone }}/{{ batchTotal }}</span>
-              <template v-if="batchSummary">
-                <span class="chip chip-run">通过 {{ batchSummary.success }}</span>
-                <span class="chip chip-trip">失败 {{ batchSummary.failed }}</span>
-                <span class="chip chip-test">总计 {{ batchSummary.total }}</span>
-              </template>
+            <div v-if="batchTesting || batchSummary" class="mb-3 rounded-xl border border-line bg-panel/40 p-3" aria-live="polite">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span v-if="batchTesting" class="chip chip-test">执行中 {{ batchDone }}/{{ batchTotal }}</span>
+                  <template v-if="batchSummary">
+                    <span class="chip chip-run">通过 {{ batchSummary.success }}</span>
+                    <span class="chip chip-trip">失败 {{ batchSummary.failed }}</span>
+                    <span class="chip chip-test">总计 {{ batchSummary.total }}</span>
+                  </template>
+                </div>
+                <span v-if="batchTesting" class="font-mono text-[10px] text-soft">{{ batchTotal ? Math.round((batchDone / batchTotal) * 100) : 0 }}%</span>
+              </div>
+              <div v-if="batchTesting" class="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
+                <span class="block h-full rounded-full bg-test transition-[width] duration-300" :style="{ width: `${batchTotal ? (batchDone / batchTotal) * 100 : 0}%` }"></span>
+              </div>
             </div>
 
             <div class="mb-3 flex flex-col gap-2 sm:flex-row">
@@ -1100,7 +1171,10 @@ onMounted(() => {
 
       <template #footer>
         <div class="flex w-full flex-wrap items-center justify-between gap-2">
-          <span class="font-mono text-2xs text-faint">{{ form.id ? `CHANNEL ID ${form.id}` : 'UNSAVED CHANNEL' }}</span>
+          <div>
+            <span class="block font-mono text-2xs text-faint">{{ form.id ? `CHANNEL ID ${form.id}` : 'UNSAVED CHANNEL' }}</span>
+            <span class="mt-0.5 block text-[11px]" :class="canSave ? 'text-run' : 'text-soft'">{{ saveHint }}</span>
+          </div>
           <div class="flex gap-2">
             <button type="button" class="btn" :disabled="editorBusy" aria-label="取消渠道编辑" @click="closeEditor">取消</button>
             <button
@@ -1154,19 +1228,86 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.channel-row {
+.channel-list {
+  background:
+    linear-gradient(90deg, transparent 27px, rgba(53, 100, 212, .08) 27px, rgba(53, 100, 212, .08) 28px, transparent 28px),
+    #f8fafd;
+}
+
+.route-bus {
+  display: flex;
+  min-height: 70px;
+  gap: 4px;
+}
+
+.route-bus-segment {
+  --segment-color: #94a0b2;
+  flex: var(--segment-grow) 1 0;
+  min-width: 88px;
+  border: 1px solid #dde4ed;
+  border-radius: 10px;
   background: #fff;
+  padding: 10px 12px;
+  text-align: left;
+  transition: flex-grow 240ms cubic-bezier(.2,.8,.2,1), border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+}
+.route-bus-segment:hover { transform: translateY(-2px); border-color: var(--segment-color); }
+.route-bus-active { background: color-mix(in srgb, var(--segment-color) 8%, white); border-color: var(--segment-color); box-shadow: 0 8px 22px color-mix(in srgb, var(--segment-color) 14%, transparent); }
+.route-bus-run { --segment-color: #23877f; }
+.route-bus-test { --segment-color: #b7791f; }
+.route-bus-trip { --segment-color: #d05a52; }
+.route-bus-off { --segment-color: #94a0b2; }
+.route-bus-line { display: block; height: 3px; border-radius: 999px; background: var(--segment-color); transform-origin: left; transition: transform 220ms ease; }
+.route-bus-segment:hover .route-bus-line, .route-bus-active .route-bus-line { transform: scaleX(.82); }
+.route-bus-copy { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 9px; }
+.route-bus-copy b { font-family: 'Saira SemiCondensed', sans-serif; font-size: 22px; line-height: 1; color: #18243a; }
+.route-bus-copy span { font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: #627087; white-space: nowrap; }
+
+.channel-row {
+  background: rgba(255,255,255,.96);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease, opacity 180ms ease;
+  animation: feeder-in 360ms both cubic-bezier(.2,.8,.2,1);
+  animation-delay: min(calc(var(--row-index) * 32ms), 240ms);
+}
+.channel-row:hover { border-color: #d2dce9; transform: translateX(2px); box-shadow: 0 8px 24px rgba(22,36,58,.06); }
+.channel-row-off { opacity: .68; filter: saturate(.7); }
+.channel-row.channel-row-dragging { opacity: .48; transform: scale(.99); box-shadow: 0 18px 40px rgba(15,23,42,.18); cursor: grabbing; }
+.channel-row.channel-row-dropzone { background: #edf2ff; border-color: #88a5ea; }
+.channel-drop-line { position: absolute; inset-inline: 8px; top: -5px; height: 3px; border-radius: 999px; background: #3564d4; box-shadow: 0 0 0 4px rgba(53,100,212,.10); }
+.channel-grip { display: inline-flex; width: 24px; height: 30px; align-items: center; justify-content: center; border-radius: 6px; color: #94a0b2; cursor: grab; transition: color 150ms ease, background-color 150ms ease; }
+.channel-grip:hover:not(:disabled) { color: #3564d4; background: #edf2ff; }
+.channel-grip:active:not(:disabled) { cursor: grabbing; }
+.channel-grip:disabled { cursor: not-allowed; opacity: .35; }
+.channel-priority { display: flex; align-items: center; gap: 7px; min-width: 42px; font-family: 'Spline Sans Mono', monospace; font-size: 10px; color: #94a0b2; }
+.channel-priority-line { width: 12px; height: 1px; background: #cbd5e1; }
+.channel-state-dot { position: relative; display: inline-flex; width: 10px; height: 10px; flex: 0 0 auto; border-radius: 999px; background: #94a0b2; }
+.channel-state-dot i { position: absolute; inset: 3px; border-radius: inherit; background: white; opacity: .72; }
+.channel-state-run { background: #23877f; box-shadow: 0 0 0 4px rgba(35,135,127,.11); }
+.channel-state-test { background: #b7791f; box-shadow: 0 0 0 4px rgba(183,121,31,.11); animation: signal-pulse 1.8s ease-in-out infinite; }
+.channel-state-trip { background: #d05a52; box-shadow: 0 0 0 4px rgba(208,90,82,.12); animation: signal-pulse 1.35s ease-in-out infinite; }
+.channel-state-off { background: #94a0b2; }
+
+.editor-tabs { display: flex; align-items: center; width: 100%; border: 1px solid #dde4ed; border-radius: 12px; background: #f8fafd; padding: 6px; overflow-x: auto; }
+.editor-tabs button { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 5px 10px; border-radius: 8px; color: #627087; font-size: 12px; font-weight: 600; white-space: nowrap; transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease; }
+.editor-tabs button[aria-selected='true'] { background: white; color: #18243a; box-shadow: 0 3px 12px rgba(22,36,58,.08); }
+.editor-step { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; border: 1px solid #cbd5e1; border-radius: 999px; font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: #94a0b2; background: white; }
+.editor-step-done { color: white; border-color: #23877f; background: #23877f; }
+.editor-step-warn { border-color: #d05a52; color: #d05a52; }
+.editor-connector { width: 24px; height: 1px; flex: 0 0 auto; background: #dde4ed; }
+
+@keyframes feeder-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes signal-pulse { 50% { box-shadow: 0 0 0 7px rgba(183,121,31,0); } }
+
+@media (max-width: 700px) {
+  .route-bus { overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
+  .route-bus-segment { flex: 0 0 126px; scroll-snap-align: start; }
+  .channel-list { background-position-x: -5px; }
+  .channel-row:hover { transform: none; }
+  .editor-connector { width: 8px; }
 }
 
-.channel-row.channel-row-dragging {
-  opacity: 0.55;
-  transform: scale(0.99);
-  box-shadow: var(--shadow-lift, 0 12px 28px -12px rgba(15, 23, 42, 0.35));
-  background: var(--color-panel, #f3f5f7);
-  cursor: grabbing;
-}
-
-.channel-row.channel-row-dropzone {
-  background: var(--color-blue-wash, #eef4ff);
+@media (prefers-reduced-motion: reduce) {
+  .channel-row, .channel-state-test, .channel-state-trip { animation: none; }
+  .route-bus-segment, .route-bus-line { transition: none; }
 }
 </style>

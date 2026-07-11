@@ -129,7 +129,11 @@ onMounted(() => {
       </div>
       <main class="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:px-10 xl:py-9">
         <div class="mx-auto w-full max-w-[1500px]">
-          <RouterView v-slot="{ Component }"><component :is="Component" /></RouterView>
+          <RouterView v-slot="{ Component }">
+            <Transition name="page" mode="out-in">
+              <component :is="Component" :key="route.name" />
+            </Transition>
+          </RouterView>
         </div>
       </main>
     </section>
