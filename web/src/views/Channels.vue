@@ -1,12 +1,15 @@
 <script setup>
 import { computed, getCurrentInstance, onMounted, ref } from 'vue'
 import api, { copyText } from '../api'
+import { confirmAction } from '../composables/useConfirm'
 import { DEFAULT_HEALTH_CONFIG, hasHealth, healthTotal, healthText, healthTitle, healthClass as healthClassBy } from '../health'
 import Modal from '../components/Modal.vue'
 import PageState from '../components/PageState.vue'
+import PageHeader from '../components/PageHeader.vue'
 import HeaderOverrideEditor from '../components/HeaderOverrideEditor.vue'
 import BodyOverrideEditor from '../components/BodyOverrideEditor.vue'
 import ActionMenu from '../components/ActionMenu.vue'
+import ChannelConsoleHeader from '../components/ChannelConsoleHeader.vue'
 
 const { proxy } = getCurrentInstance()
 const notify = (message, type = 'info', duration) => proxy?.$toast?.add(message, type, duration)
@@ -618,7 +621,12 @@ function toggleSelected(channelId) {
 async function bulkDeleteChannels() {
   const ids = [...selectedIds.value]
   if (!ids.length || bulkDeleting.value) return
-  if (!confirm(`确认删除选中的 ${ids.length} 个渠道？\n\n渠道及其模型路由将一并删除，此操作不可撤销。`)) return
+  const confirmed = await confirmAction({
+    title: '批量删除渠道',
+    message: `确认删除选中的 ${ids.length} 个渠道？\n\n渠道及其模型路由将一并删除，此操作不可撤销。`,
+    confirmLabel: `删除 ${ids.length} 个渠道`,
+  })
+  if (!confirmed) return
   bulkDeleting.value = true
   try {
     await api.post('/channels/bulk-delete', { ids })
@@ -651,7 +659,12 @@ async function toggleChannel(channel) {
 
 async function removeChannel(channel) {
   if (deletingIds.value.has(channel.id)) return
-  if (!confirm(`确认删除渠道「${channel.name}」？\n\n此操作不可撤销。`)) return
+  const confirmed = await confirmAction({
+    title: '删除渠道',
+    message: `确认删除渠道「${channel.name}」？\n\n此操作不可撤销。`,
+    confirmLabel: '删除渠道',
+  })
+  if (!confirmed) return
   updateSet(deletingIds, channel.id, true)
   try {
     await api.delete(`/channels/${channel.id}`)
@@ -743,68 +756,30 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <header class="page-header">
-      <div class="min-w-0">
-        <div class="eyebrow">Upstream routing</div>
-        <h1 class="page-title">上游渠道</h1>
-        <p class="page-description">维护连接、模型与请求复写规则，并按优先级编排故障转移路径。</p>
-      </div>
-      <div class="page-actions">
+  <div class="page-workbench channels-page space-y-5">
+    <PageHeader eyebrow="上游路由" title="上游渠道" description="维护连接、模型与请求复写规则，并按优先级编排故障转移路径。">
+      <template #actions>
         <button type="button" class="btn" :disabled="loading" aria-label="刷新渠道列表" @click="load">
           {{ loading ? '刷新中' : '刷新' }}
         </button>
         <button type="button" class="btn btn-primary" :disabled="metadataLoading" aria-label="新建渠道" @click="openCreate">
           新建渠道
         </button>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <section class="sheet channel-console min-w-0 overflow-hidden" aria-label="渠道列表">
-      <div class="border-b border-line bg-white px-4 py-4 sm:px-5">
-        <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <span class="dim-title">路由运行台</span>
-              <span class="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">{{ channelSummary.total }} feeders online</span>
-            </div>
-            <div class="mt-1 text-[12px] text-soft">点击母线区段快速筛选；列表顺序即故障转移优先级。</div>
-          </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <button v-if="selectedIds.size" type="button" class="btn btn-danger btn-sm" :disabled="bulkDeleting" @click="bulkDeleteChannels">{{ bulkDeleting ? '删除中' : `删除已选 ${selectedIds.size} 项` }}</button>
-            <span v-if="reordering" class="chip chip-test" role="status">正在同步优先级</span>
-            <span v-else class="chip">显示 {{ sortedChannels.length }} / {{ channels.length }}</span>
-          </div>
-        </div>
-
-        <div class="route-bus mt-4" aria-label="路由状态母线">
-          <button
-            v-for="segment in routeSegments"
-            :key="segment.key"
-            type="button"
-            class="route-bus-segment"
-            :class="[`route-bus-${segment.tone}`, statusFilter === segment.key ? 'route-bus-active' : '']"
-            :style="{ '--segment-grow': Math.max(segment.count, 1) }"
-            :aria-pressed="statusFilter === segment.key"
-            @click="statusFilter = statusFilter === segment.key ? 'all' : segment.key"
-          >
-            <span class="route-bus-line" aria-hidden="true"></span>
-            <span class="route-bus-copy"><b>{{ segment.count }}</b><span>{{ segment.label }} · {{ segment.percent }}%</span></span>
-          </button>
-        </div>
-
-        <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(280px,1fr)_auto] lg:items-center">
-          <label class="relative block">
-            <span class="pointer-events-none absolute inset-y-0 left-3 flex items-center text-faint" aria-hidden="true">⌕</span>
-            <span class="sr-only">搜索渠道</span>
-            <input v-model="channelQuery" class="input input-mono pl-9" type="search" placeholder="搜索渠道、分组、地址或模型" />
-          </label>
-          <div class="flex flex-wrap gap-1.5" aria-label="渠道状态筛选">
-            <button type="button" class="chip" :class="statusFilter === 'all' ? 'chip-blue' : ''" :aria-pressed="statusFilter === 'all'" @click="statusFilter = 'all'">全部 {{ channelSummary.total }}</button>
-            <button v-for="segment in routeSegments" :key="`filter-${segment.key}`" type="button" class="chip" :class="statusFilter === segment.key ? `chip-${segment.tone === 'off' ? 'test' : segment.tone}` : ''" :aria-pressed="statusFilter === segment.key" @click="statusFilter = segment.key">{{ segment.label }} {{ segment.count }}</button>
-          </div>
-        </div>
-      </div>
+      <ChannelConsoleHeader
+        v-model:query="channelQuery"
+        v-model:status="statusFilter"
+        :summary="channelSummary"
+        :segments="routeSegments"
+        :selected-count="selectedIds.size"
+        :bulk-deleting="bulkDeleting"
+        :reordering="reordering"
+        :visible-count="sortedChannels.length"
+        @bulk-delete="bulkDeleteChannels"
+      />
 
       <PageState
         :loading="loading"

@@ -4,6 +4,7 @@ import api, { fmtTime } from '../api'
 import { DEFAULT_HEALTH_CONFIG, hasHealth, healthTotal, healthText, healthTitle, healthClass as healthClassBy } from '../health'
 import StatCell from '../components/StatCell.vue'
 import PageState from '../components/PageState.vue'
+import PageHeader from '../components/PageHeader.vue'
 
 const { proxy } = getCurrentInstance()
 const models = ref([])
@@ -102,39 +103,37 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-6">
-    <header class="page-header">
-      <div>
-        <div class="eyebrow">模型管理</div>
-        <h1 class="page-title">模型与渠道绑定</h1>
-        <p class="page-description">按最近使用时间排列，查看模型的可用渠道、真实调用健康、主要协议和上游映射。</p>
-      </div>
-      <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
-        <label class="min-w-0 sm:w-64">
-          <span class="field-label">搜索</span>
-          <input
-            v-model="q"
-            class="input input-mono"
-            type="search"
-            placeholder="模型、渠道或协议"
-            aria-label="搜索模型、渠道或协议"
-          />
-        </label>
-        <button class="btn shrink-0" :disabled="loading" aria-label="刷新模型列表" @click="load">
-          {{ loading ? '刷新中…' : '刷新' }}
-        </button>
-      </div>
-    </header>
+  <div class="page-workbench models-page space-y-6">
+    <PageHeader eyebrow="模型目录" title="模型与渠道绑定" description="按最近使用时间排列，查看模型的可用渠道、真实调用健康、主要协议和上游映射。">
+      <template #actions>
+        <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
+          <label class="min-w-0 sm:w-64">
+            <span class="field-label">搜索</span>
+            <input
+              v-model="q"
+              class="input input-mono"
+              type="search"
+              placeholder="模型、渠道或协议"
+              aria-label="搜索模型、渠道或协议"
+            />
+          </label>
+          <button class="btn shrink-0" :disabled="loading" aria-label="刷新模型列表" @click="load">
+            {{ loading ? '刷新中…' : '刷新' }}
+          </button>
+        </div>
+      </template>
+    </PageHeader>
 
     <PageState :loading="loading" :error="error" @retry="load">
-      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="grid items-start gap-5 xl:grid-cols-[260px_minmax(0,1fr)]">
+      <aside class="grid grid-cols-2 gap-3 xl:sticky xl:top-28 xl:grid-cols-1" aria-label="模型摘要">
         <StatCell label="模型数" :value="models.length" unit="个" />
         <StatCell label="可用模型" :value="enabledModels" unit="个" hint="至少有一个可用渠道" />
         <StatCell label="有调用日志" :value="calledModels" unit="个" hint="来自真实转发日志" />
         <StatCell label="累计调用" :value="totalCalls" unit="次" />
-      </div>
+      </aside>
 
-      <section class="mt-6 sheet overflow-hidden">
+      <section class="sheet overflow-hidden">
         <div class="sheet-head">
           <span class="dim-title">模型列表</span>
           <span class="text-xs text-soft">显示 {{ filtered.length }} / {{ models.length }} · {{ totalBindings }} 个渠道绑定</span>
@@ -216,29 +215,7 @@ onMounted(load)
                       <div v-else class="px-6 py-4 text-sm text-soft">暂无渠道绑定。</div>
                     </td>
                   </tr>
-</template>
-
-<style scoped>
-.model-disclosure {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid #dde4ed;
-  border-radius: 7px;
-  background: #fff;
-  color: #627087;
-  box-shadow: 0 1px 2px rgba(22, 36, 58, .04);
-  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
-}
-.model-disclosure svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform 180ms cubic-bezier(.2,.8,.2,1); }
-button:hover .model-disclosure { color: #3564d4; border-color: #b9c9ee; background: #edf2ff; }
-.model-disclosure-open { color: #3564d4; border-color: #b9c9ee; background: #edf2ff; }
-.model-disclosure-open svg { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) { .model-disclosure, .model-disclosure svg { transition: none; } }
-</style>
+                </template>
               </tbody>
             </table>
           </div>
@@ -318,6 +295,29 @@ button:hover .model-disclosure { color: #3564d4; border-color: #b9c9ee; backgrou
           </div>
         </PageState>
       </section>
+      </div>
     </PageState>
   </div>
 </template>
+
+<style scoped>
+.model-disclosure {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #dde4ed;
+  border-radius: 7px;
+  background: #fff;
+  color: #627087;
+  box-shadow: 0 1px 2px rgba(22, 36, 58, .04);
+  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
+}
+.model-disclosure svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform 180ms cubic-bezier(.2,.8,.2,1); }
+button:hover .model-disclosure { color: #3564d4; border-color: #b9c9ee; background: #edf2ff; }
+.model-disclosure-open { color: #3564d4; border-color: #b9c9ee; background: #edf2ff; }
+.model-disclosure-open svg { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .model-disclosure, .model-disclosure svg { transition: none; } }
+</style>

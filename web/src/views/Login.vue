@@ -9,6 +9,7 @@ const isDev = import.meta.env.DEV
 
 const username = ref(isDev ? 'admin' : '')
 const password = ref('')
+const showPassword = ref(false)
 const loading = ref(false)
 const serviceStatus = ref('checking')
 
@@ -55,7 +56,7 @@ onMounted(checkService)
 </script>
 
 <template>
-  <main class="relative min-h-screen overflow-hidden bg-sidebar">
+  <main class="login-page relative min-h-[100dvh] overflow-hidden bg-sidebar">
     <div class="absolute inset-0 opacity-20" style="background-image: linear-gradient(rgba(142,177,255,.16) 1px, transparent 1px), linear-gradient(90deg, rgba(142,177,255,.16) 1px, transparent 1px); background-size: 44px 44px;"></div>
     <div class="relative mx-auto grid min-h-screen max-w-[1440px] lg:grid-cols-[minmax(0,1.15fr)_minmax(420px,.85fr)]">
       <section class="hidden min-h-screen flex-col justify-between px-12 py-10 text-white lg:flex xl:px-20 xl:py-14">
@@ -71,7 +72,17 @@ onMounted(checkService)
           <h1 class="font-cond text-5xl font-semibold leading-[1.04] tracking-[-0.035em] xl:text-6xl">让每一次 API 调用<br /><span class="text-blue-grid">都有清晰路径。</span></h1>
           <p class="mt-6 max-w-xl text-[15px] leading-7 text-white/55">统一维护上游渠道、模型映射、访问令牌和故障转移策略；从一个请求 ID 追踪调用链路。</p>
 
-          <div class="route-timeline mt-10 space-y-6 border-white/15 text-sm">
+          <div class="login-route-map" aria-label="APIRelay 路由示意">
+            <div class="login-route-node login-route-client"><span>Client</span><b>01</b></div>
+            <div class="login-route-node login-route-relay"><span>Relay</span><b>AR</b><i aria-hidden="true"></i></div>
+            <div class="login-route-node login-route-upstream"><span>Upstream</span><b>03</b></div>
+            <svg viewBox="0 0 680 170" preserveAspectRatio="none" aria-hidden="true">
+              <path class="login-route-path" d="M82 85 C190 85 210 85 300 85 S470 85 596 85" />
+              <path class="login-route-pulse" d="M82 85 C190 85 210 85 300 85 S470 85 596 85" />
+            </svg>
+          </div>
+
+          <div class="route-timeline mt-8 space-y-6 border-white/15 text-sm">
             <div><div class="text-white/90">协议自适应路由</div><div class="mt-1 text-xs text-white/40">OpenAI · Anthropic · Responses</div></div>
             <div><div class="text-white/90">渠道健康与自动故障转移</div><div class="mt-1 text-xs text-white/40">优先级、权重、熔断与恢复检查</div></div>
             <div><div class="text-white/90">请求链路诊断</div><div class="mt-1 text-xs text-white/40">按请求 ID 定位上游响应与故障切换</div></div>
@@ -101,8 +112,13 @@ onMounted(checkService)
               <input id="lg-user" v-model="username" class="input min-h-11" placeholder="请输入用户名" autocomplete="username" data-autofocus />
             </div>
             <div>
-              <label class="field-label" for="lg-pass">密码</label>
-              <input id="lg-pass" v-model="password" type="password" class="input min-h-11" placeholder="请输入密码" autocomplete="current-password" />
+              <div class="flex items-center justify-between gap-3">
+                <label class="field-label" for="lg-pass">密码</label>
+                <button class="mb-1.5 text-xs text-blue hover:text-blue-deep" type="button" :aria-pressed="showPassword" @click="showPassword = !showPassword">
+                  {{ showPassword ? '隐藏密码' : '显示密码' }}
+                </button>
+              </div>
+              <input id="lg-pass" v-model="password" :type="showPassword ? 'text' : 'password'" class="input min-h-11" placeholder="请输入密码" autocomplete="current-password" />
             </div>
             <button type="submit" class="btn btn-primary min-h-11 w-full" :disabled="loading">
               {{ loading ? '正在验证…' : '登录控制台' }}

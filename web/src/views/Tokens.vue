@@ -1,7 +1,9 @@
 <script setup>
 import { ref, onMounted, getCurrentInstance } from 'vue'
 import api, { copyText, usd } from '../api'
+import { confirmAction } from '../composables/useConfirm'
 import PageState from '../components/PageState.vue'
+import PageHeader from '../components/PageHeader.vue'
 import Modal from '../components/Modal.vue'
 
 const { proxy } = getCurrentInstance()
@@ -15,6 +17,7 @@ const saving = ref(false)
 const formError = ref('')
 const secretKey = ref('')
 const secretOpen = ref(false)
+const secretAcknowledged = ref(false)
 const copied = ref(false)
 const form = ref(emptyForm())
 
@@ -89,6 +92,7 @@ async function save() {
 
     secretKey.value = result.key
     copied.value = false
+    secretAcknowledged.value = false
     createOpen.value = false
     secretOpen.value = true
     proxy.$toast.add('令牌已创建，请立即保存一次性 Key', 'success')
@@ -117,7 +121,12 @@ function keepSecretOpen() {
 }
 
 async function removeToken(token) {
-  if (!confirm(`确认删除令牌「${token.name}」？删除后客户端将立即失去访问权限。`)) return
+  const confirmed = await confirmAction({
+    title: '删除 API 令牌',
+    message: `确认删除令牌「${token.name}」？删除后客户端将立即失去访问权限。`,
+    confirmLabel: '删除令牌',
+  })
+  if (!confirmed) return
   deleteError.value = ''
   deletingId.value = token.id
   try {
@@ -136,17 +145,12 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-6">
-    <header class="page-header">
-      <div>
-        <div class="eyebrow">访问控制</div>
-        <h1 class="page-title">API 令牌</h1>
-        <p class="page-description">管理客户端访问凭证、额度、分组和可用模型范围。</p>
-      </div>
-      <div class="page-actions">
+  <div class="page-workbench tokens-page space-y-6">
+    <PageHeader eyebrow="访问控制" title="API 令牌" description="管理客户端访问凭证、额度、分组和可用模型范围。">
+      <template #actions>
         <button class="btn btn-primary" aria-label="创建 API 令牌" @click="openCreate">创建令牌</button>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <div v-if="deleteError" class="rounded-lg border border-trip/30 bg-trip-wash px-3 py-2 text-sm text-trip" role="alert">
       {{ deleteError }}
@@ -163,6 +167,17 @@ onMounted(load)
       <template #empty>
         <button class="btn btn-primary" @click="openCreate">创建第一个令牌</button>
       </template>
+
+      <div class="grid items-start gap-5 xl:grid-cols-[250px_minmax(0,1fr)]">
+        <aside class="credential-brief xl:sticky xl:top-28">
+          <div class="eyebrow">Credential vault</div>
+          <div class="mt-4 font-cond text-4xl font-semibold tracking-[-.04em] text-ink">{{ tokens.length }}</div>
+          <p class="mt-1 text-xs leading-5 text-soft">个客户端凭证正在由 APIRelay 管理。</p>
+          <div class="mt-6 space-y-3 text-xs text-soft">
+            <p><strong class="block text-ink">一次性明文</strong>创建后仅展示一次完整 Key。</p>
+            <p><strong class="block text-ink">额度边界</strong>按凭证限制模型范围和总预算。</p>
+          </div>
+        </aside>
 
       <section class="sheet overflow-hidden">
         <div class="sheet-head">
@@ -272,6 +287,7 @@ onMounted(load)
           </article>
         </div>
       </section>
+      </div>
     </PageState>
 
     <Modal :open="createOpen" title="创建 API 令牌" width="max-w-lg" @close="closeCreate">
@@ -327,10 +343,14 @@ onMounted(load)
           {{ copied ? '已复制完整 Key' : '复制完整 Key' }}
         </button>
         <p class="text-xs leading-5 text-soft">若浏览器不允许自动复制，请手动选择上方内容并复制。</p>
+        <label class="flex items-start gap-3 rounded-xl border border-line bg-panel/60 px-4 py-3 text-sm text-ink">
+          <input v-model="secretAcknowledged" class="mt-1" type="checkbox" />
+          <span>我已将完整 Key 保存到安全位置，并理解关闭后无法恢复。</span>
+        </label>
       </div>
       <template #footer>
         <span class="mr-auto text-xs text-soft">点击确认后，页面将立即清除明文。</span>
-        <button class="btn btn-primary" aria-label="确认已保存一次性 API Key" @click="confirmSecretSaved">我已保存</button>
+        <button class="btn btn-primary" :disabled="!secretAcknowledged" aria-label="确认已保存一次性 API Key" @click="confirmSecretSaved">我已保存并清除</button>
       </template>
     </Modal>
   </div>

@@ -9,11 +9,12 @@ defineProps({
 </script>
 
 <template>
-  <div class="border border-ink bg-white px-4 py-3" :title="hint">
-    <div class="eyebrow">{{ label }}</div>
-    <div class="mt-1 flex items-baseline gap-1">
-      <span class="font-mono text-2xl leading-none text-ink">{{ value }}</span>
-      <span v-if="unit" class="font-cond text-2xs font-medium tracking-wider text-faint">{{ unit }}</span>
+  <div class="stat-cell" :title="hint">
+    <div class="stat-cell-label">{{ label }}</div>
+    <div class="mt-3 flex items-baseline gap-1.5">
+      <span class="font-cond text-[30px] font-semibold leading-none tracking-[-.035em] text-ink">{{ value }}</span>
+      <span v-if="unit" class="font-mono text-[9px] uppercase tracking-[.12em] text-faint">{{ unit }}</span>
     </div>
+    <p v-if="hint" class="mt-2 text-[10px] leading-4 text-soft">{{ hint }}</p>
   </div>
 </template>

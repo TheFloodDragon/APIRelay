@@ -1,8 +1,10 @@
 <script setup>
 import { computed, getCurrentInstance, onMounted, ref } from 'vue'
 import api, { copyText, takeLatest, fmtTime as fmt, cost } from '../api'
-import Drawer from '../components/Drawer.vue'
 import PageState from '../components/PageState.vue'
+import PageHeader from '../components/PageHeader.vue'
+import LogFilterPanel from '../components/LogFilterPanel.vue'
+import LogDetailDrawer from '../components/LogDetailDrawer.vue'
 
 const { proxy } = getCurrentInstance()
 const logs = ref([])
@@ -274,116 +276,33 @@ async function copyDiagnostic(log) {
   proxy.$toast.add(copied ? '诊断包已复制' : '复制失败，请检查浏览器剪贴板权限', copied ? 'success' : 'error')
 }
 
+async function copyPayload(value) {
+  const copied = await copyText(prettyPayload(value))
+  proxy.$toast.add(copied ? '内容已复制' : '复制失败', copied ? 'success' : 'error')
+}
+
 onMounted(load)
 </script>
 
 <template>
-  <div class="min-w-0 space-y-5">
-    <header class="page-header">
-      <div>
-        <div class="eyebrow">调用诊断中心</div>
-        <h1 class="page-title">请求日志</h1>
-        <p class="page-description">沿客户端、APIRelay 与上游渠道还原每次调用，集中查看路由、耗时、计费与错误。</p>
-      </div>
-      <div class="page-actions">
-        <button class="btn" type="button" :disabled="loading" @click="load">刷新</button>
-      </div>
-    </header>
+  <div class="page-workbench logs-page min-w-0 space-y-5">
+    <PageHeader eyebrow="调用诊断中心" title="请求日志" description="沿客户端、APIRelay 与上游渠道还原每次调用，集中查看路由、耗时、计费与错误。">
+      <template #actions>
+        <button class="btn" type="button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button>
+      </template>
+    </PageHeader>
 
-    <section class="sheet min-w-0">
-      <div class="sheet-head">
-        <div>
-          <div class="dim-title">筛选日志</div>
-          <div class="mt-1 text-xs text-soft">{{ activeFilterCount }} 个筛选条件已启用</div>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <button class="btn btn-sm" type="button" @click="applyQuick('2')">异常</button>
-          <button class="btn btn-sm" type="button" @click="applyQuick('2', '429')">429</button>
-          <button class="btn btn-sm" type="button" @click="applyQuick('2', '504')">504</button>
-          <button class="btn btn-sm" type="button" @click="clearFilters">清除</button>
-        </div>
-      </div>
-
-      <form class="space-y-3 p-4" @submit.prevent="applyFilters">
-        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <label>
-            <span class="field-label">类型</span>
-            <select v-model="filters.type" class="input" @change="applyFilters">
-              <option v-for="item in logTypes" :key="item.value" :value="item.value">{{ item.label }}</option>
-            </select>
-          </label>
-          <label>
-            <span class="field-label">时间范围</span>
-            <select v-model="filters.range" class="input" @change="applyFilters">
-              <option v-for="item in timeRanges" :key="item.value" :value="item.value">{{ item.label }}</option>
-            </select>
-          </label>
-          <label>
-            <span class="field-label">模型</span>
-            <input v-model="filters.model" class="input input-mono" placeholder="gpt-4o" />
-          </label>
-          <label>
-            <span class="field-label">令牌</span>
-            <input v-model="filters.token_name" class="input input-mono" placeholder="token name" />
-          </label>
-          <label>
-            <span class="field-label">状态码</span>
-            <input v-model="filters.status" class="input input-mono" inputmode="numeric" placeholder="503" />
-          </label>
-        </div>
-
-        <div>
-          <button
-            class="btn btn-sm"
-            type="button"
-            :aria-expanded="showMoreFilters"
-            aria-controls="log-more-filters"
-            @click="showMoreFilters = !showMoreFilters"
-          >
-            更多筛选<span v-if="moreFilterCount">（{{ moreFilterCount }}）</span>
-          </button>
-        </div>
-
-        <div v-show="showMoreFilters" id="log-more-filters" class="grid gap-3 rounded-xl border border-line bg-ghost/40 p-3 sm:grid-cols-2 xl:grid-cols-4">
-          <label>
-            <span class="field-label">请求 ID</span>
-            <input v-model="filters.request_id" class="input input-mono" placeholder="req..." />
-          </label>
-          <label>
-            <span class="field-label">上游请求 ID</span>
-            <input v-model="filters.upstream_request_id" class="input input-mono" placeholder="upstream..." />
-          </label>
-          <label>
-            <span class="field-label">渠道 ID</span>
-            <input v-model="filters.channel_id" class="input input-mono" inputmode="numeric" placeholder="42" />
-          </label>
-          <label>
-            <span class="field-label">响应模式</span>
-            <select v-model="filters.is_stream" class="input">
-              <option value="">全部</option><option value="true">流式</option><option value="false">非流式</option>
-            </select>
-          </label>
-          <label>
-            <span class="field-label">完整记录</span>
-            <select v-model="filters.has_full_record" class="input">
-              <option value="">全部</option><option value="true">有完整内容</option><option value="false">仅摘要</option>
-            </select>
-          </label>
-          <label>
-            <span class="field-label">最低状态码</span>
-            <input v-model="filters.status_min" class="input input-mono" inputmode="numeric" placeholder="400" />
-          </label>
-          <label>
-            <span class="field-label">最高状态码</span>
-            <input v-model="filters.status_max" class="input input-mono" inputmode="numeric" placeholder="599" />
-          </label>
-        </div>
-
-        <div class="flex justify-end">
-          <button class="btn btn-primary min-w-28" type="submit">查询</button>
-        </div>
-      </form>
-    </section>
+    <LogFilterPanel
+      v-model:expanded="showMoreFilters"
+      :filters="filters"
+      :log-types="logTypes"
+      :time-ranges="timeRanges"
+      :active-count="activeFilterCount"
+      :more-count="moreFilterCount"
+      @apply="applyFilters"
+      @clear="clearFilters"
+      @quick="applyQuick"
+    />
 
     <PageState :loading="loading" :error="error" @retry="load">
       <section class="sheet min-w-0 overflow-hidden">
@@ -494,103 +413,15 @@ onMounted(load)
       </nav>
     </PageState>
 
-    <Drawer :open="!!selectedLog" title="调用诊断" @close="selectedLog = null; fullPayload = null">
-      <div v-if="selectedLog" class="space-y-5">
-        <section>
-          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <h3 class="text-base font-semibold">请求</h3>
-            <div class="flex flex-wrap gap-2">
-              <span class="chip" :class="typeChip(selectedLog.type)">{{ typeName(selectedLog.type) }}</span>
-              <span class="chip" :class="statusChip(selectedLog.status)">HTTP {{ selectedLog.status || '—' }}</span>
-            </div>
-          </div>
-          <dl class="grid gap-3 rounded-lg border border-line bg-ghost/40 p-3 sm:grid-cols-2">
-            <div><dt class="field-label">时间</dt><dd class="font-mono text-xs">{{ fmt(selectedLog.created_at) }}</dd></div>
-            <div><dt class="field-label">日志 ID</dt><dd class="break-all font-mono text-xs">{{ selectedLog.id || '—' }}</dd></div>
-            <div><dt class="field-label">请求 ID</dt><dd class="break-all font-mono text-xs">{{ selectedLog.request_id || '—' }}</dd></div>
-            <div><dt class="field-label">上游请求 ID</dt><dd class="break-all font-mono text-xs">{{ selectedLog.upstream_request_id || '—' }}</dd></div>
-            <div><dt class="field-label">分组</dt><dd class="break-all font-mono text-xs">{{ selectedLog.group || '—' }}</dd></div>
-            <div><dt class="field-label">流式</dt><dd>{{ selectedLog.is_stream ? '是' : '否' }}</dd></div>
-            <div><dt class="field-label">渠道</dt><dd class="break-all">{{ selectedLog.channel_name || (selectedLog.channel_id ? `#${selectedLog.channel_id}` : '—') }}</dd></div>
-            <div><dt class="field-label">协议</dt><dd class="break-all font-mono text-xs">{{ selectedLog.endpoint_type || '—' }} → {{ selectedLog.api_type || '—' }}</dd></div>
-            <div><dt class="field-label">客户端模型</dt><dd class="break-all font-mono text-xs font-medium">{{ selectedLog.src_model || '—' }}</dd></div>
-            <div v-if="isModelMapped(selectedLog)"><dt class="field-label">实际请求模型</dt><dd class="break-all font-mono text-xs text-soft">{{ selectedLog.mapped_model }}</dd></div>
-            <div><dt class="field-label">令牌</dt><dd class="break-all font-mono text-xs">{{ selectedLog.token_name || '—' }}</dd></div>
-            <div><dt class="field-label">Tokens / 费用</dt><dd class="font-mono text-xs">{{ selectedLog.prompt_tokens || 0 }} / {{ selectedLog.completion_tokens || 0 }} · {{ cost(selectedLog.quota) }}<span v-if="selectedLog.usage_estimated" class="ml-1 text-test">估算</span></dd></div>
-            <div><dt class="field-label">缓存写入 / 读取</dt><dd class="font-mono text-xs">{{ selectedLog.cache_creation_input_tokens || 0 }} / {{ selectedLog.cache_read_input_tokens || 0 }}</dd></div>
-            <div><dt class="field-label">推理 Tokens</dt><dd class="font-mono text-xs">{{ selectedLog.reasoning_tokens || 0 }}</dd></div>
-            <div><dt class="field-label">耗时</dt><dd class="font-mono text-xs">{{ selectedLog.use_time_ms || 0 }} ms · 首字 {{ selectedLog.first_byte_ms || 0 }} ms</dd></div>
-          </dl>
-        </section>
-
-        <section>
-          <h3 class="mb-3 text-base font-semibold">错误</h3>
-          <pre v-if="selectedLog.error" class="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-trip/30 bg-trip-wash p-3 text-xs text-trip">{{ selectedLog.error }}</pre>
-          <div v-else class="rounded-lg border border-dashed border-line p-4 text-sm text-soft">该日志没有错误信息。</div>
-        </section>
-
-        <section>
-          <div class="mb-3 flex items-center justify-between gap-2">
-            <h3 class="text-base font-semibold">故障转移步骤</h3>
-            <span class="chip">{{ selectedLog._failover_chain.length }} 次</span>
-          </div>
-          <ol v-if="selectedLog._failover_chain.length" class="space-y-3">
-            <li v-for="(attempt, index) in selectedLog._failover_chain" :key="`${selectedLog.id}-${index}`" class="rounded-lg border border-line p-3">
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <span class="font-medium">步骤 {{ index + 1 }} · {{ attempt.channel_name || (attempt.channel_id ? `#${attempt.channel_id}` : '未知渠道') }}</span>
-                <span class="chip" :class="decisionChip(attempt.decision)">{{ decisionName(attempt.decision) }}</span>
-              </div>
-              <div class="mt-2 flex flex-wrap gap-2">
-                <span class="chip" :class="statusChip(attempt.status)">HTTP {{ attempt.status || '—' }}</span>
-                <span class="chip chip-blue">{{ attempt.api_type || '—' }}</span>
-                <span class="chip" :class="attempt.retryable ? 'chip-test' : ''">{{ attempt.retryable ? '可重试' : '不可重试' }}</span>
-              </div>
-              <dl class="mt-3 grid grid-cols-[88px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
-                <dt class="text-soft">渠道 ID</dt><dd class="break-all font-mono">{{ attempt.channel_id || '—' }}</dd>
-                <dt class="text-soft">时间</dt><dd class="font-mono">{{ fmt(attempt.at_ms) }}</dd>
-                <dt class="text-soft">迭代 / 切换</dt><dd class="font-mono">{{ attempt.iter ?? '—' }} / {{ attempt.switches ?? '—' }}</dd>
-                <dt class="text-soft">客户端模型</dt><dd class="break-all font-mono font-medium">{{ attempt.origin_model || '—' }}</dd>
-                <template v-if="attempt.upstream_model && attempt.upstream_model !== attempt.origin_model">
-                  <dt class="text-soft">实际请求模型</dt><dd class="break-all font-mono text-soft">{{ attempt.upstream_model }}</dd>
-                </template>
-                <dt class="text-soft">错误</dt><dd class="break-all" :class="attempt.error ? 'text-trip' : 'text-soft'">{{ attempt.error_category ? `${attempt.error_category} · ` : '' }}{{ attempt.error || '—' }}</dd>
-              </dl>
-            </li>
-          </ol>
-          <div v-else class="rounded-lg border border-dashed border-line p-4 text-sm text-soft">该日志没有故障转移步骤。</div>
-        </section>
-
-        <section>
-          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 class="text-base font-semibold">完整调用内容</h3>
-              <p class="mt-1 text-xs text-soft">客户端 → APIRelay → 上游 → 客户端</p>
-            </div>
-            <span class="chip" :class="selectedLog.has_full_record ? 'chip-blue' : ''">{{ selectedLog.has_full_record ? `gzip ${formatBytes(selectedLog.payload_original_size)} → ${formatBytes(selectedLog.payload_compressed_size)}` : '仅摘要' }}</span>
-          </div>
-
-          <div v-if="detailLoading" class="rounded-xl border border-line bg-ghost/40 p-5 text-center text-sm text-soft">正在解压完整调用内容…</div>
-          <div v-else-if="detailError" class="rounded-xl border border-trip/25 bg-trip-wash p-4 text-sm text-trip">{{ detailError }}</div>
-          <div v-else-if="fullPayload" class="route-timeline space-y-5">
-            <article v-for="key in ['client_request', 'upstream_request', 'upstream_response', 'client_response']" :key="key">
-              <div class="mb-2 flex items-center justify-between gap-2">
-                <h4 class="font-cond text-sm font-semibold text-ink">{{ payloadTitle(key) }}</h4>
-                <button v-if="fullPayload[key]" class="btn btn-sm" type="button" @click="copyText(prettyPayload(fullPayload[key])).then(ok => proxy.$toast.add(ok ? '内容已复制' : '复制失败', ok ? 'success' : 'error'))">复制</button>
-              </div>
-              <pre v-if="fullPayload[key]" class="log-code">{{ prettyPayload(fullPayload[key]) }}</pre>
-              <div v-else class="rounded-xl border border-dashed border-line px-4 py-3 text-xs text-soft">此阶段未配置记录或没有可记录内容。</div>
-            </article>
-          </div>
-          <div v-else class="rounded-xl border border-dashed border-line p-4 text-sm text-soft">
-            该日志仅保留路由、计费、耗时和错误摘要。
-          </div>
-        </section>
-      </div>
-      <template #footer>
-        <div class="flex justify-end">
-          <button v-if="selectedLog" class="btn btn-primary" type="button" @click="copyDiagnostic(selectedLog)">复制诊断包</button>
-        </div>
-      </template>
-    </Drawer>
+    <LogDetailDrawer
+      :log="selectedLog"
+      :payload="fullPayload"
+      :loading="detailLoading"
+      :error="detailError"
+      :helpers="{ typeChip, typeName, statusChip, isModelMapped, decisionChip, decisionName, formatBytes, payloadTitle, prettyPayload, fmt, cost }"
+      @close="selectedLog = null; fullPayload = null"
+      @copy-diagnostic="copyDiagnostic"
+      @copy-payload="copyPayload"
+    />
   </div>
 </template>

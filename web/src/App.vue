@@ -3,6 +3,9 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { sheets } from './router'
 import api, { logout } from './api'
+import ServiceStatus from './components/ServiceStatus.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
+import AppSidebar from './components/AppSidebar.vue'
 
 const route = useRoute()
 const toastRef = inject('toastRef')
@@ -51,15 +54,17 @@ onMounted(() => {
 
 <template>
   <Toast :ref="bindToast" />
+  <ConfirmDialog />
+  <a v-if="!isLogin" class="skip-link" href="#main-content">跳到主要内容</a>
   <RouterView v-if="isLogin" />
 
-  <div v-else class="app-shell min-h-screen bg-canvas lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
+  <div v-else class="app-shell min-h-screen bg-canvas lg:grid lg:grid-cols-[104px_minmax(0,1fr)]">
     <header class="mobile-bar sticky top-0 z-40 flex h-16 items-center border-b border-line bg-white/95 px-4 backdrop-blur lg:hidden">
       <button class="icon-btn mr-3" type="button" aria-label="打开导航" :aria-expanded="navigationOpen" @click="navigationOpen = true">
         <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
       </button>
       <RouterLink to="/dashboard" class="brand-wordmark">API<span>Relay</span></RouterLink>
-      <span class="ml-auto inline-flex items-center gap-2 text-xs text-soft"><i class="status-dot" :class="serviceOnline ? 'status-dot-live' : 'status-dot-off'"></i>{{ currentSheet?.label }}</span>
+      <span class="ml-auto inline-flex items-center gap-3 text-xs text-soft"><ServiceStatus :online="serviceOnline" compact /><span class="hidden sm:inline">{{ currentSheet?.label }}</span></span>
     </header>
 
     <div v-if="navigationOpen" class="fixed inset-0 z-50 bg-sidebar/55 backdrop-blur-sm lg:hidden" @mousedown.self="navigationOpen = false">
@@ -83,52 +88,24 @@ onMounted(() => {
       </aside>
     </div>
 
-    <aside class="sidebar fixed inset-y-0 left-0 z-30 hidden w-[248px] flex-col bg-sidebar text-white lg:flex">
-      <div class="px-6 pb-5 pt-7">
-        <RouterLink to="/dashboard" class="brand-wordmark brand-wordmark-inverse">API<span>Relay</span></RouterLink>
-        <div class="mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">Routing control plane</div>
-      </div>
-
-      <div class="mx-4 mb-5 overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
-        <div class="text-[10px] uppercase tracking-wider text-white/35">Service</div>
-        <div class="mt-1 flex items-center gap-2 text-xs text-white/80"><i class="status-dot" :class="serviceOnline ? 'status-dot-live' : 'status-dot-off'"></i>{{ serviceOnline ? 'Online' : 'Unknown' }}</div>
-      </div>
-
-      <nav class="route-nav flex-1 px-3" aria-label="主要导航">
-        <div class="route-spine" aria-hidden="true"></div>
-        <RouterLink v-for="item in sheets" :key="item.name" :to="item.path" class="route-link" :class="{ 'route-link-active': route.name === item.name }">
-          <span class="route-node"><span></span></span>
-          <svg v-if="item.name === 'dashboard'" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z" /></svg>
-          <svg v-else-if="item.name === 'channels'" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h8m4 0h2M5 17h2m4 0h8M13 4v6M8 14v6" /></svg>
-          <svg v-else-if="item.name === 'models'" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Zm-8 9 8 4.5 8-4.5M4 16.5l8 4.5 8-4.5" /></svg>
-          <svg v-else-if="item.name === 'tokens'" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 8.5a4 4 0 1 1-3-3.87M14 10l7-7m-3 0h3v3M10.5 12.5 4 19v2h3l6.5-6.5" /></svg>
-          <svg v-else-if="item.name === 'logs'" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8m-8 4h8m-8 4h5" /></svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM19 13v-2l2-1-2-3-2 1a8 8 0 0 0-2-1l-.5-2h-5L9 7a8 8 0 0 0-2 1L5 7l-2 3 2 1v2l-2 1 2 3 2-1a8 8 0 0 0 2 1l.5 2h5l.5-2a8 8 0 0 0 2-1l2 1 2-3-2-1Z" /></svg>
-          <span>{{ item.label }}</span>
-        </RouterLink>
-      </nav>
-
-      <div class="border-t border-white/10 p-4">
-        <div class="mb-3 flex items-center gap-3 px-1">
-          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 font-cond text-sm font-semibold text-white">{{ username.slice(0, 1).toUpperCase() }}</div>
-          <div class="min-w-0"><div class="truncate text-sm text-white/85">{{ username }}</div><div class="text-[10px] uppercase tracking-wider text-white/35">Administrator</div></div>
-        </div>
-        <button class="nav-account-button" :disabled="loggingOut" @click="doLogout">{{ loggingOut ? '退出中…' : '退出登录' }}</button>
-      </div>
-    </aside>
+    <AppSidebar
+      :route-name="route.name"
+      :username="username"
+      :online="serviceOnline"
+      :logging-out="loggingOut"
+      @logout="doLogout"
+    />
 
     <section class="min-w-0 lg:col-start-2">
-      <div class="desktop-status-rail hidden h-11 items-center border-b border-line bg-white/80 px-8 text-[11px] backdrop-blur lg:flex">
-        <span class="font-mono uppercase tracking-[0.16em] text-faint">Control plane</span>
-        <span class="mx-4 h-3 w-px bg-line"></span>
-        <span class="text-soft">{{ currentSheet?.label || 'APIRelay' }}</span>
-        <span class="ml-auto flex items-center gap-4">
-          <span class="flex items-center gap-2 text-soft"><i class="status-dot" :class="serviceOnline ? 'status-dot-live' : 'status-dot-off'"></i>{{ serviceOnline ? '服务在线' : '状态未知' }}</span>
-          <button class="text-blue transition hover:text-blue-deep" @click="loadRuntimeState">同步状态</button>
-        </span>
+      <div class="context-dock hidden lg:flex">
+        <div class="context-dock-path"><span>APIRelay</span><i></i><strong>{{ currentSheet?.label || '控制台' }}</strong></div>
+        <div class="context-dock-actions">
+          <ServiceStatus :online="serviceOnline" />
+          <button class="context-sync" type="button" @click="loadRuntimeState">同步状态</button>
+        </div>
       </div>
-      <main class="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:px-10 xl:py-9">
-        <div class="mx-auto w-full max-w-[1500px]">
+      <main id="main-content" class="min-w-0 px-4 py-6 sm:px-7 lg:px-10 lg:pb-12 lg:pt-5 xl:px-14" tabindex="-1">
+        <div class="mx-auto w-full max-w-[1680px]">
           <RouterView v-slot="{ Component }">
             <Transition name="page" mode="out-in">
               <component :is="Component" :key="route.name" />

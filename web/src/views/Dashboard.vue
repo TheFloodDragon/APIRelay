@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import api, { usd } from '../api'
 import PageState from '../components/PageState.vue'
+import PageHeader from '../components/PageHeader.vue'
 import RouteHealthBar from '../components/RouteHealthBar.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 
@@ -182,17 +183,12 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-5">
-    <header class="page-header">
-      <div>
-        <div class="eyebrow">Live routing overview</div>
-        <h1 class="page-title">路由总览</h1>
-        <p class="page-description">监看模型供给、渠道健康与最近 7 天的调用态势。</p>
-      </div>
-      <div class="page-actions">
+  <div class="page-workbench dashboard-page space-y-5">
+    <PageHeader eyebrow="实时路由概览" title="路由总览" description="监看模型供给、渠道健康与最近 7 天的调用态势。">
+      <template #actions>
         <button class="btn" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <PageState :loading="loading" :error="error" @retry="load">
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="核心指标">
@@ -218,7 +214,8 @@ onMounted(load)
         </article>
       </div>
 
-      <section class="mt-5 sheet" aria-labelledby="route-health-title">
+      <div class="mt-6 grid items-start gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,.65fr)]">
+      <section class="sheet" aria-labelledby="route-health-title">
         <div class="sheet-head">
           <div>
             <h2 id="route-health-title" class="dim-title">路由健康</h2>
@@ -229,7 +226,7 @@ onMounted(load)
         <RouteHealthBar :rows="routeRows" />
       </section>
 
-      <section class="mt-5 sheet" aria-labelledby="recent-anomalies-title">
+      <section class="sheet" aria-labelledby="recent-anomalies-title">
         <div class="sheet-head">
           <div>
             <h2 id="recent-anomalies-title" class="dim-title">近期异常</h2>
@@ -261,6 +258,7 @@ onMounted(load)
           <p class="mt-1 text-xs text-soft">{{ anomaliesError || '系统暂未记录失败请求。' }}</p>
         </div>
       </section>
+      </div>
     </PageState>
   </div>
 </template>

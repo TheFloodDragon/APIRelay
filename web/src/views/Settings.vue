@@ -2,6 +2,8 @@
 import { computed, getCurrentInstance, nextTick, onMounted, ref, watch } from 'vue'
 import api from '../api'
 import PageState from '../components/PageState.vue'
+import PageHeader from '../components/PageHeader.vue'
+import SettingsNav from '../components/SettingsNav.vue'
 
 const { proxy } = getCurrentInstance()
 
@@ -117,19 +119,6 @@ function sectionStatus(section) {
 
 function selectTab(id) {
   activeTab.value = id
-}
-
-function onTabKeydown(event, index) {
-  let target = index
-  if (event.key === 'ArrowRight') target = (index + 1) % tabs.length
-  else if (event.key === 'ArrowLeft') target = (index - 1 + tabs.length) % tabs.length
-  else if (event.key === 'Home') target = 0
-  else if (event.key === 'End') target = tabs.length - 1
-  else return
-
-  event.preventDefault()
-  activeTab.value = tabs[target].id
-  event.currentTarget.parentElement?.querySelectorAll('[role="tab"]')[target]?.focus()
 }
 
 function protocolName(value) {
@@ -461,33 +450,10 @@ onMounted(loadSettings)
 </script>
 
 <template>
-  <div class="min-w-0 space-y-5">
-    <header class="page-header">
-      <div>
-        <div class="eyebrow">Control plane settings</div>
-        <h1 class="page-title">系统设置</h1>
-        <p class="page-description">管理完整日志、上游网络、模型测试、协议匹配、计价、模型健康与熔断策略。</p>
-      </div>
-    </header>
+  <div class="page-workbench settings-page min-w-0 space-y-5">
+    <PageHeader eyebrow="控制平面配置" title="系统设置" description="管理完整日志、上游网络、模型测试、协议匹配、计价、模型健康与熔断策略。" />
 
-    <nav class="min-w-0 overflow-x-auto" aria-label="设置分类">
-      <div class="segmented min-w-max" role="tablist" aria-label="设置分类">
-        <button
-          v-for="(tab, index) in tabs"
-          :id="`settings-tab-${tab.id}`"
-          :key="tab.id"
-          type="button"
-          role="tab"
-          :aria-selected="activeTab === tab.id"
-          :aria-controls="`settings-panel-${tab.id}`"
-          :tabindex="activeTab === tab.id ? 0 : -1"
-          @click="selectTab(tab.id)"
-          @keydown="onTabKeydown($event, index)"
-        >
-          {{ tab.label }}
-        </button>
-      </div>
-    </nav>
+    <SettingsNav :tabs="tabs" :active-tab="activeTab" @select="selectTab" />
 
     <section
       v-if="activeTab === 'logging'"
