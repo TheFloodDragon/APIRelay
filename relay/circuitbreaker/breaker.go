@@ -20,6 +20,7 @@ type CircuitBreaker struct {
 	failedRequests       int
 	requestEvents        []requestEvent
 	halfOpenInFlight     int
+	persistVersion       uint64
 	now                  func() time.Time
 }
 
@@ -230,6 +231,7 @@ func (cb *CircuitBreaker) stateSnapshotLocked() *model.ChannelHealth {
 		TotalRequests:        cb.totalRequests,
 		FailedRequests:       cb.failedRequests,
 		CircuitState:         cb.state,
+		PersistVersion:       cb.persistVersion,
 	}
 	if cb.openedAt != nil {
 		openedAt := *cb.openedAt
@@ -266,9 +268,18 @@ func (cb *CircuitBreaker) GetState() model.CircuitState {
 	return cb.state
 }
 
-// Reset 重置熔断器状态
-func (cb *CircuitBreaker) Reset() {
+// Reset 重置熔断器状态；仅在持久化状态完整清除后提交内存重置。
+func (cb *CircuitBreaker) Reset() error {
 	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	nextVersion := cb.persistVersion + 1
+	if model.DB != nil {
+		if err := model.ResetChannelHealth(cb.channelID, nextVersion); err != nil {
+			return err
+		}
+	}
+
 	cb.state = model.CircuitClosed
 	cb.openedAt = nil
 	cb.consecutiveFailures = 0
@@ -277,9 +288,6 @@ func (cb *CircuitBreaker) Reset() {
 	cb.failedRequests = 0
 	cb.requestEvents = nil
 	cb.halfOpenInFlight = 0
-	cb.mu.Unlock()
-
-	if model.DB != nil {
-		_ = model.ResetChannelHealth(cb.channelID)
-	}
+	cb.persistVersion = nextVersion
+	return nil
 }

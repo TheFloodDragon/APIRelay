@@ -246,7 +246,9 @@ func TestCircuitBreakerResetClearsRuntimeCounters(t *testing.T) {
 		t.Fatalf("应已熔断，实际为 %s", cb.GetState())
 	}
 
-	cb.Reset()
+	if err := cb.Reset(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
 	cb.mu.RLock()
 	state := cb.state
 	total := cb.totalRequests
@@ -256,5 +258,27 @@ func TestCircuitBreakerResetClearsRuntimeCounters(t *testing.T) {
 
 	if state != model.CircuitClosed || total != 0 || failed != 0 || events != 0 {
 		t.Fatalf("reset 后状态/计数不正确: state=%s total=%d failed=%d events=%d", state, total, failed, events)
+	}
+}
+
+func TestCircuitBreakerResetAdvancesSnapshotVersion(t *testing.T) {
+	cb := NewCircuitBreaker(9992, testConfig())
+	cb.persistVersion = 6
+	cb.RecordFailure("failure")
+	cb.mu.RLock()
+	stale := cb.stateSnapshotLocked()
+	cb.mu.RUnlock()
+
+	if err := cb.Reset(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	cb.mu.RLock()
+	version, state, failures := cb.persistVersion, cb.state, cb.consecutiveFailures
+	cb.mu.RUnlock()
+	if version != 7 || state != model.CircuitClosed || failures != 0 {
+		t.Fatalf("reset state incorrect: version=%d state=%s failures=%d", version, state, failures)
+	}
+	if stale.PersistVersion != 6 {
+		t.Fatalf("stale snapshot version = %d", stale.PersistVersion)
 	}
 }

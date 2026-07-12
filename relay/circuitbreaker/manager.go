@@ -56,6 +56,7 @@ func (m *Manager) GetBreaker(channelID int) *CircuitBreaker {
 	breaker.consecutiveSuccesses = health.ConsecutiveSuccesses
 	breaker.totalRequests = health.TotalRequests
 	breaker.failedRequests = health.FailedRequests
+	breaker.persistVersion = health.PersistVersion
 
 	actual, _ := m.breakers.LoadOrStore(channelID, breaker)
 	return actual.(*CircuitBreaker)
@@ -110,6 +111,6 @@ func (m *Manager) RecordFailure(channelID int, errMsg string) {
 }
 
 // ResetBreaker 重置渠道熔断器
-func (m *Manager) ResetBreaker(channelID int) {
-	m.GetBreaker(channelID).Reset()
+func (m *Manager) ResetBreaker(channelID int) error {
+	return m.GetBreaker(channelID).Reset()
 }

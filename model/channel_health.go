@@ -27,6 +27,7 @@ type ChannelHealth struct {
 	LastError            string       `json:"last_error"`
 	CircuitState         CircuitState `gorm:"default:'closed'" json:"circuit_state"`
 	CircuitOpenedAt      *time.Time   `json:"circuit_opened_at"` // 熔断开启时间
+	PersistVersion       uint64       `gorm:"default:0" json:"-"`
 	UpdatedAt            time.Time    `json:"updated_at"`
 }
 
@@ -47,21 +48,73 @@ func GetChannelHealth(channelId int) (*ChannelHealth, error) {
 	return &h, err
 }
 
-// UpsertChannelHealth 插入或更新渠道健康状态
+// UpsertChannelHealth 插入或更新渠道健康状态；版本较旧的异步快照会被忽略。
 func UpsertChannelHealth(h *ChannelHealth) error {
+	if h == nil {
+		return nil
+	}
 	h.UpdatedAt = time.Now()
-	return DB.Save(h).Error
+	values := map[string]interface{}{
+		"consecutive_failures":  h.ConsecutiveFailures,
+		"consecutive_successes": h.ConsecutiveSuccesses,
+		"total_requests":        h.TotalRequests,
+		"failed_requests":       h.FailedRequests,
+		"last_success_at":       h.LastSuccessAt,
+		"last_failure_at":       h.LastFailureAt,
+		"last_error":            h.LastError,
+		"circuit_state":         h.CircuitState,
+		"circuit_opened_at":     h.CircuitOpenedAt,
+		"persist_version":       h.PersistVersion,
+		"updated_at":            h.UpdatedAt,
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&ChannelHealth{}).
+			Where("channel_id = ? AND persist_version <= ?", h.ChannelId, h.PersistVersion).
+			Updates(values)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected > 0 {
+			return nil
+		}
+
+		var count int64
+		if err := tx.Model(&ChannelHealth{}).Where("channel_id = ?", h.ChannelId).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		if err := tx.Create(h).Error; err != nil {
+			var current ChannelHealth
+			if lookupErr := tx.Where("channel_id = ?", h.ChannelId).First(&current).Error; lookupErr == nil && current.PersistVersion > h.PersistVersion {
+				return nil
+			}
+			return err
+		}
+		return nil
+	})
 }
 
-// ResetChannelHealth 重置渠道熔断器状态
-func ResetChannelHealth(channelId int) error {
-	return DB.Model(&ChannelHealth{}).Where("channel_id = ?", channelId).Updates(map[string]interface{}{
-		"consecutive_failures":  0,
-		"consecutive_successes": 0,
-		"circuit_state":         CircuitClosed,
-		"circuit_opened_at":     nil,
-		"updated_at":            time.Now(),
-	}).Error
+// ResetChannelHealth 原子清除渠道 cooldown 与全部持久化熔断运行状态。
+func ResetChannelHealth(channelId int, version uint64) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var channel Channel
+		if err := tx.Select("id").First(&channel, channelId).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&Channel{}).Where("id = ?", channelId).Update("cooldown_until", 0).Error; err != nil {
+			return err
+		}
+
+		health := &ChannelHealth{
+			ChannelId:      channelId,
+			CircuitState:   CircuitClosed,
+			PersistVersion: version,
+			UpdatedAt:      time.Now(),
+		}
+		return tx.Save(health).Error
+	})
 }
 
 // GetAllChannelHealthStats 获取所有渠道健康统计（用于 Dashboard）

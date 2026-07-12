@@ -2,6 +2,7 @@
 import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api, { copyText } from '../api'
+import { resetBreakerAndConfirm } from '../breakerReset'
 import { confirmAction } from '../composables/useConfirm'
 import { DEFAULT_HEALTH_CONFIG, hasHealth, healthTotal, healthText, healthTitle, healthClass as healthClassBy } from '../health'
 import Modal from '../components/Modal.vue'
@@ -767,10 +768,12 @@ async function resetBreaker(channel) {
   const editorWasDirty = isDirty.value
   updateSet(resettingIds, channel.id, true)
   try {
-    await api.post(`/channels/${channel.id}/health/reset`)
-    channel.cooldown_until = 0
+    const { channel: refreshed } = await resetBreakerAndConfirm(api, channel.id, async () => {
+      await load()
+      return channels.value
+    })
     if (form.value.id === channel.id) {
-      form.value.cooldown_until = 0
+      form.value.cooldown_until = refreshed.cooldown_until || 0
       if (!editorWasDirty) markEditorBaseline()
     }
     notify(wasTripped ? `「${channel.name}」已解除熔断` : `「${channel.name}」健康状态已重置`, 'success')

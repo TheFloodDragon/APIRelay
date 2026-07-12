@@ -8,13 +8,14 @@ import (
 	"github.com/apirelay/apirelay/relay/circuitbreaker"
 	"github.com/apirelay/apirelay/relay/relaycommon"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // GetChannelHealth 获取渠道健康状态
 func GetChannelHealth(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
-	if err != nil {
+	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel id"})
 		return
 	}
@@ -32,12 +33,19 @@ func GetChannelHealth(c *gin.Context) {
 func ResetChannelHealth(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
-	if err != nil {
+	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel id"})
 		return
 	}
 
-	circuitbreaker.GetManager().ResetBreaker(id)
+	if err := circuitbreaker.GetManager().ResetBreaker(id); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "circuit breaker reset"})
 }
 
