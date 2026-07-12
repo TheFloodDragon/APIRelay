@@ -1,5 +1,6 @@
 <script setup>
 import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import api, { copyText } from '../api'
 import { confirmAction } from '../composables/useConfirm'
 import { DEFAULT_HEALTH_CONFIG, hasHealth, healthTotal, healthText, healthTitle, healthClass as healthClassBy } from '../health'
@@ -16,6 +17,8 @@ import BodyOverrideEditor from '../components/BodyOverrideEditor.vue'
 import ChannelConsoleHeader from '../components/ChannelConsoleHeader.vue'
 
 const { proxy } = getCurrentInstance()
+const route = useRoute()
+const router = useRouter()
 const notify = (message, type = 'info', duration) => proxy?.$toast?.add(message, type, duration)
 
 const channels = ref([])
@@ -842,12 +845,17 @@ function handleViewportChange(event) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   mobileMediaQuery = window.matchMedia('(max-width: 767px)')
   isMobile.value = mobileMediaQuery.matches
   mobileMediaQuery.addEventListener?.('change', handleViewportChange)
-  loadMeta()
-  load()
+  await Promise.all([loadMeta(), load()])
+  if (route.query.action === 'new') {
+    await openCreate()
+    const query = { ...route.query }
+    delete query.action
+    router.replace({ query })
+  }
 })
 
 onBeforeUnmount(() => mobileMediaQuery?.removeEventListener?.('change', handleViewportChange))
@@ -920,7 +928,7 @@ onBeforeUnmount(() => mobileMediaQuery?.removeEventListener?.('change', handleVi
                 </div>
               </article>
             </div>
-            <div v-if="channels.length && !sortedChannels.length" class="m-3 rounded-lg border border-dashed border-line bg-white px-4 py-10 text-center">
+            <div v-if="channels.length && !sortedChannels.length" class="m-3 rounded-lg border border-dashed border-line bg-surface px-4 py-10 text-center">
               <div class="font-medium text-ink">没有匹配的渠道</div><p class="mt-1 text-xs text-soft">尝试清空搜索词或切换运行状态。</p>
               <button type="button" class="btn btn-sm mt-3" @click="channelQuery = ''; statusFilter = 'all'">清除筛选</button>
             </div>

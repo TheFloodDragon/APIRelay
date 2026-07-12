@@ -320,7 +320,7 @@ onMounted(load)
       </div>
 
       <nav class="dashboard-shortcuts" aria-label="快捷入口">
-        <RouterLink to="/channels" class="dashboard-shortcut">
+        <RouterLink to="/channels?action=new" class="dashboard-shortcut">
           <ConsoleIcon name="plus" />
           <span><strong>新增渠道</strong><small>进入渠道工作台</small></span>
           <ConsoleIcon name="chevronRight" />
