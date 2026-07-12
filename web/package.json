@@ -13,6 +13,7 @@
   "dependencies": {
     "@fontsource/saira-semi-condensed": "^5.2.7",
     "@fontsource/spline-sans-mono": "^5.2.8",
+    "@heroicons/vue": "^2.2.0",
     "axios": "^1.7.0",
     "vue": "^3.4.0",
     "vue-router": "^4.3.0"

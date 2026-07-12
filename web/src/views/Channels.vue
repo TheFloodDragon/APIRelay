@@ -1,14 +1,18 @@
 <script setup>
-import { computed, getCurrentInstance, onMounted, ref } from 'vue'
+import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref } from 'vue'
 import api, { copyText } from '../api'
 import { confirmAction } from '../composables/useConfirm'
 import { DEFAULT_HEALTH_CONFIG, hasHealth, healthTotal, healthText, healthTitle, healthClass as healthClassBy } from '../health'
 import Modal from '../components/Modal.vue'
+import Drawer from '../components/Drawer.vue'
 import PageState from '../components/PageState.vue'
 import PageHeader from '../components/PageHeader.vue'
+import ConsoleSection from '../components/ConsoleSection.vue'
+import DataToolbar from '../components/DataToolbar.vue'
+import InlineNotice from '../components/InlineNotice.vue'
+import ConsoleIcon from '../components/ConsoleIcon.vue'
 import HeaderOverrideEditor from '../components/HeaderOverrideEditor.vue'
 import BodyOverrideEditor from '../components/BodyOverrideEditor.vue'
-import ActionMenu from '../components/ActionMenu.vue'
 import ChannelConsoleHeader from '../components/ChannelConsoleHeader.vue'
 
 const { proxy } = getCurrentInstance()
@@ -20,6 +24,11 @@ const protocols = ref([])
 const loading = ref(true)
 const loadError = ref('')
 const metadataLoading = ref(false)
+const isMobile = ref(typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false)
+const selectedChannelId = ref(null)
+const previousSelectedId = ref(null)
+const editorBaseline = ref('')
+let mobileMediaQuery = null
 
 const showEditor = ref(false)
 const probing = ref(false)
@@ -128,13 +137,16 @@ const saveHint = computed(() => {
 const editorSteps = computed(() => ({
   connection: Boolean(form.value.name.trim() && form.value.base_url.trim() && String(form.value.key || '').trim()),
   models: enabledCount.value > 0,
-  routing: headerValidation.value.valid && bodyValidation.value.valid,
+  overrides: headerValidation.value.valid && bodyValidation.value.valid,
+  reliability: true,
 }))
-const activeEditor = computed(() => ({
-  connection: { index: '01', title: '连接与凭据', note: '定义渠道身份及上游接入方式。' },
-  models: { index: '02', title: '模型工作台', note: '维护模型、映射、协议和计价。' },
-  routing: { index: '03', title: '流量策略与请求复写', note: '控制权重、协议匹配和上游请求内容。' },
-}[editorTab.value]))
+const editorSections = computed(() => [
+  { key: 'connection', index: '01', label: '连接与身份', note: editorSteps.value.connection ? '连接信息完整' : '需要完善凭据', icon: 'key' },
+  { key: 'models', index: '02', label: '模型与价格', note: `${enabledCount.value} 个模型已启用`, icon: 'models' },
+  { key: 'overrides', index: '03', label: '请求改写', note: editorSteps.value.overrides ? 'JSON 校验通过' : '存在配置错误', icon: 'command' },
+  { key: 'reliability', index: '04', label: '可靠性', note: form.value.status === 1 ? '渠道参与路由' : '渠道已停用', icon: 'shield' },
+])
+const activeEditor = computed(() => editorSections.value.find((item) => item.key === editorTab.value) || editorSections.value[0])
 const customHeaderCount = computed(() => headerValidation.value.valid ? headerValidation.value.allowedCount : 0)
 const checkupRate = computed(() => {
   const summary = checkupSummary.value
@@ -144,6 +156,22 @@ const checkupRate = computed(() => {
 const testRecordRows = computed(() => models.value
   .map((model) => ({ model, result: testResults.value[model.name] }))
   .filter((row) => row.result || testing.value[row.model.name]))
+const isDirty = computed(() => showEditor.value && editorBaseline.value !== editorSnapshot())
+const saveStatus = computed(() => {
+  if (saving.value) return { label: '保存中', tone: 'saving' }
+  if (isDirty.value) return { label: '有未保存更改', tone: 'dirty' }
+  if (form.value.id) return { label: '已保存 · 自动保存关闭', tone: 'saved' }
+  return { label: '新渠道 · 自动保存关闭', tone: 'idle' }
+})
+const selectedChannel = computed(() => channels.value.find((channel) => channel.id === selectedChannelId.value) || null)
+
+function editorSnapshot() {
+  return JSON.stringify({ form: form.value, models: models.value, rules: rules.value })
+}
+
+function markEditorBaseline() {
+  editorBaseline.value = editorSnapshot()
+}
 
 function typeName(type) {
   const found = channelTypes.value.find((item) => item.value === type)
@@ -206,13 +234,13 @@ function breakerText(channel) {
 
 function validateHeaders(action) {
   if (!headerValidation.value.valid) {
-    editorTab.value = 'routing'
+    editorTab.value = 'overrides'
     editorError.value = `无法${action}：${headerValidation.value.error}`
     notify(editorError.value, 'warn')
     return false
   }
   if (!bodyValidation.value.valid) {
-    editorTab.value = 'routing'
+    editorTab.value = 'overrides'
     editorError.value = `无法${action}：${bodyValidation.value.error}`
     notify(editorError.value, 'warn')
     return false
@@ -241,6 +269,14 @@ async function load() {
     const data = (await api.get('/channels')) || []
     channels.value = data.map((channel) => ({ ...channel, _models: parseModels(channel) }))
     selectedIds.value = new Set([...selectedIds.value].filter((id) => channels.value.some((channel) => channel.id === id)))
+    const preferred = channels.value.find((channel) => channel.id === selectedChannelId.value)
+    if (!preferred && selectedChannelId.value !== null) {
+      selectedChannelId.value = null
+      showEditor.value = false
+    }
+    if (!isMobile.value && !showEditor.value && channels.value.length) {
+      openEdit(preferred || channels.value[0], { remember: false })
+    }
   } catch (error) {
     loadError.value = error.message || '渠道清单加载失败'
     notify(`加载失败：${loadError.value}`, 'error')
@@ -321,7 +357,19 @@ function resetEditorState() {
   batchTotal.value = 0
 }
 
-function openCreate() {
+async function confirmDiscardChanges() {
+  if (!isDirty.value) return true
+  return confirmAction({
+    title: '放弃未保存更改',
+    message: '当前渠道配置尚未保存。继续后这些更改会丢失。',
+    confirmLabel: '放弃更改',
+  })
+}
+
+async function openCreate() {
+  if (!(await confirmDiscardChanges())) return
+  previousSelectedId.value = selectedChannelId.value
+  selectedChannelId.value = null
   form.value = blank()
   models.value = []
   rules.value = []
@@ -329,19 +377,39 @@ function openCreate() {
   const type = channelTypes.value.find((item) => item.value === form.value.type)
   if (type) form.value.base_url = type.default_base_url
   showEditor.value = true
+  markEditorBaseline()
 }
 
-function openEdit(channel) {
+async function openEdit(channel, options = {}) {
+  if (!channel) return
+  const changingChannel = selectedChannelId.value !== channel.id || !form.value.id
+  if (!changingChannel && showEditor.value && !options.force) return
+  if (changingChannel && !(await confirmDiscardChanges())) return
+  if (options.remember !== false && selectedChannelId.value !== channel.id) previousSelectedId.value = selectedChannelId.value
+  selectedChannelId.value = channel.id
   form.value = { ...blank(), ...channel, key: channel.key || '' }
   models.value = (Array.isArray(channel._models) ? channel._models : parseModels(channel)).map((item) => ({ ...item }))
   rules.value = parseRules(channel)
   resetEditorState()
   showEditor.value = true
+  markEditorBaseline()
 }
 
-function closeEditor() {
-  if (editorBusy.value) return
-  showEditor.value = false
+async function closeEditor() {
+  if (editorBusy.value || !(await confirmDiscardChanges())) return
+  editorBaseline.value = editorSnapshot()
+  if (isMobile.value) {
+    showEditor.value = false
+    return
+  }
+  const current = channels.value.find((channel) => channel.id === selectedChannelId.value)
+  if (current) {
+    await openEdit(current, { remember: false, force: true })
+    return
+  }
+  const fallback = channels.value.find((channel) => channel.id === previousSelectedId.value) || channels.value[0]
+  if (fallback) await openEdit(fallback, { remember: false })
+  else showEditor.value = false
 }
 
 function onTypeChange() {
@@ -594,15 +662,23 @@ async function save() {
   saving.value = true
   try {
     const payload = cleanPayload()
-    if (form.value.id) {
-      await api.put(`/channels/${form.value.id}`, payload)
+    const originalId = form.value.id
+    let response
+    if (originalId) {
+      response = await api.put(`/channels/${originalId}`, payload)
       notify('渠道已更新', 'success')
     } else {
-      await api.post('/channels', payload)
+      response = await api.post('/channels', payload)
       notify('渠道已创建', 'success')
     }
+    editorBaseline.value = editorSnapshot()
+    selectedChannelId.value = response?.id || originalId || null
     showEditor.value = false
     await load()
+    const savedChannel = channels.value.find((channel) => channel.id === selectedChannelId.value)
+      || channels.value.find((channel) => channel.name === payload.name)
+    if (savedChannel) selectedChannelId.value = savedChannel.id
+    if (!isMobile.value && savedChannel && form.value.id !== savedChannel.id) await openEdit(savedChannel, { remember: false })
   } catch (error) {
     editorError.value = error.message || '保存失败'
     notify(editorError.value, 'error')
@@ -644,13 +720,18 @@ async function toggleChannel(channel) {
   if (togglingIds.value.has(channel.id)) return
   const previous = channel.status
   const nextStatus = previous === 1 ? 2 : 1
+  const syncEditor = form.value.id === channel.id
+  const editorWasDirty = isDirty.value
   updateSet(togglingIds, channel.id, true)
   channel.status = nextStatus
+  if (syncEditor) form.value.status = nextStatus
   try {
     await api.patch(`/channels/${channel.id}/status`, { enabled: nextStatus === 1 })
+    if (syncEditor && !editorWasDirty) markEditorBaseline()
     notify(`「${channel.name}」已${nextStatus === 1 ? '启用' : '停用'}`, 'success')
   } catch (error) {
     channel.status = previous
+    if (syncEditor) form.value.status = previous
     notify(`状态切换失败：${error.message}`, 'error')
   } finally {
     updateSet(togglingIds, channel.id, false)
@@ -680,10 +761,15 @@ async function removeChannel(channel) {
 async function resetBreaker(channel) {
   if (resettingIds.value.has(channel.id)) return
   const wasTripped = breakerState(channel) === 'trip'
+  const editorWasDirty = isDirty.value
   updateSet(resettingIds, channel.id, true)
   try {
     await api.post(`/channels/${channel.id}/health/reset`)
     channel.cooldown_until = 0
+    if (form.value.id === channel.id) {
+      form.value.cooldown_until = 0
+      if (!editorWasDirty) markEditorBaseline()
+    }
     notify(wasTripped ? `「${channel.name}」已解除熔断` : `「${channel.name}」健康状态已重置`, 'success')
   } catch (error) {
     notify(`健康状态重置失败：${error.message}`, 'error')
@@ -749,609 +835,358 @@ async function persistOrder(previous) {
   }
 }
 
+function handleViewportChange(event) {
+  isMobile.value = event.matches
+  if (!isMobile.value && !showEditor.value && channels.value.length) {
+    openEdit(selectedChannel.value || channels.value[0], { remember: false })
+  }
+}
+
 onMounted(() => {
+  mobileMediaQuery = window.matchMedia('(max-width: 767px)')
+  isMobile.value = mobileMediaQuery.matches
+  mobileMediaQuery.addEventListener?.('change', handleViewportChange)
   loadMeta()
   load()
 })
+
+onBeforeUnmount(() => mobileMediaQuery?.removeEventListener?.('change', handleViewportChange))
 </script>
 
 <template>
-  <div class="page-workbench channels-page space-y-5">
-    <PageHeader eyebrow="上游路由" title="上游渠道" description="维护连接、模型与请求复写规则，并按优先级编排故障转移路径。">
+  <div class="page-workbench channels-page min-w-0">
+    <PageHeader eyebrow="上游路由" title="上游渠道" description="在同一工作台中编排渠道优先级，并维护连接、模型、请求改写与可靠性策略。">
       <template #actions>
         <button type="button" class="btn" :disabled="loading" aria-label="刷新渠道列表" @click="load">
+          <ConsoleIcon name="arrowPath" class="h-4 w-4" :class="{ 'animate-spin': loading }" />
           {{ loading ? '刷新中' : '刷新' }}
         </button>
         <button type="button" class="btn btn-primary" :disabled="metadataLoading" aria-label="新建渠道" @click="openCreate">
-          新建渠道
+          <ConsoleIcon name="plus" class="h-4 w-4" />新建渠道
         </button>
       </template>
     </PageHeader>
 
-    <section class="sheet channel-console min-w-0 overflow-hidden" aria-label="渠道列表">
-      <ChannelConsoleHeader
-        v-model:query="channelQuery"
-        v-model:status="statusFilter"
-        :summary="channelSummary"
-        :segments="routeSegments"
-        :selected-count="selectedIds.size"
-        :bulk-deleting="bulkDeleting"
-        :reordering="reordering"
-        :visible-count="sortedChannels.length"
-        @bulk-delete="bulkDeleteChannels"
-      />
-
-      <PageState
-        :loading="loading"
-        :error="loadError"
-        :empty="!channels.length"
-        empty-text="暂无渠道"
-        @retry="load"
-      >
-        <div class="channel-list p-2 sm:p-3">
-          <article
-            v-for="(channel, index) in sortedChannels"
-            :key="channel.id"
-            class="channel-row group relative grid min-w-0 gap-3 rounded-xl border border-transparent px-3 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center sm:px-4"
-            :class="[
-              channel.status !== 1 ? 'channel-row-off' : '',
-              dragIndex === index ? 'channel-row-dragging' : '',
-              dropIndex === index && dragIndex !== null && dragIndex !== index ? 'channel-row-dropzone' : '',
-            ]"
-            :draggable="!reordering && canReorder"
-            :style="{ '--row-index': index }"
-            @dragstart="onDragStart(index, $event)"
-            @dragover.prevent="onDragOver(index)"
-            @drop.prevent="onDrop(index)"
-            @dragend="onDragEnd"
-          >
-            <span v-if="dropIndex === index && dragIndex !== null && dragIndex !== index" class="channel-drop-line" aria-hidden="true"></span>
-
-            <div class="flex items-center gap-2 sm:self-stretch">
-              <input type="checkbox" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @change="toggleSelected(channel.id)" />
-              <button type="button" class="channel-grip" :disabled="reordering || !canReorder" :aria-label="`拖动调整 ${channel.name} 的优先级`"><span aria-hidden="true">⠿</span></button>
-              <div class="channel-priority" :title="`优先级 ${index + 1}`">
-                <span class="channel-priority-line" aria-hidden="true"></span>
-                <b>{{ String(index + 1).padStart(2, '0') }}</b>
-              </div>
-            </div>
-
-            <div class="min-w-0">
-              <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                <span class="channel-state-dot" :class="`channel-state-${breakerState(channel)}`" :title="breakerText(channel)" aria-hidden="true"><i></i></span>
-                <button type="button" class="min-w-0 truncate text-left font-cond text-[16px] font-semibold tracking-[0.01em] text-ink transition-colors hover:text-blue" :title="channel.name" @click="openEdit(channel)">{{ channel.name }}</button>
-                <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-faint">{{ breakerText(channel) }}</span>
-              </div>
-              <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-soft">
-                <span class="font-mono" :title="channel.base_url">{{ displayEndpoint(channel.base_url) }}</span>
-                <span aria-hidden="true" class="text-line">/</span>
-                <span>{{ channel.group || 'default' }} 分组</span>
-                <span aria-hidden="true" class="text-line">/</span>
-                <span>{{ modelCount(channel) }} 个模型</span>
-              </div>
-              <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                <span class="chip chip-blue">{{ typeName(channel.type) }}</span>
-                <span class="chip">权重 ×{{ channel.weight }}</span>
-                <span class="chip" :class="healthClass(channelHealth(channel))" :title="healthTitle(channelHealth(channel))">{{ healthText(channelHealth(channel)) }}</span>
-              </div>
-            </div>
-
-            <div class="flex items-center justify-between gap-2 border-t border-line/70 pt-3 sm:justify-end sm:border-0 sm:pt-0">
-              <div class="flex items-center gap-2 sm:mr-1">
-                <span class="text-[11px] text-soft">{{ channel.status === 1 ? '启用' : '停用' }}</span>
-                <button type="button" class="channel-switch" :class="{ 'channel-switch-on': channel.status === 1 }" :disabled="togglingIds.has(channel.id)" :aria-pressed="channel.status === 1" :aria-label="`${channel.status === 1 ? '停用' : '启用'}渠道 ${channel.name}`" @click="toggleChannel(channel)"><span aria-hidden="true"></span></button>
-              </div>
-              <div class="flex items-center gap-1.5">
-                <button type="button" class="btn btn-primary btn-sm whitespace-nowrap" :aria-label="`管理渠道 ${channel.name}`" @click="openEdit(channel)">管理</button>
-                <ActionMenu>
-                  <button v-if="breakerState(channel) === 'trip'" role="menuitem" type="button" class="text-trip" :disabled="resettingIds.has(channel.id)" @click.stop="resetBreaker(channel)">{{ resettingIds.has(channel.id) ? '解除中' : '解除熔断' }}</button>
-                  <button role="menuitem" type="button" :disabled="checkupLoadingId !== null" @click.stop="checkupChannel(channel)">{{ checkupLoadingId === channel.id ? '检查中' : '运行检查' }}</button>
-                  <button role="menuitem" type="button" :disabled="togglingIds.has(channel.id)" @click.stop="toggleChannel(channel)">{{ togglingIds.has(channel.id) ? '切换中' : channel.status === 1 ? '停用渠道' : '启用渠道' }}</button>
-                  <button role="menuitem" type="button" class="text-trip" :disabled="deletingIds.has(channel.id)" @click.stop="removeChannel(channel)">{{ deletingIds.has(channel.id) ? '删除中' : '删除渠道' }}</button>
-                </ActionMenu>
-              </div>
-            </div>
-          </article>
-        </div>
-
-        <div v-if="channels.length && !sortedChannels.length" class="m-3 rounded-xl border border-dashed border-line bg-white px-4 py-10 text-center">
-          <div class="font-medium text-ink">没有匹配的渠道</div>
-          <p class="mt-1 text-xs text-soft">尝试清空搜索词或切换运行状态。</p>
-          <button type="button" class="btn btn-sm mt-3" @click="channelQuery = ''; statusFilter = 'all'">清除筛选</button>
-        </div>
-      </PageState>
-    </section>
-
-    <section class="grid gap-3 md:grid-cols-2" aria-label="渠道说明">
-      <div class="border border-line bg-white p-3">
-        <div class="eyebrow">优先级</div>
-        <p class="mt-1 text-[13px] text-soft">列表越靠前优先级越高；拖动渠道后立即保存，失败时自动恢复原顺序。</p>
-      </div>
-      <div class="border border-line bg-white p-3">
-        <div class="eyebrow">模型价格</div>
-        <p class="mt-1 text-[13px] text-soft">输入价与输出价单位为 USD / 1M tokens；填写 0 时使用全局价格。</p>
-      </div>
-    </section>
-
-    <Modal
-      :open="showEditor"
-      :title="form.id ? `编辑渠道 · ${form.name}` : '新建渠道'"
-      width="max-w-6xl"
-      :persistent="editorBusy"
-      @close="closeEditor"
-    >
-      <div class="channel-editor min-w-0">
-        <div class="editor-mobile-nav" role="tablist" aria-label="渠道配置">
-          <button type="button" role="tab" :aria-selected="editorTab === 'connection'" @click="editorTab = 'connection'"><span class="editor-step" :class="editorSteps.connection ? 'editor-step-done' : ''">1</span><span>连接</span></button>
-          <button type="button" role="tab" :aria-selected="editorTab === 'models'" @click="editorTab = 'models'"><span class="editor-step" :class="editorSteps.models ? 'editor-step-done' : ''">2</span><span>模型</span></button>
-          <button type="button" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'"><span class="editor-step" :class="editorSteps.routing ? 'editor-step-done' : 'editor-step-warn'">3</span><span>路由</span></button>
-        </div>
-
-        <div class="editor-layout">
-          <aside class="editor-sidebar" aria-label="渠道配置导航">
-            <div class="editor-device-mark">
-              <span class="channel-state-dot" :class="form.status === 1 ? 'channel-state-run' : 'channel-state-off'" aria-hidden="true"><i></i></span>
-              <div class="min-w-0"><b>{{ form.name || '未命名渠道' }}</b><span>{{ form.id ? `CHANNEL ${form.id}` : 'NEW CHANNEL' }}</span></div>
-            </div>
-            <nav class="editor-side-nav" role="tablist" aria-label="渠道配置阶段">
-              <button type="button" role="tab" :aria-selected="editorTab === 'connection'" @click="editorTab = 'connection'"><span class="editor-nav-index">01</span><span><b>连接与凭据</b><small>{{ editorSteps.connection ? '已配置' : '需要完善' }}</small></span><i :class="editorSteps.connection ? 'is-done' : ''"></i></button>
-              <button type="button" role="tab" :aria-selected="editorTab === 'models'" @click="editorTab = 'models'"><span class="editor-nav-index">02</span><span><b>模型工作台</b><small>{{ enabledCount }} 个已启用</small></span><i :class="editorSteps.models ? 'is-done' : ''"></i></button>
-              <button type="button" role="tab" :aria-selected="editorTab === 'routing'" @click="editorTab = 'routing'"><span class="editor-nav-index">03</span><span><b>路由与复写</b><small>{{ editorSteps.routing ? '校验通过' : '存在错误' }}</small></span><i :class="editorSteps.routing ? 'is-done' : 'is-error'"></i></button>
-            </nav>
-            <div class="editor-summary">
-              <span>配置摘要</span>
-              <dl><div><dt>协议</dt><dd>{{ typeName(form.type) }}</dd></div><div><dt>模型</dt><dd>{{ enabledCount }} / {{ models.length }}</dd></div><div><dt>权重</dt><dd>×{{ form.weight || 1 }}</dd></div><div><dt>请求头</dt><dd>{{ customHeaderCount }}</dd></div></dl>
-            </div>
-          </aside>
-
-          <main class="editor-workspace">
-            <header class="editor-workspace-head">
-              <div><span>{{ activeEditor.index }}</span><h3>{{ activeEditor.title }}</h3><p>{{ activeEditor.note }}</p></div>
-              <span class="chip" :class="editorSteps[editorTab] ? 'chip-run' : 'chip-test'">{{ editorSteps[editorTab] ? '配置就绪' : '等待完善' }}</span>
-            </header>
-            <div class="editor-workspace-body">
-        <section v-show="editorTab === 'connection'" class="editor-panel" aria-labelledby="nameplate-heading">
-          <div class="editor-section-head">
-            <div><div id="nameplate-heading" class="dim-title">渠道身份</div><div class="mt-0.5 text-[12px] text-soft">用于路由识别、分组和默认协议判断。</div></div>
-            <label class="inline-flex items-center gap-2 text-xs text-soft"><span>{{ form.status === 1 ? '已启用' : '已停用' }}</span><button type="button" class="channel-switch" :class="{ 'channel-switch-on': form.status === 1 }" :aria-pressed="form.status === 1" @click="form.status = form.status === 1 ? 0 : 1"><span></span></button></label>
-          </div>
-          <div class="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
-            <div class="xl:col-span-2">
-              <label class="field-label" for="channel-name">渠道名称 *</label>
-              <input id="channel-name" v-model="form.name" class="input" placeholder="例：OpenAI 主账号" autocomplete="off" data-autofocus />
-            </div>
-            <div>
-              <label class="field-label" for="channel-type">默认协议 *</label>
-              <select id="channel-type" v-model.number="form.type" class="input" @change="onTypeChange">
-                <option v-for="type in channelTypes" :key="type.value" :value="type.value">{{ type.name }}</option>
-              </select>
-            </div>
-            <div>
-              <label class="field-label" for="channel-group">分组</label>
-              <input id="channel-group" v-model="form.group" class="input input-mono" placeholder="default" autocomplete="off" />
-            </div>
-            <div class="md:col-span-2">
-              <label class="field-label" for="channel-url">Base URL *</label>
-              <input id="channel-url" v-model="form.base_url" class="input input-mono" placeholder="https://api.openai.com" autocomplete="off" />
-            </div>
-            <div class="md:col-span-2">
-              <label class="field-label" for="channel-key">API Key *</label>
-              <div class="flex gap-2">
-                <input
-                  id="channel-key"
-                  v-model="form.key"
-                  :type="revealKey ? 'text' : 'password'"
-                  class="input input-mono"
-                  placeholder="upstream-key"
-                  name="apirelay-upstream-key"
-                  autocomplete="off"
-                  autocapitalize="off"
-                  autocorrect="off"
-                  spellcheck="false"
-                  data-1p-ignore
-                  data-lpignore="true"
-                  data-form-type="other"
-                />
-                <button type="button" class="btn shrink-0" :aria-pressed="revealKey" :aria-label="revealKey ? '隐藏 API Key' : '显示 API Key'" @click="revealKey = !revealKey">{{ revealKey ? '隐藏' : '显示' }}</button>
-                <button type="button" class="btn shrink-0" :disabled="!form.key" aria-label="复制编辑器中的 API Key" @click="copyKey(form)">复制</button>
-              </div>
-              <p class="mt-1 text-[12px] text-soft">上游凭据按现有数据结构保存；复制操作使用安全上下文与兼容降级。</p>
-            </div>
-            <div class="md:col-span-2 xl:col-span-4">
-              <label class="field-label" for="channel-test-prompt">测试提示词覆盖</label>
-              <textarea id="channel-test-prompt" v-model="form.test_prompt" class="input min-h-24 resize-y" maxlength="4000" :placeholder="`留空继承全局：${globalTestPrompt}`"></textarea>
-              <p class="mt-1 text-[12px] text-soft">单测与批量体检优先使用此内容；留空时继承设置页中的全局默认。</p>
-            </div>
-          </div>
-        </section>
-
-        <section v-show="editorTab === 'models'" class="editor-panel" aria-labelledby="circuits-heading">
-          <div class="editor-section-head">
-            <div>
-              <div id="circuits-heading" class="dim-title">模型清单</div>
-              <div class="mt-0.5 text-[12px] text-soft">{{ enabledCount }} 个启用，共 {{ models.length }} 个配置。</div>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <button
-                type="button"
-                class="btn btn-sm"
-                :disabled="editorBusy || !form.base_url || !form.key || enabledCount === 0"
-                aria-label="测试全部启用模型"
-                @click="testAllInModal"
-              >{{ batchTesting ? `批测中 ${batchDone}/${batchTotal}` : '批量测试' }}</button>
-              <button
-                type="button"
-                class="btn btn-sm"
-                :disabled="editorBusy || !form.base_url || !form.key"
-                aria-label="从上游探测模型列表"
-                @click="fetchModels"
-              >{{ probing ? '探测中' : '模型探测' }}</button>
-            </div>
-            <p class="w-full text-right text-[11px] text-soft">测试与探测将携带 {{ customHeaderCount }} 个自定义请求头</p>
-          </div>
-
-          <div class="p-3">
-            <div v-if="batchTesting || batchSummary" class="mb-3 rounded-xl border border-line bg-panel/40 p-3" aria-live="polite">
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <div class="flex flex-wrap items-center gap-2">
-                  <span v-if="batchTesting" class="chip chip-test">执行中 {{ batchDone }}/{{ batchTotal }}</span>
-                  <template v-if="batchSummary">
-                    <span class="chip chip-run">通过 {{ batchSummary.success }}</span>
-                    <span class="chip chip-trip">失败 {{ batchSummary.failed }}</span>
-                    <span class="chip chip-test">总计 {{ batchSummary.total }}</span>
-                  </template>
+    <div class="channels-workspace">
+      <aside class="channel-master sheet min-w-0" aria-label="渠道队列">
+        <ChannelConsoleHeader
+          v-model:query="channelQuery" v-model:status="statusFilter"
+          :summary="channelSummary" :segments="routeSegments"
+          :selected-count="selectedIds.size" :bulk-deleting="bulkDeleting"
+          :reordering="reordering" :visible-count="sortedChannels.length"
+          @bulk-delete="bulkDeleteChannels"
+        />
+        <div class="channel-list-scroll">
+          <PageState :loading="loading" :error="loadError" :empty="!channels.length" empty-text="暂无渠道" @retry="load">
+            <div class="channel-list p-2">
+              <article
+                v-for="(channel, index) in sortedChannels" :key="channel.id"
+                class="channel-row relative min-w-0 rounded-lg border p-3"
+                :class="[
+                  selectedChannelId === channel.id ? 'channel-row-selected' : '',
+                  channel.status !== 1 ? 'channel-row-off' : '',
+                  dragIndex === index ? 'channel-row-dragging' : '',
+                  dropIndex === index && dragIndex !== null && dragIndex !== index ? 'channel-row-dropzone' : '',
+                ]"
+                :draggable="!reordering && canReorder" :style="{ '--row-index': index }"
+                @click="openEdit(channel)" @dragstart="onDragStart(index, $event)"
+                @dragover.prevent="onDragOver(index)" @drop.prevent="onDrop(index)" @dragend="onDragEnd"
+              >
+                <span v-if="dropIndex === index && dragIndex !== null && dragIndex !== index" class="channel-drop-line" aria-hidden="true"></span>
+                <div class="flex min-w-0 items-start gap-2.5">
+                  <input type="checkbox" class="mt-1 shrink-0" :checked="selectedIds.has(channel.id)" :aria-label="`选择渠道 ${channel.name}`" @click.stop @change="toggleSelected(channel.id)" />
+                  <button type="button" class="channel-grip mt-0.5 shrink-0" :disabled="reordering || !canReorder" :aria-label="`拖动调整 ${channel.name} 的优先级`" @click.stop><ConsoleIcon name="bars" class="h-4 w-4" /></button>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex min-w-0 items-center gap-2">
+                      <span class="channel-state-dot" :class="`channel-state-${breakerState(channel)}`" :title="breakerText(channel)" aria-hidden="true"><i></i></span>
+                      <button type="button" class="min-w-0 flex-1 truncate text-left text-sm font-semibold text-ink" :title="channel.name" @click.stop="openEdit(channel)">{{ channel.name }}</button>
+                      <span class="font-mono text-[9px] text-faint">{{ String(index + 1).padStart(2, '0') }}</span>
+                    </div>
+                    <div class="mt-1 truncate font-mono text-[10px] text-soft" :title="channel.base_url">{{ displayEndpoint(channel.base_url) }}</div>
+                    <div class="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span class="chip" :class="breakerState(channel) === 'run' ? 'chip-run' : breakerState(channel) === 'trip' ? 'chip-trip' : 'chip-test'">{{ breakerText(channel) }}</span>
+                      <span class="chip">{{ modelCount(channel) }} 模型</span>
+                      <span class="chip" :class="healthClass(channelHealth(channel))" :title="healthTitle(channelHealth(channel))">{{ healthText(channelHealth(channel)) }}</span>
+                    </div>
+                  </div>
                 </div>
-                <span v-if="batchTesting" class="font-mono text-[10px] text-soft">{{ batchTotal ? Math.round((batchDone / batchTotal) * 100) : 0 }}%</span>
-              </div>
-              <div v-if="batchTesting" class="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
-                <span class="block h-full rounded-full bg-test transition-[width] duration-300" :style="{ width: `${batchTotal ? (batchDone / batchTotal) * 100 : 0}%` }"></span>
-              </div>
-            </div>
-
-            <div class="mb-3 flex flex-col gap-2 sm:flex-row">
-              <input
-                v-model="newModelName"
-                class="input input-mono"
-                placeholder="模型显示名（可使用 * 通配）"
-                aria-label="新模型名称"
-                @keyup.enter="addModel"
-              />
-              <button type="button" class="btn shrink-0" aria-label="添加模型" @click="addModel">添加模型</button>
-            </div>
-
-            <div v-if="models.length" class="hidden border border-line md:block">
-              <table class="table-eng w-full table-fixed" aria-label="模型配置表">
-                <thead>
-                  <tr>
-                    <th class="w-16">启用</th>
-                    <th>模型名称</th>
-                    <th class="w-36">协议</th>
-                    <th>上游映射</th>
-                    <th class="w-24 text-right">输入价</th>
-                    <th class="w-24 text-right">输出价</th>
-                    <th class="w-24 text-right">测试</th>
-                    <th class="w-20 text-right">删除</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(model, index) in models" :key="index">
-                    <td>
-                      <button
-                        type="button"
-                        class="channel-switch"
-                        :class="{ 'channel-switch-on': model.enabled }"
-                        :aria-pressed="model.enabled"
-                        :aria-label="`${model.enabled ? '停用' : '启用'}模型 ${model.name || index + 1}`"
-                        @click="model.enabled = !model.enabled"
-                      ><span aria-hidden="true"></span></button>
-                    </td>
-                    <td><input v-model="model.name" class="input input-mono py-1 text-[12px]" placeholder="显示名" :aria-label="`第 ${index + 1} 个模型显示名`" /></td>
-                    <td>
-                      <select v-model="model.protocol" class="input py-1 text-[12px]" :aria-label="`${model.name || index + 1} 的协议覆盖`">
-                        <option value="">继承规则</option>
-                        <option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option>
-                      </select>
-                    </td>
-                    <td><input v-model="model.upstream" class="input input-mono py-1 text-[12px]" placeholder="留空则同显示名" :aria-label="`${model.name || index + 1} 的上游模型映射`" /></td>
-                    <td><input v-model.number="model.input" type="number" step="0.01" min="0" class="input py-1 text-right font-mono text-[12px]" placeholder="0" :aria-label="`${model.name || index + 1} 的输入价格`" /></td>
-                    <td><input v-model.number="model.output" type="number" step="0.01" min="0" class="input py-1 text-right font-mono text-[12px]" placeholder="0" :aria-label="`${model.name || index + 1} 的输出价格`" /></td>
-                    <td class="text-right">
-                      <button
-                        type="button"
-                        class="btn btn-sm"
-                        :disabled="Boolean(testing[model.name]) || batchTesting || saving || !model.name.trim()"
-                        :aria-label="`测试模型 ${model.name || index + 1}`"
-                        @click="testModel(model)"
-                      >{{ testing[model.name] ? '测试中' : '单测' }}</button>
-                    </td>
-                    <td class="text-right">
-                      <button
-                        type="button"
-                        class="btn btn-danger btn-sm"
-                        :disabled="Boolean(testing[model.name]) || batchTesting"
-                        :aria-label="`删除模型 ${model.name || index + 1}`"
-                        @click="removeModel(index, model)"
-                      >删除</button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-if="models.length" class="grid gap-3 md:hidden">
-              <article v-for="(model, index) in models" :key="index" class="space-y-3 border border-line p-3">
-                <div class="flex items-center justify-between gap-2">
-                  <span class="font-medium">模型 {{ index + 1 }}</span>
-                  <button type="button" class="channel-switch" :class="{ 'channel-switch-on': model.enabled }" :aria-pressed="model.enabled" @click="model.enabled = !model.enabled"><span></span></button>
+                <div class="mt-3 flex min-w-0 items-center justify-between gap-2 border-t border-line/70 pt-2.5">
+                  <div class="min-w-0 truncate text-[10px] text-soft">{{ channel.group || 'default' }} · {{ typeName(channel.type) }} · 权重 ×{{ channel.weight }}</div>
+                  <div class="flex shrink-0 items-center gap-1">
+                    <button type="button" class="icon-btn h-8 w-8" :disabled="checkupLoadingId !== null" :aria-label="`检查渠道 ${channel.name}`" :title="checkupLoadingId === channel.id ? '检查中' : '运行检查'" @click.stop="checkupChannel(channel)"><ConsoleIcon name="bolt" class="h-4 w-4" :class="{ 'animate-pulse': checkupLoadingId === channel.id }" /></button>
+                    <button type="button" class="channel-switch" :class="{ 'channel-switch-on': channel.status === 1 }" :disabled="togglingIds.has(channel.id)" :aria-pressed="channel.status === 1" :aria-label="`${channel.status === 1 ? '停用' : '启用'}渠道 ${channel.name}`" @click.stop="toggleChannel(channel)"><span aria-hidden="true"></span></button>
+                    <ConsoleIcon name="chevronRight" class="h-4 w-4 text-faint" />
+                  </div>
                 </div>
-                <input v-model="model.name" class="input input-mono" placeholder="模型名称" />
-                <select v-model="model.protocol" class="input"><option value="">继承规则</option><option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option></select>
-                <input v-model="model.upstream" class="input input-mono" placeholder="上游映射，留空则同模型名称" />
-                <div class="grid grid-cols-2 gap-2"><input v-model.number="model.input" type="number" step="0.01" min="0" class="input" placeholder="输入价" /><input v-model.number="model.output" type="number" step="0.01" min="0" class="input" placeholder="输出价" /></div>
-                <div class="grid grid-cols-2 gap-2"><button type="button" class="btn btn-sm" :disabled="Boolean(testing[model.name]) || batchTesting || saving || !model.name.trim() || !headerValidation.valid" @click="testModel(model)">{{ testing[model.name] ? '测试中' : '单测' }}</button><button type="button" class="btn btn-danger btn-sm" :disabled="Boolean(testing[model.name]) || batchTesting" @click="removeModel(index, model)">删除</button></div>
               </article>
             </div>
-            <div v-if="!models.length" class="my-5 border border-dashed border-line p-6 text-center text-[13px] text-soft">尚未添加模型</div>
-            <p class="mt-2 text-[12px] text-soft">已启用 {{ enabledCount }} 个；协议按模型显式配置、正则规则、渠道默认协议的顺序解析。</p>
-
-            <div v-if="testRecordRows.length" class="mt-4 border border-line">
-              <table class="table-eng w-full table-fixed" aria-label="模型测试记录表">
-                <thead>
-                  <tr>
-                    <th>模型</th>
-                    <th class="w-24">结果</th>
-                    <th class="w-28">协议</th>
-                    <th>上游模型</th>
-                    <th class="w-24 text-right">延迟</th>
-                    <th>说明</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in testRecordRows" :key="row.model.name">
-                    <td><code class="text-[12px]">{{ row.model.name }}</code></td>
-                    <td>
-                      <span v-if="testing[row.model.name] || row.result?.pending" class="chip chip-test">测试中</span>
-                      <span v-else-if="row.result?.success" class="chip chip-run">通过</span>
-                      <span v-else class="chip chip-trip">失败</span>
-                    </td>
-                    <td><code class="text-[12px]">{{ row.result?.protocol || '—' }}</code></td>
-                    <td><code class="break-all text-[12px]">{{ row.result?.upstream || row.model.upstream || row.model.name }}</code></td>
-                    <td class="num">{{ row.result?.latency_ms ? `${row.result.latency_ms} ms` : '—' }}</td>
-                    <td class="max-w-md break-words text-[12px] text-soft">{{ row.result?.success ? (row.result.reply || '连通正常') : (row.result?.error || '等待试验结果') }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-if="channels.length && !sortedChannels.length" class="m-3 rounded-lg border border-dashed border-line bg-white px-4 py-10 text-center">
+              <div class="font-medium text-ink">没有匹配的渠道</div><p class="mt-1 text-xs text-soft">尝试清空搜索词或切换运行状态。</p>
+              <button type="button" class="btn btn-sm mt-3" @click="channelQuery = ''; statusFilter = 'all'">清除筛选</button>
             </div>
-          </div>
-        </section>
+          </PageState>
+        </div>
+      </aside>
 
-        <div v-show="editorTab === 'routing'" class="editor-routing-grid">
-          <section class="editor-panel" aria-labelledby="rules-heading">
-            <div class="border-b border-line px-3 py-2.5">
-              <div id="rules-heading" class="dim-title">协议路由规则</div>
-              <div class="mt-0.5 text-[12px] text-soft">按模型名称匹配目标协议。</div>
-            </div>
-            <div class="space-y-2 p-3">
-              <p class="text-[12px] text-soft">按模型名称正则匹配；优先级低于模型中的显式协议配置。</p>
-              <div v-for="(rule, index) in rules" :key="index" class="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_130px_auto]">
-                <input v-model="rule.pattern" class="input input-mono text-[12px]" placeholder="^claude" :aria-label="`第 ${index + 1} 条协议规则正则`" />
-                <select v-model="rule.protocol" class="input text-[12px]" :aria-label="`第 ${index + 1} 条协议规则目标协议`">
-                  <option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option>
-                </select>
-                <button type="button" class="btn btn-danger btn-sm" :aria-label="`删除第 ${index + 1} 条协议规则`" @click="rules.splice(index, 1)">删除</button>
+      <section v-if="!isMobile && !showEditor" class="channel-detail-empty sheet" aria-label="渠道详情空状态">
+        <div class="max-w-sm text-center">
+          <span class="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-line bg-surface text-blue-grid"><ConsoleIcon name="server" class="h-6 w-6" /></span>
+          <h2 class="mt-4 text-base font-semibold text-ink">选择一个渠道开始配置</h2>
+          <p class="mt-2 text-sm leading-6 text-soft">从左侧队列选择已有渠道，或新建渠道并在此完成配置。</p>
+          <button type="button" class="btn btn-primary mt-4" @click="openCreate"><ConsoleIcon name="plus" class="h-4 w-4" />新建渠道</button>
+        </div>
+      </section>
+
+      <component
+        :is="isMobile ? Drawer : 'section'" v-if="isMobile || showEditor"
+        v-bind="isMobile ? { open: showEditor, title: form.id ? `渠道详情 · ${form.name || '未命名'}` : '新建渠道', width: 'max-w-none', persistent: editorBusy } : { class: 'channel-detail-host sheet' }"
+        @close="closeEditor"
+      >
+        <div v-if="showEditor" class="channel-detail min-w-0">
+          <header class="channel-detail-heading">
+            <div class="min-w-0">
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <span class="channel-state-dot" :class="form.status === 1 ? 'channel-state-run' : 'channel-state-off'" aria-hidden="true"><i></i></span>
+                <h2 class="min-w-0 truncate text-base font-semibold text-ink">{{ form.name || '未命名渠道' }}</h2><span class="chip">{{ form.id ? `ID ${form.id}` : '新建' }}</span>
               </div>
-              <button type="button" class="btn btn-sm" aria-label="添加协议规则" @click="rules.push({ pattern: '', protocol: 'anthropic' })">添加规则</button>
+              <p class="mt-1 truncate font-mono text-[10px] text-soft">{{ displayEndpoint(form.base_url) }}</p>
             </div>
-          </section>
+            <div class="hidden shrink-0 items-center gap-2 sm:flex"><span class="chip chip-blue">{{ typeName(form.type) }}</span><span class="chip">{{ enabledCount }} / {{ models.length }} 模型</span></div>
+          </header>
 
-          <section class="editor-panel" aria-labelledby="advanced-heading">
-            <div class="border-b border-line px-3 py-2.5">
-              <div id="advanced-heading" class="dim-title">权重与请求复写</div>
-              <div class="mt-0.5 text-[12px] text-soft">设置负载权重，并在协议转换后复写发往上游的请求头与请求体。</div>
-            </div>
-            <div class="grid gap-3 p-3">
-              <div>
-                <label class="field-label" for="channel-weight">渠道权重</label>
-                <input id="channel-weight" v-model.number="form.weight" type="number" min="1" class="input input-mono" placeholder="1" />
-                <p class="mt-1 text-[12px] text-soft">同优先级条件下的负载分配比例；优先级可在渠道列表中拖动调整。</p>
+          <nav class="detail-mobile-nav" role="tablist" aria-label="渠道配置区域">
+            <button v-for="section in editorSections" :key="`mobile-${section.key}`" type="button" role="tab" :aria-selected="editorTab === section.key" @click="editorTab = section.key"><ConsoleIcon :name="section.icon" class="h-4 w-4" /><span>{{ section.label }}</span></button>
+          </nav>
+
+          <div class="channel-detail-layout">
+            <aside class="channel-detail-nav" aria-label="渠道配置导航">
+              <div class="px-3 pb-2 pt-3 font-mono text-[9px] uppercase tracking-[.14em] text-faint">配置区域</div>
+              <nav class="space-y-1" role="tablist">
+                <button v-for="section in editorSections" :key="section.key" type="button" role="tab" :aria-selected="editorTab === section.key" @click="editorTab = section.key">
+                  <ConsoleIcon :name="section.icon" class="h-4 w-4 shrink-0" />
+                  <span class="min-w-0 flex-1"><b>{{ section.label }}</b><small>{{ section.note }}</small></span>
+                  <span class="detail-nav-state" :class="editorSteps[section.key] ? 'is-done' : 'is-pending'"></span>
+                </button>
+              </nav>
+              <dl class="detail-summary"><div><dt>协议</dt><dd>{{ typeName(form.type) }}</dd></div><div><dt>模型</dt><dd>{{ enabledCount }} / {{ models.length }}</dd></div><div><dt>权重</dt><dd>×{{ form.weight || 1 }}</dd></div><div><dt>请求头</dt><dd>{{ customHeaderCount }}</dd></div></dl>
+            </aside>
+
+            <main class="channel-detail-content">
+              <div class="mb-3 flex min-w-0 items-start justify-between gap-3">
+                <div class="min-w-0"><div class="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[.12em] text-blue-grid"><span>{{ activeEditor.index }}</span><span>{{ activeEditor.label }}</span></div><p class="mt-1 text-xs text-soft">{{ activeEditor.note }}</p></div>
+                <span class="chip shrink-0" :class="editorSteps[editorTab] ? 'chip-run' : 'chip-test'">{{ editorSteps[editorTab] ? '区域就绪' : '待完善' }}</span>
               </div>
-              <HeaderOverrideEditor
-                v-model="form.header_override"
-                :disabled="editorBusy"
-                @validation="headerValidation = $event"
-              />
-              <BodyOverrideEditor
-                v-model="form.body_override"
-                :disabled="editorBusy"
-                @validation="bodyValidation = $event"
-              />
-            </div>
-          </section>
-        </div>
-            </div>
-          </main>
-        </div>
+              <InlineNotice v-if="editorError" class="mb-3" tone="danger" title="无法完成操作">{{ editorError }}</InlineNotice>
 
-        <div v-if="editorError" class="mt-3 rounded-lg border border-trip bg-trip-wash px-3 py-2 text-[13px] text-trip" role="alert">{{ editorError }}</div>
-      </div>
+              <div v-show="editorTab === 'connection'" class="space-y-3">
+                <ConsoleSection title="连接与身份" description="定义渠道名称、默认协议、上游地址与凭据。" eyebrow="Connection">
+                  <div class="grid min-w-0 gap-4 md:grid-cols-2">
+                    <div><label class="field-label" for="channel-name">渠道名称 *</label><input id="channel-name" v-model="form.name" class="input" placeholder="例：OpenAI 主账号" autocomplete="off" data-autofocus /></div>
+                    <div><label class="field-label" for="channel-group">分组</label><input id="channel-group" v-model="form.group" class="input input-mono" placeholder="default" autocomplete="off" /></div>
+                    <div><label class="field-label" for="channel-type">默认协议 *</label><select id="channel-type" v-model.number="form.type" class="input" @change="onTypeChange"><option v-for="type in channelTypes" :key="type.value" :value="type.value">{{ type.name }}</option></select></div>
+                    <div class="md:col-span-2"><label class="field-label" for="channel-url">Base URL *</label><input id="channel-url" v-model="form.base_url" class="input input-mono" placeholder="https://api.openai.com" autocomplete="off" /></div>
+                    <div class="md:col-span-2">
+                      <label class="field-label" for="channel-key">API Key *</label>
+                      <div class="channel-key-row">
+                        <input id="channel-key" v-model="form.key" :type="revealKey ? 'text' : 'password'" class="input input-mono min-w-0" placeholder="upstream-key" name="apirelay-upstream-key" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-form-type="other" />
+                        <button type="button" class="btn shrink-0" :aria-pressed="revealKey" :aria-label="revealKey ? '隐藏 API Key' : '显示 API Key'" @click="revealKey = !revealKey"><ConsoleIcon :name="revealKey ? 'x' : 'key'" class="h-4 w-4" />{{ revealKey ? '隐藏' : '显示' }}</button>
+                        <button type="button" class="btn shrink-0" :disabled="!form.key" @click="copyKey(form)">复制</button>
+                      </div>
+                    </div>
+                  </div>
+                </ConsoleSection>
+              </div>
 
-      <template #footer>
-        <div class="flex w-full flex-wrap items-center justify-between gap-2">
-          <div>
-            <span class="block font-mono text-2xs text-faint">{{ form.id ? `CHANNEL ID ${form.id}` : 'UNSAVED CHANNEL' }}</span>
-            <span class="mt-0.5 block text-[11px]" :class="canSave ? 'text-run' : 'text-soft'">{{ saveHint }}</span>
+              <div v-show="editorTab === 'models'" class="space-y-3">
+                <ConsoleSection title="模型与价格" :description="`${enabledCount} 个启用，共 ${models.length} 个配置；价格单位为 USD / 1M tokens。`" eyebrow="Models" flush>
+                  <template #actions>
+                    <button type="button" class="btn btn-sm" :disabled="editorBusy || !form.base_url || !form.key || enabledCount === 0" @click="testAllInModal"><ConsoleIcon name="bolt" class="h-4 w-4" />{{ batchTesting ? `批测中 ${batchDone}/${batchTotal}` : '批量测试' }}</button>
+                    <button type="button" class="btn btn-sm" :disabled="editorBusy || !form.base_url || !form.key" @click="fetchModels"><ConsoleIcon name="arrowPath" class="h-4 w-4" :class="{ 'animate-spin': probing }" />{{ probing ? '探测中' : '探测模型' }}</button>
+                  </template>
+                  <div class="p-3 sm:p-4">
+                    <InlineNotice v-if="batchTesting || batchSummary" class="mb-3" :tone="batchSummary?.failed ? 'warning' : 'info'" title="批量测试"><span v-if="batchTesting">执行中 {{ batchDone }} / {{ batchTotal }}</span><span v-else-if="batchSummary">通过 {{ batchSummary.success }}，失败 {{ batchSummary.failed }}，总计 {{ batchSummary.total }}。</span></InlineNotice>
+                    <DataToolbar label="添加模型">
+                      <input v-model="newModelName" class="input input-mono min-w-0 flex-1" placeholder="模型显示名（可使用 * 通配）" aria-label="新模型名称" @keyup.enter="addModel" />
+                      <template #actions><button type="button" class="btn btn-primary btn-sm" @click="addModel"><ConsoleIcon name="plus" class="h-4 w-4" />添加模型</button></template>
+                    </DataToolbar>
+                    <div v-if="models.length" class="model-table-wrap mt-3 hidden lg:block">
+                      <table class="table-eng min-w-[820px]" aria-label="模型配置表">
+                        <thead><tr><th class="w-16">启用</th><th>模型名称</th><th class="w-36">协议</th><th>上游映射</th><th class="w-24 text-right">输入价</th><th class="w-24 text-right">输出价</th><th class="w-20 text-right">测试</th><th class="w-20 text-right">删除</th></tr></thead>
+                        <tbody><tr v-for="(model, index) in models" :key="index">
+                          <td><button type="button" class="channel-switch" :class="{ 'channel-switch-on': model.enabled }" :aria-pressed="model.enabled" @click="model.enabled = !model.enabled"><span></span></button></td>
+                          <td><input v-model="model.name" class="input input-mono py-1 text-[12px]" placeholder="显示名" /></td>
+                          <td><select v-model="model.protocol" class="input py-1 text-[12px]"><option value="">继承规则</option><option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option></select></td>
+                          <td><input v-model="model.upstream" class="input input-mono py-1 text-[12px]" placeholder="留空则同显示名" /></td>
+                          <td><input v-model.number="model.input" type="number" step="0.01" min="0" class="input py-1 text-right font-mono text-[12px]" placeholder="0" /></td>
+                          <td><input v-model.number="model.output" type="number" step="0.01" min="0" class="input py-1 text-right font-mono text-[12px]" placeholder="0" /></td>
+                          <td class="text-right"><button type="button" class="btn btn-sm" :disabled="Boolean(testing[model.name]) || batchTesting || saving || !model.name.trim()" @click="testModel(model)">{{ testing[model.name] ? '测试中' : '单测' }}</button></td>
+                          <td class="text-right"><button type="button" class="btn btn-danger btn-sm" :disabled="Boolean(testing[model.name]) || batchTesting" @click="removeModel(index, model)">删除</button></td>
+                        </tr></tbody>
+                      </table>
+                    </div>
+                    <div v-if="models.length" class="mt-3 grid gap-3 lg:hidden">
+                      <article v-for="(model, index) in models" :key="index" class="rounded-lg border border-line bg-surface p-3">
+                        <div class="flex items-center justify-between gap-2"><span class="font-medium">模型 {{ index + 1 }}</span><button type="button" class="channel-switch" :class="{ 'channel-switch-on': model.enabled }" :aria-pressed="model.enabled" @click="model.enabled = !model.enabled"><span></span></button></div>
+                        <div class="mt-3 grid gap-2">
+                          <input v-model="model.name" class="input input-mono" placeholder="模型名称" />
+                          <select v-model="model.protocol" class="input"><option value="">继承规则</option><option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option></select>
+                          <input v-model="model.upstream" class="input input-mono" placeholder="上游映射，留空则同模型名称" />
+                          <div class="grid grid-cols-2 gap-2"><input v-model.number="model.input" type="number" step="0.01" min="0" class="input" placeholder="输入价" /><input v-model.number="model.output" type="number" step="0.01" min="0" class="input" placeholder="输出价" /></div>
+                          <div class="grid grid-cols-2 gap-2"><button type="button" class="btn btn-sm" :disabled="Boolean(testing[model.name]) || batchTesting || saving || !model.name.trim() || !headerValidation.valid" @click="testModel(model)">{{ testing[model.name] ? '测试中' : '单测' }}</button><button type="button" class="btn btn-danger btn-sm" :disabled="Boolean(testing[model.name]) || batchTesting" @click="removeModel(index, model)">删除</button></div>
+                        </div>
+                      </article>
+                    </div>
+                    <div v-if="!models.length" class="mt-3 rounded-lg border border-dashed border-line p-8 text-center text-sm text-soft">尚未添加模型</div>
+                    <div v-if="testRecordRows.length" class="model-table-wrap mt-4">
+                      <table class="table-eng min-w-[680px]" aria-label="模型测试记录表">
+                        <thead><tr><th>模型</th><th class="w-24">结果</th><th class="w-28">协议</th><th>上游模型</th><th class="w-24 text-right">延迟</th><th>说明</th></tr></thead>
+                        <tbody><tr v-for="row in testRecordRows" :key="row.model.name">
+                          <td><code class="text-[12px]">{{ row.model.name }}</code></td><td><span v-if="testing[row.model.name] || row.result?.pending" class="chip chip-test">测试中</span><span v-else-if="row.result?.success" class="chip chip-run">通过</span><span v-else class="chip chip-trip">失败</span></td>
+                          <td><code class="text-[12px]">{{ row.result?.protocol || '—' }}</code></td><td><code class="break-all text-[12px]">{{ row.result?.upstream || row.model.upstream || row.model.name }}</code></td><td class="num">{{ row.result?.latency_ms ? `${row.result.latency_ms} ms` : '—' }}</td><td class="max-w-md break-words text-[12px] text-soft">{{ row.result?.success ? (row.result.reply || '连通正常') : (row.result?.error || '等待试验结果') }}</td>
+                        </tr></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </ConsoleSection>
+              </div>
+
+              <div v-show="editorTab === 'overrides'" class="space-y-3">
+                <ConsoleSection title="协议路由规则" description="按模型名称匹配目标协议；优先级低于模型显式协议配置。" eyebrow="Protocol rules">
+                  <div class="space-y-2">
+                    <div v-for="(rule, index) in rules" :key="index" class="rule-row">
+                      <input v-model="rule.pattern" class="input input-mono text-[12px]" placeholder="^claude" :aria-label="`第 ${index + 1} 条协议规则正则`" />
+                      <select v-model="rule.protocol" class="input text-[12px]"><option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option></select>
+                      <button type="button" class="btn btn-danger btn-sm" @click="rules.splice(index, 1)"><ConsoleIcon name="trash" class="h-4 w-4" />删除</button>
+                    </div>
+                    <button type="button" class="btn btn-sm" @click="rules.push({ pattern: '', protocol: 'anthropic' })"><ConsoleIcon name="plus" class="h-4 w-4" />添加规则</button>
+                  </div>
+                </ConsoleSection>
+                <ConsoleSection title="请求内容改写" description="在协议转换后、发送到上游前应用。" eyebrow="Overrides">
+                  <div class="grid min-w-0 gap-6 xl:grid-cols-2">
+                    <HeaderOverrideEditor v-model="form.header_override" :disabled="editorBusy" @validation="headerValidation = $event" />
+                    <BodyOverrideEditor v-model="form.body_override" :disabled="editorBusy" @validation="bodyValidation = $event" />
+                  </div>
+                </ConsoleSection>
+              </div>
+
+              <div v-show="editorTab === 'reliability'" class="space-y-3">
+                <ConsoleSection title="路由参与与负载" description="控制渠道是否参与路由，以及同优先级下的负载权重。" eyebrow="Reliability">
+                  <div class="grid gap-4 md:grid-cols-2">
+                    <div class="rounded-lg border border-line bg-surface p-3"><div class="flex items-center justify-between gap-3"><div><div class="text-sm font-semibold text-ink">渠道状态</div><p class="mt-1 text-xs text-soft">{{ form.status === 1 ? '当前参与模型路由。' : '当前不会接收新请求。' }}</p></div><button type="button" class="channel-switch" :class="{ 'channel-switch-on': form.status === 1 }" :aria-pressed="form.status === 1" @click="form.status = form.status === 1 ? 0 : 1"><span></span></button></div></div>
+                    <div><label class="field-label" for="channel-weight">渠道权重</label><input id="channel-weight" v-model.number="form.weight" type="number" min="1" class="input input-mono" placeholder="1" /><p class="mt-1 text-[11px] text-soft">优先级仍由左侧队列拖拽顺序决定。</p></div>
+                    <div class="md:col-span-2"><label class="field-label" for="channel-test-prompt">测试提示词覆盖</label><textarea id="channel-test-prompt" v-model="form.test_prompt" class="input min-h-24 resize-y" maxlength="4000" :placeholder="`留空继承全局：${globalTestPrompt}`"></textarea><p class="mt-1 text-[11px] text-soft">单测与批量体检优先使用此内容；留空时继承全局默认。</p></div>
+                  </div>
+                </ConsoleSection>
+                <ConsoleSection title="健康检查与熔断" description="对已保存渠道运行全模型检查，或清除累计健康状态。" eyebrow="Health">
+                  <template #actions><span v-if="selectedChannel" class="chip" :class="healthClass(channelHealth(selectedChannel))">{{ healthText(channelHealth(selectedChannel)) }}</span></template>
+                  <InlineNotice v-if="!form.id" tone="info" title="保存后可用">创建渠道后即可运行全模型检查和重置健康状态。</InlineNotice>
+                  <div v-else class="grid gap-3 sm:grid-cols-2">
+                    <button type="button" class="btn justify-start" :disabled="checkupLoadingId !== null" @click="checkupChannel(selectedChannel || form)"><ConsoleIcon name="bolt" class="h-4 w-4" />{{ checkupLoadingId === form.id ? '检查中' : '运行全模型检查' }}</button>
+                    <button type="button" class="btn justify-start" :disabled="resettingIds.has(form.id)" @click="resetBreaker(selectedChannel || form)"><ConsoleIcon name="arrowPath" class="h-4 w-4" />{{ resettingIds.has(form.id) ? '重置中' : breakerState(selectedChannel || form) === 'trip' ? '解除熔断' : '重置健康状态' }}</button>
+                  </div>
+                </ConsoleSection>
+              </div>
+            </main>
           </div>
-          <div class="flex gap-2">
-            <button type="button" class="btn" :disabled="editorBusy" aria-label="取消渠道编辑" @click="closeEditor">取消</button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              :disabled="editorBusy || !canSave"
-              aria-label="保存渠道配置"
-              @click="save"
-            >{{ saving ? '保存中' : '保存' }}</button>
-          </div>
-        </div>
-      </template>
-    </Modal>
 
-    <Modal
-      :open="showCheckup"
-      :title="`已保存渠道体检 · ${checkupChannelName}`"
-      width="max-w-4xl"
-      @close="showCheckup = false"
-    >
+          <footer class="channel-actionbar">
+            <div class="min-w-0"><div class="flex items-center gap-2 text-xs font-semibold" :class="`save-state-${saveStatus.tone}`"><span class="save-state-dot"></span>{{ saveStatus.label }}</div><p class="mt-1 truncate text-[10px] text-soft">{{ saveHint }}</p></div>
+            <div class="channel-action-buttons">
+              <button v-if="form.id" type="button" class="btn btn-danger" :disabled="editorBusy || deletingIds.has(form.id)" @click="removeChannel(selectedChannel || form)"><ConsoleIcon name="trash" class="h-4 w-4" />{{ deletingIds.has(form.id) ? '删除中' : '删除' }}</button>
+              <button type="button" class="btn" :disabled="editorBusy || (!isDirty && Boolean(form.id))" @click="closeEditor">取消</button>
+              <button type="button" class="btn btn-primary" :disabled="editorBusy || !canSave || (!isDirty && Boolean(form.id))" @click="save"><ConsoleIcon name="checkCircle" class="h-4 w-4" />{{ saving ? '保存中' : form.id ? '保存更改' : '创建渠道' }}</button>
+            </div>
+          </footer>
+        </div>
+      </component>
+    </div>
+
+    <Modal :open="showCheckup" :title="`渠道检查记录 · ${checkupChannelName}`" width="max-w-4xl" @close="showCheckup = false">
       <div class="space-y-3">
-        <div v-if="checkupSummary" class="flex flex-wrap items-center gap-2">
-          <span class="chip chip-run">通过 {{ checkupSummary.success }}</span>
-          <span class="chip chip-trip">失败 {{ checkupSummary.failed }}</span>
-          <span class="chip chip-test">总计 {{ checkupSummary.total }}</span>
-          <span class="chip">合格率 {{ checkupRate }}%</span>
-        </div>
-
+        <div v-if="checkupSummary" class="flex flex-wrap items-center gap-2"><span class="chip chip-run">通过 {{ checkupSummary.success }}</span><span class="chip chip-trip">失败 {{ checkupSummary.failed }}</span><span class="chip chip-test">总计 {{ checkupSummary.total }}</span><span class="chip">合格率 {{ checkupRate }}%</span></div>
         <div v-if="checkupResults.length" class="space-y-2">
           <article v-for="(result, index) in checkupResults" :key="`${result.model}-${index}`" class="rounded-lg border border-line p-3">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <code class="break-all text-[12px]">{{ result.model }}</code>
-              <span class="chip" :class="result.success ? 'chip-run' : 'chip-trip'">{{ result.success ? '通过' : '失败' }}</span>
-            </div>
-            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-soft">
-              <span>协议：<code>{{ result.protocol || '—' }}</code></span>
-              <span>上游：<code>{{ result.upstream || result.model }}</code></span>
-              <span>延迟：<code>{{ result.success && result.latency_ms ? `${result.latency_ms} ms` : '—' }}</code></span>
-            </div>
+            <div class="flex flex-wrap items-center justify-between gap-2"><code class="break-all text-[12px]">{{ result.model }}</code><span class="chip" :class="result.success ? 'chip-run' : 'chip-trip'">{{ result.success ? '通过' : '失败' }}</span></div>
+            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-soft"><span>协议：<code>{{ result.protocol || '—' }}</code></span><span>上游：<code>{{ result.upstream || result.model }}</code></span><span>延迟：<code>{{ result.success && result.latency_ms ? `${result.latency_ms} ms` : '—' }}</code></span></div>
             <p class="mt-2 break-words text-xs leading-5 text-soft">{{ result.success ? (result.reply || '连通正常') : (result.error || '未返回错误说明') }}</p>
           </article>
         </div>
-        <div v-else class="rounded-lg border border-dashed border-line px-4 py-8 text-center text-sm text-soft">无体检记录</div>
+        <div v-else class="rounded-lg border border-dashed border-line px-4 py-8 text-center text-sm text-soft">无检查记录</div>
       </div>
-
-      <template #footer>
-        <button type="button" class="btn" aria-label="关闭渠道体检记录" @click="showCheckup = false">关闭记录</button>
-      </template>
+      <template #footer><button type="button" class="btn" @click="showCheckup = false">关闭记录</button></template>
     </Modal>
   </div>
 </template>
 
 <style scoped>
-.channel-list {
-  background:
-    linear-gradient(90deg, transparent 27px, rgba(53, 100, 212, .08) 27px, rgba(53, 100, 212, .08) 28px, transparent 28px),
-    #f8fafd;
-}
-
-.route-bus {
-  display: flex;
-  min-height: 70px;
-  gap: 4px;
-}
-
-.route-bus-segment {
-  --segment-color: #94a0b2;
-  flex: var(--segment-grow) 1 0;
-  min-width: 88px;
-  border: 1px solid #dde4ed;
-  border-radius: 10px;
-  background: #fff;
-  padding: 10px 12px;
-  text-align: left;
-  transition: flex-grow 240ms cubic-bezier(.2,.8,.2,1), border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
-}
-.route-bus-segment:hover { transform: translateY(-2px); border-color: var(--segment-color); }
-.route-bus-active { background: color-mix(in srgb, var(--segment-color) 8%, white); border-color: var(--segment-color); box-shadow: 0 8px 22px color-mix(in srgb, var(--segment-color) 14%, transparent); }
-.route-bus-run { --segment-color: #23877f; }
-.route-bus-test { --segment-color: #b7791f; }
-.route-bus-trip { --segment-color: #d05a52; }
-.route-bus-off { --segment-color: #94a0b2; }
-.route-bus-line { display: block; height: 3px; border-radius: 999px; background: var(--segment-color); transform-origin: left; transition: transform 220ms ease; }
-.route-bus-segment:hover .route-bus-line, .route-bus-active .route-bus-line { transform: scaleX(.82); }
-.route-bus-copy { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 9px; }
-.route-bus-copy b { font-family: 'Saira SemiCondensed', sans-serif; font-size: 22px; line-height: 1; color: #18243a; }
-.route-bus-copy span { font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: #627087; white-space: nowrap; }
-
-.channel-row {
-  background: rgba(255,255,255,.96);
-  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease, opacity 180ms ease;
-  animation: feeder-in 360ms both cubic-bezier(.2,.8,.2,1);
-  animation-delay: min(calc(var(--row-index) * 32ms), 240ms);
-}
-.channel-row:hover { border-color: #d2dce9; transform: translateX(2px); box-shadow: 0 8px 24px rgba(22,36,58,.06); }
-.channel-row-off { opacity: .68; filter: saturate(.7); }
-.channel-row.channel-row-dragging { opacity: .48; transform: scale(.99); box-shadow: 0 18px 40px rgba(15,23,42,.18); cursor: grabbing; }
-.channel-row.channel-row-dropzone { background: #edf2ff; border-color: #88a5ea; }
-.channel-drop-line { position: absolute; inset-inline: 8px; top: -5px; height: 3px; border-radius: 999px; background: #3564d4; box-shadow: 0 0 0 4px rgba(53,100,212,.10); }
-.channel-grip { display: inline-flex; width: 24px; height: 30px; align-items: center; justify-content: center; border-radius: 6px; color: #94a0b2; cursor: grab; transition: color 150ms ease, background-color 150ms ease; }
-.channel-grip:hover:not(:disabled) { color: #3564d4; background: #edf2ff; }
-.channel-grip:active:not(:disabled) { cursor: grabbing; }
+.channels-workspace { display: grid; grid-template-columns: minmax(320px, 380px) minmax(0, 1fr); gap: 14px; min-width: 0; }
+.channel-master, .channel-detail-host { height: calc(100dvh - 184px); min-height: 620px; }
+.channel-master { display: flex; min-width: 0; flex-direction: column; }
+.channel-list-scroll { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+.channel-list { display: grid; gap: 6px; background: rgb(var(--color-canvas)); }
+.channel-row { border-color: transparent; background: rgb(var(--color-surface-1)); cursor: pointer; animation: channel-row-in 260ms both cubic-bezier(.2,.8,.2,1); animation-delay: min(calc(var(--row-index) * 22ms), 180ms); transition: border-color 150ms ease, box-shadow 150ms ease, opacity 150ms ease, transform 150ms ease; }
+.channel-row:hover { border-color: rgb(var(--color-border)); transform: translateY(-1px); box-shadow: 0 7px 18px rgba(15, 23, 42, .06); }
+.channel-row-selected { border-color: rgb(var(--color-accent)); background: rgb(var(--color-accent-muted)); box-shadow: inset 3px 0 0 rgb(var(--color-accent)); }
+.channel-row-off { opacity: .68; }
+.channel-row-dragging { opacity: .45; cursor: grabbing; }
+.channel-row-dropzone { border-color: #a4382f; background: #f8ece8; }
+.channel-drop-line { position: absolute; inset-inline: 6px; top: -4px; height: 3px; border-radius: 999px; background: #a4382f; }
+.channel-grip { display: inline-flex; height: 26px; width: 24px; align-items: center; justify-content: center; border-radius: 5px; color: rgb(var(--color-text-muted)); cursor: grab; }
+.channel-grip:hover:not(:disabled) { background: rgb(var(--color-surface-2)); color: rgb(var(--color-text)); }
 .channel-grip:disabled { cursor: not-allowed; opacity: .35; }
-.channel-priority { display: flex; align-items: center; gap: 7px; min-width: 42px; font-family: 'Spline Sans Mono', monospace; font-size: 10px; color: #94a0b2; }
-.channel-priority-line { width: 12px; height: 1px; background: #cbd5e1; }
-.channel-state-dot { position: relative; display: inline-flex; width: 10px; height: 10px; flex: 0 0 auto; border-radius: 999px; background: #94a0b2; }
-.channel-state-dot i { position: absolute; inset: 3px; border-radius: inherit; background: white; opacity: .72; }
-.channel-state-run { background: #23877f; box-shadow: 0 0 0 4px rgba(35,135,127,.11); }
-.channel-state-test { background: #b7791f; box-shadow: 0 0 0 4px rgba(183,121,31,.11); animation: signal-pulse 1.8s ease-in-out infinite; }
-.channel-state-trip { background: #d05a52; box-shadow: 0 0 0 4px rgba(208,90,82,.12); animation: signal-pulse 1.35s ease-in-out infinite; }
-.channel-state-off { background: #94a0b2; }
-
-.channel-editor { margin: -20px; background: #f4f7fb; }
-.editor-layout { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 610px; }
-.editor-sidebar { display: flex; flex-direction: column; border-right: 1px solid #dde4ed; background: #16243a; color: white; }
-.editor-device-mark { display: flex; align-items: center; gap: 11px; padding: 20px 18px; border-bottom: 1px solid rgba(255,255,255,.09); }
-.editor-device-mark b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Saira SemiCondensed', sans-serif; font-size: 15px; font-weight: 600; color: rgba(255,255,255,.92); }
-.editor-device-mark span:not(.channel-state-dot) { display: block; margin-top: 2px; font-family: 'Spline Sans Mono', monospace; font-size: 9px; letter-spacing: .12em; color: rgba(255,255,255,.34); }
-.editor-side-nav { display: grid; gap: 4px; padding: 14px 10px; }
-.editor-side-nav button { position: relative; display: grid; grid-template-columns: 27px minmax(0,1fr) 8px; align-items: center; gap: 8px; min-height: 58px; border-radius: 10px; padding: 9px 10px; text-align: left; color: rgba(255,255,255,.48); transition: background-color 160ms ease, color 160ms ease, transform 160ms ease; }
-.editor-side-nav button:hover { color: rgba(255,255,255,.82); background: rgba(255,255,255,.05); transform: translateX(2px); }
-.editor-side-nav button[aria-selected='true'] { color: white; background: rgba(255,255,255,.09); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
-.editor-nav-index { font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: rgba(142,177,255,.75); }
-.editor-side-nav b { display: block; font-size: 12px; font-weight: 600; }
-.editor-side-nav small { display: block; margin-top: 3px; font-size: 10px; color: rgba(255,255,255,.32); }
-.editor-side-nav i { width: 7px; height: 7px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; }
-.editor-side-nav i.is-done { border-color: #60c3b8; background: #60c3b8; box-shadow: 0 0 0 3px rgba(96,195,184,.1); }
-.editor-side-nav i.is-error { border-color: #ed8b83; background: #ed8b83; }
-.editor-summary { margin-top: auto; border-top: 1px solid rgba(255,255,255,.09); padding: 16px 18px 18px; }
-.editor-summary > span { font-family: 'Spline Sans Mono', monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: rgba(255,255,255,.3); }
-.editor-summary dl { display: grid; gap: 8px; margin-top: 10px; }
-.editor-summary dl div { display: flex; justify-content: space-between; gap: 10px; font-size: 10px; }
-.editor-summary dt { color: rgba(255,255,255,.34); }
-.editor-summary dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,.72); font-family: 'Spline Sans Mono', monospace; }
-.editor-workspace { min-width: 0; background: #f4f7fb; }
-.editor-workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #dde4ed; background: rgba(255,255,255,.82); padding: 18px 22px; }
-.editor-workspace-head > div > span { float: left; margin-right: 10px; padding-top: 3px; font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: #3564d4; }
-.editor-workspace-head h3 { font-family: 'Saira SemiCondensed', sans-serif; font-size: 20px; font-weight: 600; line-height: 1.1; color: #18243a; }
-.editor-workspace-head p { margin-top: 4px; font-size: 11px; color: #627087; }
-.editor-workspace-body { padding: 18px; }
-.editor-panel { overflow: hidden; border: 1px solid #dde4ed; border-radius: 12px; background: white; box-shadow: 0 1px 2px rgba(22,36,58,.03); }
-.editor-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #dde4ed; padding: 13px 16px; }
-.editor-routing-grid { display: grid; gap: 14px; }
-.editor-mobile-nav { display: none; }
-.editor-step { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; border: 1px solid #cbd5e1; border-radius: 999px; font-family: 'Spline Sans Mono', monospace; font-size: 9px; color: #94a0b2; background: white; }
-.editor-step-done { color: white; border-color: #23877f; background: #23877f; }
-.editor-step-warn { border-color: #d05a52; color: #d05a52; }
-
-@keyframes feeder-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes signal-pulse { 50% { box-shadow: 0 0 0 7px rgba(183,121,31,0); } }
-
-@media (max-width: 900px) {
-  .channel-editor { margin: -16px; }
-  .editor-layout { display: block; min-height: 0; }
-  .editor-sidebar { display: none; }
-  .editor-mobile-nav { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 4px; border-bottom: 1px solid #dde4ed; background: white; padding: 8px; }
-  .editor-mobile-nav button { display: flex; min-width: 0; align-items: center; justify-content: center; gap: 6px; border-radius: 8px; padding: 7px 5px; font-size: 11px; font-weight: 600; color: #627087; }
-  .editor-mobile-nav button[aria-selected='true'] { background: #16243a; color: white; }
-  .editor-workspace-head { padding: 14px 16px; }
-  .editor-workspace-body { padding: 12px; }
+.channel-state-dot { position: relative; display: inline-flex; width: 9px; height: 9px; flex: 0 0 auto; border-radius: 999px; background: #938a7c; }
+.channel-state-dot i { position: absolute; inset: 3px; border-radius: inherit; background: white; opacity: .7; }
+.channel-state-run { background: #50705a; box-shadow: 0 0 0 3px rgba(80,112,90,.12); }
+.channel-state-test { background: #9a6a2f; box-shadow: 0 0 0 3px rgba(154,106,47,.12); }
+.channel-state-trip { background: #a4382f; box-shadow: 0 0 0 3px rgba(164,56,47,.12); }
+.channel-state-off { background: #938a7c; }
+.channel-detail-empty { display: flex; min-width: 0; align-items: center; justify-content: center; padding: 28px; }
+.channel-detail-host { min-width: 0; overflow: hidden; }
+.channel-detail { display: flex; height: 100%; min-height: 0; flex-direction: column; background: rgb(var(--color-canvas)); }
+.channel-detail-heading { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgb(var(--color-border)); background: rgb(var(--color-surface-1)); padding: 13px 16px; }
+.channel-detail-layout { display: grid; min-height: 0; flex: 1; grid-template-columns: 168px minmax(0, 1fr); }
+.channel-detail-nav { min-height: 0; overflow-y: auto; border-right: 1px solid rgb(var(--color-border)); background: rgb(var(--color-surface-1)); padding: 0 8px 12px; }
+.channel-detail-nav nav button { display: grid; width: 100%; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; border-radius: 6px; padding: 9px 8px; text-align: left; color: rgb(var(--color-text-secondary)); transition: background-color 140ms ease, color 140ms ease; }
+.channel-detail-nav nav button:hover { background: rgb(var(--color-surface-2)); color: rgb(var(--color-text)); }
+.channel-detail-nav nav button[aria-selected='true'] { background: rgb(var(--color-accent-muted)); color: rgb(var(--color-accent-strong)); }
+.channel-detail-nav b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
+.channel-detail-nav small { display: block; overflow: hidden; margin-top: 2px; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; color: rgb(var(--color-text-muted)); }
+.detail-nav-state { width: 6px; height: 6px; border-radius: 999px; background: rgb(var(--color-text-muted)); }
+.detail-nav-state.is-done { background: #50705a; }
+.detail-nav-state.is-pending { background: #9a6a2f; }
+.detail-summary { display: grid; gap: 6px; margin: 18px 8px 0; border-top: 1px solid rgb(var(--color-border)); padding-top: 12px; }
+.detail-summary div { display: flex; min-width: 0; justify-content: space-between; gap: 8px; font-size: 9px; color: rgb(var(--color-text-muted)); }
+.detail-summary dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Spline Sans Mono', monospace; color: rgb(var(--color-text-secondary)); }
+.channel-detail-content { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px; }
+.detail-mobile-nav { display: none; }
+.channel-key-row { display: flex; min-width: 0; gap: 8px; }
+.model-table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid rgb(var(--color-border)); }
+.rule-row { display: grid; min-width: 0; grid-template-columns: minmax(0,1fr) 140px auto; gap: 8px; }
+.channel-actionbar { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid rgb(var(--color-border)); background: rgb(var(--color-surface-1)); padding: 10px 14px; box-shadow: 0 -8px 20px rgba(15,23,42,.04); }
+.channel-action-buttons { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.save-state-dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
+.save-state-saving { color: rgb(var(--color-warning)); }.save-state-dirty { color: rgb(var(--color-danger)); }.save-state-saved { color: rgb(var(--color-success)); }.save-state-idle { color: rgb(var(--color-text-secondary)); }
+@keyframes channel-row-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@media (max-width: 1100px) and (min-width: 901px) {
+  .channels-workspace { grid-template-columns: minmax(310px, 360px) minmax(0, 1fr); gap: 10px; }
+  .channel-detail-layout { grid-template-columns: 148px minmax(0,1fr); }
+  .channel-detail-content { padding: 12px; }
+  .channel-key-row { flex-wrap: wrap; }.channel-key-row .input { flex-basis: 100%; }
 }
-
-@media (max-width: 700px) {
-  .route-bus { overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
-  .route-bus-segment { flex: 0 0 126px; scroll-snap-align: start; }
-  .channel-list { background-position-x: -5px; }
-  .channel-row:hover { transform: none; }
-  .editor-workspace-head .chip { display: none; }
+@media (max-width: 767px) {
+  .channels-workspace { display: block; }.channel-master { height: auto; min-height: 0; }.channel-list-scroll { overflow: visible; }
+  .channel-detail { min-height: calc(100dvh - 88px); }.channel-detail-heading { padding: 2px 0 12px; }
+  .detail-mobile-nav { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 4px; border-bottom: 1px solid rgb(var(--color-border)); padding: 8px 0; }
+  .detail-mobile-nav button { display: flex; min-width: 0; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border-radius: 6px; padding: 7px 3px; color: rgb(var(--color-text-secondary)); font-size: 9px; font-weight: 600; }
+  .detail-mobile-nav button[aria-selected='true'] { background: rgb(var(--color-accent-muted)); color: rgb(var(--color-accent-strong)); }
+  .channel-detail-layout { display: block; flex: 1 0 auto; }.channel-detail-nav { display: none; }.channel-detail-content { overflow: visible; padding: 12px 0; }
+  .channel-actionbar { position: sticky; bottom: -20px; z-index: 10; margin: 0 -4px -20px; flex-wrap: wrap; padding: 10px 4px 12px; }
+  .channel-action-buttons { width: 100%; }.channel-action-buttons .btn { min-width: 0; flex: 1; padding-inline: 8px; }
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .channel-row, .channel-state-test, .channel-state-trip { animation: none; }
-  .route-bus-segment, .route-bus-line { transition: none; }
+@media (max-width: 520px) {
+  .channel-key-row { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); }.channel-key-row .input { grid-column: 1 / -1; }
+  .rule-row { grid-template-columns: minmax(0,1fr); }.rule-row .btn { width: 100%; }.channel-detail-heading .chip { display: none; }
 }
+@media (max-width: 390px) { .channel-row { padding: 10px; }.detail-mobile-nav button { font-size: 8px; }.channel-actionbar { gap: 8px; }.channel-action-buttons { gap: 5px; } }
+@media (prefers-reduced-motion: reduce) { .channel-row { animation: none; transition: none; } }
 </style>

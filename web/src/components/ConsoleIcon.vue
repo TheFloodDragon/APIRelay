@@ -1,0 +1,75 @@
+<script setup>
+import {
+  ArrowPathIcon,
+  ArrowRightStartOnRectangleIcon,
+  Bars3Icon,
+  BoltIcon,
+  CheckCircleIcon,
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CircleStackIcon,
+  ClockIcon,
+  Cog6ToothIcon,
+  CommandLineIcon,
+  CubeTransparentIcon,
+  DocumentMagnifyingGlassIcon,
+  EllipsisHorizontalIcon,
+  ExclamationCircleIcon,
+  ExclamationTriangleIcon,
+  FunnelIcon,
+  InformationCircleIcon,
+  KeyIcon,
+  MagnifyingGlassIcon,
+  PlusIcon,
+  ServerStackIcon,
+  ShieldCheckIcon,
+  Squares2X2Icon,
+  TrashIcon,
+  UserCircleIcon,
+  XMarkIcon,
+} from '@heroicons/vue/24/outline'
+
+const props = defineProps({
+  name: { type: String, default: 'command' },
+})
+
+const icons = {
+  arrowPath: ArrowPathIcon,
+  arrowRightStart: ArrowRightStartOnRectangleIcon,
+  bars: Bars3Icon,
+  bolt: BoltIcon,
+  checkCircle: CheckCircleIcon,
+  chevronDown: ChevronDownIcon,
+  chevronLeft: ChevronLeftIcon,
+  chevronRight: ChevronRightIcon,
+  circleStack: CircleStackIcon,
+  clock: ClockIcon,
+  cog: Cog6ToothIcon,
+  command: CommandLineIcon,
+  cube: CubeTransparentIcon,
+  dashboard: Squares2X2Icon,
+  ellipsis: EllipsisHorizontalIcon,
+  error: ExclamationCircleIcon,
+  filter: FunnelIcon,
+  info: InformationCircleIcon,
+  key: KeyIcon,
+  logs: DocumentMagnifyingGlassIcon,
+  models: CubeTransparentIcon,
+  plus: PlusIcon,
+  search: MagnifyingGlassIcon,
+  server: ServerStackIcon,
+  settings: Cog6ToothIcon,
+  shield: ShieldCheckIcon,
+  success: CheckCircleIcon,
+  tokens: KeyIcon,
+  trash: TrashIcon,
+  user: UserCircleIcon,
+  warning: ExclamationTriangleIcon,
+  x: XMarkIcon,
+}
+</script>
+
+<template>
+  <component :is="icons[props.name] || CommandLineIcon" aria-hidden="true" />
+</template>

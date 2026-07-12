@@ -1,5 +1,6 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
+import ConsoleIcon from './ConsoleIcon.vue'
 
 const open = ref(false)
 const root = ref(null)
@@ -17,7 +18,6 @@ function onDocKeydown(event) {
 }
 
 onMounted(() => {
-  // 捕获阶段监听 pointerdown，兼容鼠标、触摸与内部组件阻止冒泡的场景。
   document.addEventListener('pointerdown', onDocPointer, true)
   document.addEventListener('keydown', onDocKeydown, true)
 })
@@ -29,36 +29,35 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" class="relative inline-block text-left">
+  <div ref="root" class="action-menu">
     <button
       type="button"
-      class="btn btn-sm"
+      class="icon-button"
       aria-label="打开更多操作"
       aria-haspopup="menu"
       :aria-expanded="open"
       @click.stop="open = !open"
-    >更多</button>
-    <div
-      v-if="open"
-      class="absolute right-0 z-30 mt-1 min-w-36 border border-line bg-white p-1 shadow-lift"
-      role="menu"
-      @click="closeSoon"
     >
-      <slot />
-    </div>
+      <ConsoleIcon name="ellipsis" class="h-5 w-5" />
+    </button>
+    <div v-if="open" class="action-menu-panel" role="menu" @click="closeSoon"><slot /></div>
   </div>
 </template>
 
 <style scoped>
 :deep([role='menuitem']) {
-  display: block;
+  display: flex;
   width: 100%;
-  padding: 0.45rem 0.6rem;
+  align-items: center;
+  gap: .5rem;
+  padding: .5rem .625rem;
+  border-radius: .25rem;
   text-align: left;
-  font-size: 0.75rem;
+  font-size: .75rem;
+  color: rgb(var(--color-text-secondary));
 }
-
 :deep([role='menuitem']:hover:not(:disabled)) {
-  background: var(--color-panel, #f3f5f7);
+  background: rgb(var(--color-overlay));
+  color: rgb(var(--color-text));
 }
 </style>

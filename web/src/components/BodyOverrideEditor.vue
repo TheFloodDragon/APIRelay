@@ -1,5 +1,7 @@
 <script setup>
 import { computed, watch } from 'vue'
+import ConsoleIcon from './ConsoleIcon.vue'
+import InlineNotice from './InlineNotice.vue'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -36,36 +38,41 @@ watch(validation, (value) => emit('validation', value), { immediate: true })
 </script>
 
 <template>
-  <div class="space-y-2">
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <label class="field-label" for="body-override">请求体复写</label>
-      <span class="chip" :class="validation.valid ? 'chip-run' : 'chip-trip'">
-        {{ validation.valid ? `合并 ${validation.keyCount} 个字段` : '需要修正' }}
+  <div class="override-editor">
+    <div class="flex min-w-0 items-start justify-between gap-3">
+      <div class="min-w-0">
+        <label class="flex items-center gap-2 text-sm font-semibold text-ink" for="body-override">
+          <ConsoleIcon name="command" class="h-4 w-4 text-blue-grid" />
+          请求体复写
+        </label>
+        <p class="mt-1 text-[11px] leading-4 text-soft">协议转换后深合并；数组、标量和 null 整体覆盖。</p>
+      </div>
+      <span class="chip shrink-0" :class="validation.valid ? 'chip-run' : 'chip-trip'">
+        {{ validation.valid ? `${validation.keyCount} 个字段` : '需要修正' }}
       </span>
     </div>
+
     <textarea
       id="body-override"
       :value="modelValue"
-      rows="7"
-      class="input input-mono text-[12px]"
+      rows="9"
+      class="input input-mono mt-3 resize-y text-[12px]"
       :class="validation.valid ? '' : 'border-trip'"
       :disabled="disabled"
       placeholder='{"reasoning":{"effort":"high"}}'
       aria-describedby="body-override-help body-override-error"
       @input="emit('update:modelValue', $event.target.value)"
     ></textarea>
-    <p id="body-override-help" class="text-[12px] text-soft">
-      可留空。在协议转换后、发往上游前深合并进请求体：对象递归合并，数组与标量整体替换，null 按普通值覆盖。
-    </p>
-    <p v-if="validation.error" id="body-override-error" class="text-[12px] text-trip" role="alert">
-      {{ validation.error }}
-    </p>
-    <div class="border border-line bg-panel px-3 py-2 text-[12px] text-soft">
-      <div class="font-medium text-ink">以下顶层字段始终会被忽略</div>
-      <div class="mt-1 break-words font-mono text-[11px]">{{ protectedTopLevel.join(' · ') }}</div>
-      <div v-if="validation.ignored.length" class="mt-1 text-trip">
-        当前输入中将忽略：{{ validation.ignored.join('、') }}
-      </div>
-    </div>
+    <p id="body-override-help" class="mt-2 text-[11px] leading-4 text-soft">对象递归合并，留空则保持协议转换后的请求体不变。</p>
+    <p v-if="validation.error" id="body-override-error" class="mt-2 text-xs text-trip" role="alert">{{ validation.error }}</p>
+
+    <InlineNotice class="mt-3" :tone="validation.ignored.length ? 'warning' : 'info'" title="受保护顶层字段">
+      <span class="font-mono text-[10px]">{{ protectedTopLevel.join(' · ') }}</span>
+      <p v-if="validation.ignored.length" class="mt-1 text-trip">当前将忽略：{{ validation.ignored.join('、') }}</p>
+    </InlineNotice>
   </div>
 </template>
+
+<style scoped>
+.override-editor { min-width: 0; }
+</style>

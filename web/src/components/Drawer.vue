@@ -1,9 +1,12 @@
 <script setup>
 import { nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
+import ConsoleIcon from './ConsoleIcon.vue'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
   title: { type: String, default: '' },
+  width: { type: String, default: 'max-w-2xl' },
+  persistent: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close'])
 
@@ -14,13 +17,15 @@ let previousFocus = null
 let previousOverflow = ''
 
 function close() {
-  emit('close')
+  if (!props.persistent) emit('close')
 }
 
 function onKeydown(event) {
   if (event.key === 'Escape') {
-    event.stopPropagation()
-    close()
+    if (!props.persistent) {
+      event.stopPropagation()
+      emit('close')
+    }
     return
   }
   if (event.key !== 'Tab' || !panel.value) return
@@ -60,7 +65,8 @@ watch(
       previousFocus?.focus?.()
       previousFocus = null
     }
-  }
+  },
+  { immediate: true }
 )
 
 onBeforeUnmount(() => {
@@ -71,26 +77,44 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="fixed inset-0 z-[80] bg-ink/30" @mousedown.self="close">
-      <aside
-        ref="panel"
-        class="absolute inset-y-0 right-0 flex w-full max-w-2xl flex-col border-l border-line bg-white shadow-lift"
-        role="dialog"
-        aria-modal="true"
-        :aria-labelledby="titleId"
-        tabindex="-1"
-      >
-        <header class="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-3 sm:px-5">
-          <h2 :id="titleId" class="min-w-0 text-lg font-semibold text-ink">{{ title }}</h2>
-          <button class="btn btn-sm shrink-0" type="button" aria-label="关闭详情" @click="close">关闭</button>
-        </header>
-        <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
-          <slot />
-        </div>
-        <footer v-if="$slots.footer" class="shrink-0 border-t border-line bg-white px-4 py-3 sm:px-5">
-          <slot name="footer" />
-        </footer>
-      </aside>
-    </div>
+    <Transition name="drawer">
+      <div v-if="open" class="drawer-layer" @mousedown.self="close">
+        <aside
+          ref="panel"
+          class="drawer-panel"
+          :class="width"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="titleId"
+          tabindex="-1"
+        >
+          <header class="drawer-header">
+            <h2 :id="titleId" class="drawer-title">{{ title }}</h2>
+            <button v-if="!persistent" class="icon-button" type="button" aria-label="关闭抽屉" @click="close">
+              <ConsoleIcon name="x" class="h-5 w-5" />
+            </button>
+          </header>
+          <div class="drawer-body"><slot /></div>
+          <footer v-if="$slots.footer" class="drawer-footer"><slot name="footer" /></footer>
+        </aside>
+      </div>
+    </Transition>
   </Teleport>
 </template>
+
+<style scoped>
+.drawer-enter-active,
+.drawer-leave-active { transition: opacity 180ms ease; }
+.drawer-enter-active .drawer-panel,
+.drawer-leave-active .drawer-panel { transition: transform 220ms cubic-bezier(.2,.8,.2,1); }
+.drawer-enter-from,
+.drawer-leave-to { opacity: 0; }
+.drawer-enter-from .drawer-panel,
+.drawer-leave-to .drawer-panel { transform: translateX(100%); }
+@media (prefers-reduced-motion: reduce) {
+  .drawer-enter-active,
+  .drawer-leave-active,
+  .drawer-enter-active .drawer-panel,
+  .drawer-leave-active .drawer-panel { transition: none; }
+}
+</style>

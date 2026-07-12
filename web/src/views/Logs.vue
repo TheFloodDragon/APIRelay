@@ -2,7 +2,7 @@
 import { computed, getCurrentInstance, onMounted, ref } from 'vue'
 import api, { copyText, takeLatest, fmtTime as fmt, cost } from '../api'
 import PageState from '../components/PageState.vue'
-import PageHeader from '../components/PageHeader.vue'
+import ConsoleIcon from '../components/ConsoleIcon.vue'
 import LogFilterPanel from '../components/LogFilterPanel.vue'
 import LogDetailDrawer from '../components/LogDetailDrawer.vue'
 
@@ -56,7 +56,7 @@ const activeFilterCount = computed(() => Object.entries(filters.value).filter(([
   if (key === 'range') return value && value !== '24h'
   return String(value || '').trim()
 }).length)
-const moreFilterCount = computed(() => ['request_id', 'upstream_request_id', 'channel_id', 'status_min', 'status_max', 'is_stream', 'has_full_record']
+const moreFilterCount = computed(() => ['token_name', 'upstream_request_id', 'status_min', 'status_max', 'is_stream', 'has_full_record']
   .filter((key) => String(filters.value[key] || '').trim()).length)
 
 const fetchLogs = takeLatest((params) => api.get('/logs', { params }))
@@ -118,6 +118,27 @@ function decisionChip(decision) {
 
 function isModelMapped(log) {
   return Boolean(log?.mapped_model && log.mapped_model !== log.src_model)
+}
+
+function isFailed(log) {
+  return log?.type === 2 || Number(log?.status) >= 400
+}
+
+function requestPath(log) {
+  const capturedPath = log?.request_path || log?.client_path || log?.path
+  if (capturedPath) return capturedPath
+  return {
+    openai: '/v1/chat/completions',
+    anthropic: '/v1/messages',
+    responses: '/v1/responses',
+  }[log?.endpoint_type] || log?.endpoint_type || '—'
+}
+
+function statusTone(log) {
+  if (Number(log?.status) >= 500 || log?.type === 2) return 'bg-trip'
+  if (Number(log?.status) >= 400) return 'bg-test'
+  if (Number(log?.status) > 0) return 'bg-run'
+  return 'bg-faint'
 }
 
 function logParams() {
@@ -285,12 +306,20 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page-workbench logs-page min-w-0 space-y-5">
-    <PageHeader eyebrow="调用诊断中心" title="请求日志" description="沿客户端、APIRelay 与上游渠道还原每次调用，集中查看路由、耗时、计费与错误。">
-      <template #actions>
-        <button class="btn" type="button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button>
-      </template>
-    </PageHeader>
+  <div class="page-workbench logs-page min-w-0 space-y-3">
+    <header class="flex flex-col gap-3 border-b border-line pb-3 sm:flex-row sm:items-end sm:justify-between">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <ConsoleIcon name="logs" class="h-5 w-5 text-blue-grid" />
+          <h1 class="text-xl font-semibold tracking-tight text-ink">日志诊断</h1>
+        </div>
+        <p class="mt-1 text-xs text-soft">按请求定位路由、故障转移、延迟与计费。</p>
+      </div>
+      <button class="btn btn-sm" type="button" :disabled="loading" @click="load">
+        <ConsoleIcon name="arrowPath" class="h-4 w-4" :class="{ 'animate-spin': loading }" />
+        {{ loading ? '刷新中…' : '刷新' }}
+      </button>
+    </header>
 
     <LogFilterPanel
       v-model:expanded="showMoreFilters"
@@ -305,112 +334,136 @@ onMounted(load)
     />
 
     <PageState :loading="loading" :error="error" @retry="load">
-      <section class="sheet min-w-0 overflow-hidden">
-        <div class="sheet-head">
-          <span class="dim-title">日志记录</span>
+      <section class="sheet flex min-h-[30rem] min-w-0 flex-col overflow-hidden">
+        <div class="sheet-head !items-center !px-3 !py-2.5 sm:!px-4">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="dim-title">请求记录</span>
+            <span v-if="activeFilterCount" class="font-mono text-[10px] text-blue-grid">{{ activeFilterCount }} FILTERS</span>
+          </div>
           <span class="font-mono text-xs text-soft">{{ pageStart }}—{{ pageEnd }} / {{ total }}</span>
         </div>
 
-        <div v-if="!logs.length" class="stamp-block">
-          <div>当前范围没有日志</div>
-          <p class="mt-2">可清除筛选，或重新读取最新记录。</p>
-          <div class="mt-3 flex justify-center gap-2">
-            <button class="btn" type="button" @click="clearFilters">清除筛选</button>
-            <button class="btn" type="button" @click="load">重新读取</button>
+        <div v-if="!logs.length" class="flex flex-1 items-center justify-center p-5">
+          <div class="stamp-block !my-0">
+            <div>当前范围没有日志</div>
+            <p class="mt-2">可清除筛选，或重新读取最新记录。</p>
+            <div class="mt-3 flex justify-center gap-2">
+              <button class="btn btn-sm" type="button" @click="clearFilters">清除筛选</button>
+              <button class="btn btn-sm" type="button" @click="load">重新读取</button>
+            </div>
           </div>
         </div>
 
-        <div v-else>
-          <div class="hidden lg:block">
-            <table class="table-eng table-fixed">
+        <div v-else class="min-h-0 flex-1 overflow-auto">
+          <div class="hidden min-w-[1120px] lg:block">
+            <table class="table-eng table-fixed" aria-label="请求日志数据网格">
               <thead>
                 <tr>
                   <th class="w-[13%]">时间</th>
-                  <th class="w-[9%]">类型</th>
-                  <th class="w-[20%]">渠道 / 协议</th>
-                  <th class="w-[16%]">客户端模型 / 令牌</th>
-                  <th class="w-[15%] text-right">Tokens / 费用</th>
-                  <th class="w-[12%] text-right">耗时</th>
-                  <th class="w-[9%]">状态</th>
-                  <th class="w-[6%]">尝试</th>
+                  <th class="w-[8%]">状态</th>
+                  <th class="w-[17%]">请求路径</th>
+                  <th class="w-[13%]">渠道</th>
+                  <th class="w-[15%]">模型</th>
+                  <th class="w-[10%] text-right">延迟</th>
+                  <th class="w-[9%] text-right">Tokens</th>
+                  <th class="w-[9%] text-right">费用</th>
+                  <th class="w-[6%] text-right">尝试</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
                   v-for="log in logs"
                   :key="log.id"
-                  class="cursor-pointer focus-within:bg-canvas"
+                  class="cursor-pointer outline-none focus:bg-canvas"
+                  :class="{ 'bg-trip-wash/30': isFailed(log) }"
                   tabindex="0"
                   :aria-label="`查看日志 ${log.id} 详情`"
                   @click="openDetails(log)"
                   @keydown.enter.prevent="openDetails(log)"
                   @keydown.space.prevent="openDetails(log)"
                 >
-                  <td class="whitespace-nowrap font-mono text-xs">{{ fmt(log.created_at) }}</td>
-                  <td><span class="chip" :class="typeChip(log.type)">{{ typeName(log.type) }}</span></td>
+                  <td class="whitespace-nowrap border-l-2 font-mono text-[11px]" :class="isFailed(log) ? '!border-l-trip' : '!border-l-transparent'">{{ fmt(log.created_at) }}</td>
                   <td>
-                    <div class="truncate text-sm">{{ log.channel_name || (log.channel_id ? `#${log.channel_id}` : '—') }}</div>
-                    <div class="mt-1 truncate text-xs text-soft">{{ log.endpoint_type || '—' }}<template v-if="log.api_type && log.api_type !== log.endpoint_type"> → {{ log.api_type }}</template></div>
+                    <div class="flex items-center gap-2 font-mono text-[11px] font-medium text-ink">
+                      <span class="h-2 w-2 shrink-0 rounded-full" :class="statusTone(log)" />
+                      {{ log.status || '—' }}
+                    </div>
+                    <div class="mt-1 text-[10px] text-faint">{{ typeName(log.type) }}</div>
                   </td>
                   <td>
-                    <div class="truncate font-mono text-xs font-medium">{{ log.src_model || '—' }}</div>
-                    <div v-if="isModelMapped(log)" class="mt-1 truncate font-mono text-[11px] text-soft" :title="`实际请求模型：${log.mapped_model}`">↳ 实际 {{ log.mapped_model }}</div>
-                    <div class="mt-1 truncate font-mono text-xs text-soft">{{ log.token_name || '—' }}</div>
+                    <div class="truncate font-mono text-[11px] font-medium text-ink" :title="requestPath(log)">{{ requestPath(log) }}</div>
+                    <div class="mt-1 truncate text-[10px] text-faint">{{ log.request_id || `log:${log.id}` }}</div>
+                  </td>
+                  <td>
+                    <div class="truncate text-xs text-ink">{{ log.channel_name || (log.channel_id ? `#${log.channel_id}` : '—') }}</div>
+                    <div class="mt-1 truncate font-mono text-[10px] text-faint">{{ log.endpoint_type || '—' }}<template v-if="log.api_type && log.api_type !== log.endpoint_type"> → {{ log.api_type }}</template></div>
+                  </td>
+                  <td>
+                    <div class="truncate font-mono text-[11px] font-medium text-ink">{{ log.src_model || '—' }}</div>
+                    <div v-if="isModelMapped(log)" class="mt-1 truncate font-mono text-[10px] text-faint" :title="`实际请求模型：${log.mapped_model}`">→ {{ log.mapped_model }}</div>
                   </td>
                   <td class="num">
-                    <div>{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }} <span v-if="log.usage_estimated" class="chip chip-test ml-1">估算</span></div>
-                    <div v-if="log.cache_creation_input_tokens || log.cache_read_input_tokens || log.reasoning_tokens" class="text-[10px] text-soft">写 {{ log.cache_creation_input_tokens || 0 }} · 读 {{ log.cache_read_input_tokens || 0 }} · 推理 {{ log.reasoning_tokens || 0 }}</div>
-                    <div class="text-xs text-soft">{{ cost(log.quota) }}</div>
+                    <div class="text-ink">{{ log.use_time_ms || 0 }} ms</div>
+                    <div class="mt-1 text-[10px] text-faint">TTFB {{ log.first_byte_ms || 0 }} ms</div>
                   </td>
                   <td class="num">
-                    <div>{{ log.use_time_ms || 0 }} ms</div>
-                    <div class="text-xs text-soft">首字 {{ log.first_byte_ms || 0 }} ms</div>
+                    <div class="text-ink">{{ log.total_tokens || ((log.prompt_tokens || 0) + (log.completion_tokens || 0)) }}</div>
+                    <div class="mt-1 text-[10px] text-faint">{{ log.prompt_tokens || 0 }} + {{ log.completion_tokens || 0 }}<template v-if="log.usage_estimated"> · 估算</template></div>
                   </td>
-                  <td>
-                    <span class="chip" :class="statusChip(log.status)">HTTP {{ log.status || '—' }}</span>
-                  </td>
-                  <td><span class="chip" :class="log._failover_chain.length > 1 ? 'chip-test' : ''">{{ log._failover_chain.length }}</span></td>
+                  <td class="num text-ink">{{ cost(log.quota) }}</td>
+                  <td class="num text-ink">{{ log._failover_chain.length }}</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <div class="space-y-3 p-3 lg:hidden">
-            <article v-for="log in logs" :key="log.id" class="mobile-card">
+          <div class="divide-y divide-line lg:hidden">
+            <article
+              v-for="log in logs"
+              :key="log.id"
+              class="cursor-pointer border-l-2 px-3 py-3 outline-none focus:bg-canvas"
+              :class="isFailed(log) ? 'border-l-trip bg-trip-wash/25' : 'border-l-transparent'"
+              tabindex="0"
+              @click="openDetails(log)"
+              @keydown.enter.prevent="openDetails(log)"
+              @keydown.space.prevent="openDetails(log)"
+            >
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
-                  <div class="font-mono text-xs text-soft">{{ fmt(log.created_at) }}</div>
-                  <div class="mt-1 truncate font-medium">{{ log.channel_name || (log.channel_id ? `#${log.channel_id}` : '未知渠道') }}</div>
+                  <div class="truncate font-mono text-xs font-medium text-ink">{{ requestPath(log) }}</div>
+                  <div class="mt-1 truncate text-[11px] text-soft">{{ log.channel_name || (log.channel_id ? `#${log.channel_id}` : '未知渠道') }} · {{ log.src_model || '未知模型' }}</div>
                 </div>
-                <span class="chip shrink-0" :class="statusChip(log.status)">HTTP {{ log.status || '—' }}</span>
+                <div class="flex shrink-0 items-center gap-1.5 font-mono text-xs font-semibold text-ink">
+                  <span class="h-2 w-2 rounded-full" :class="statusTone(log)" />{{ log.status || '—' }}
+                </div>
               </div>
-              <dl class="mt-3 space-y-2">
-                <div class="mobile-kv"><dt>类型</dt><dd><span class="chip" :class="typeChip(log.type)">{{ typeName(log.type) }}</span></dd></div>
-                <div class="mobile-kv"><dt>协议</dt><dd class="break-all">{{ log.endpoint_type || '—' }}<template v-if="log.api_type && log.api_type !== log.endpoint_type"> → {{ log.api_type }}</template></dd></div>
-                <div class="mobile-kv"><dt>客户端模型</dt><dd class="break-all font-mono text-xs font-medium">{{ log.src_model || '—' }}</dd></div>
-                <div v-if="isModelMapped(log)" class="mobile-kv"><dt>实际请求模型</dt><dd class="break-all font-mono text-xs text-soft">{{ log.mapped_model }}</dd></div>
-                <div class="mobile-kv"><dt>令牌</dt><dd class="break-all font-mono text-xs">{{ log.token_name || '—' }}</dd></div>
-                <div class="mobile-kv"><dt>Tokens / 费用</dt><dd class="font-mono text-xs">{{ log.prompt_tokens || 0 }} / {{ log.completion_tokens || 0 }} · {{ cost(log.quota) }}<span v-if="log.usage_estimated" class="ml-1 text-test">估算</span></dd></div>
-                <div v-if="log.cache_creation_input_tokens || log.cache_read_input_tokens || log.reasoning_tokens" class="mobile-kv"><dt>缓存 / 推理</dt><dd class="font-mono text-xs">写 {{ log.cache_creation_input_tokens || 0 }} · 读 {{ log.cache_read_input_tokens || 0 }} · 推理 {{ log.reasoning_tokens || 0 }}</dd></div>
-                <div class="mobile-kv"><dt>耗时</dt><dd class="font-mono text-xs">{{ log.use_time_ms || 0 }} ms · 首字 {{ log.first_byte_ms || 0 }} ms</dd></div>
-                <div class="mobile-kv"><dt>尝试</dt><dd>{{ log._failover_chain.length }} 次</dd></div>
-              </dl>
-              <div class="mt-4 flex flex-wrap justify-end gap-2">
-                <button class="btn btn-sm" type="button" @click="copyDiagnostic(log)">复制诊断包</button>
-                <button class="btn btn-primary btn-sm" type="button" @click="openDetails(log)">查看详情</button>
+              <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-faint">
+                <span>{{ fmt(log.created_at) }}</span>
+                <span>{{ log.use_time_ms || 0 }} ms</span>
+                <span>{{ log.total_tokens || ((log.prompt_tokens || 0) + (log.completion_tokens || 0)) }} tok</span>
+                <span>{{ cost(log.quota) }}</span>
+                <span>{{ log._failover_chain.length }} 次尝试</span>
+              </div>
+              <div class="mt-2 flex items-center justify-between gap-2">
+                <span class="truncate font-mono text-[10px] text-faint">{{ log.request_id || `log:${log.id}` }}</span>
+                <button class="btn btn-ghost btn-sm shrink-0" type="button" @click.stop="copyDiagnostic(log)">复制诊断</button>
               </div>
             </article>
           </div>
         </div>
-      </section>
 
-      <nav class="flex flex-wrap items-center justify-between gap-3" aria-label="日志分页">
-        <span class="font-mono text-xs text-soft">第 {{ page }} / {{ pageCount }} 页 · 共 {{ total }} 条</span>
-        <div class="flex gap-2">
-          <button class="btn" type="button" :disabled="page <= 1" @click="previousPage">上一页</button>
-          <button class="btn" type="button" :disabled="page >= pageCount" @click="nextPage">下一页</button>
-        </div>
-      </nav>
+        <nav class="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-3 py-2.5 sm:px-4" aria-label="日志分页">
+          <span class="font-mono text-[11px] text-soft">第 {{ page }} / {{ pageCount }} 页 · 共 {{ total }} 条</span>
+          <div class="flex gap-2">
+            <button class="btn btn-sm" type="button" :disabled="page <= 1" @click="previousPage">
+              <ConsoleIcon name="chevronLeft" class="h-4 w-4" />上一页
+            </button>
+            <button class="btn btn-sm" type="button" :disabled="page >= pageCount" @click="nextPage">
+              下一页<ConsoleIcon name="chevronRight" class="h-4 w-4" />
+            </button>
+          </div>
+        </nav>
+      </section>
     </PageState>
 
     <LogDetailDrawer
@@ -418,7 +471,7 @@ onMounted(load)
       :payload="fullPayload"
       :loading="detailLoading"
       :error="detailError"
-      :helpers="{ typeChip, typeName, statusChip, isModelMapped, decisionChip, decisionName, formatBytes, payloadTitle, prettyPayload, fmt, cost }"
+      :helpers="{ typeChip, typeName, statusChip, isModelMapped, decisionChip, decisionName, formatBytes, payloadTitle, prettyPayload, fmt, cost, requestPath, isFailed, statusTone }"
       @close="selectedLog = null; fullPayload = null"
       @copy-diagnostic="copyDiagnostic"
       @copy-payload="copyPayload"

@@ -18,6 +18,6 @@ describe('shared presentation components', () => {
     const wrapper = mount(ServiceStatus, { props: { online: true } })
     expect(wrapper.get('[role="status"]').text()).toContain('服务在线')
     await wrapper.setProps({ online: false })
-    expect(wrapper.text()).toContain('状态未知')
+    expect(wrapper.text()).toContain('服务不可用')
   })
 })
