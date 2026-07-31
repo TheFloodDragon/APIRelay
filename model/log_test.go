@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ func setupLogTestDB(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 	LogDB.Exec("DELETE FROM logs")
+	LogDB.Exec("DELETE FROM log_payloads")
 	DB.Exec("DELETE FROM settings")
 	invalidateModelHealthConfigCache()
 }
@@ -249,5 +251,86 @@ func TestWalkLogExportUsesSnapshotFiltersAndIgnoresPagination(t *testing.T) {
 		if got[index] != want[index] {
 			t.Fatalf("export row %d = %q, want %q", index, got[index], want[index])
 		}
+	}
+}
+
+func TestListLogPayloadsBatchesAndSkipsMissing(t *testing.T) {
+	setupLogTestDB(t)
+	base := int64(1_700_000_000_000)
+	ids := make([]int, 0, payloadMigrationBatchSize+2)
+	for index := 0; index <= payloadMigrationBatchSize; index++ {
+		item := seedLog(t, &Log{RequestId: fmt.Sprintf("payload-%d", index), Type: LogTypeConsume, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + int64(index)})
+		if err := CreateLogPayload(item.Id, &FullLogData{ClientRequest: fmt.Sprintf(`{"seq":%d}`, index)}); err != nil {
+			t.Fatalf("create payload %d: %v", index, err)
+		}
+		ids = append(ids, item.Id)
+	}
+	noPayload := seedLog(t, &Log{RequestId: "no-payload", Type: LogTypeConsume, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 9999})
+	ids = append(ids, noPayload.Id)
+
+	payloads, err := ListLogPayloads(context.Background(), ids)
+	if err != nil {
+		t.Fatalf("list payloads: %v", err)
+	}
+	if len(payloads) != payloadMigrationBatchSize+1 {
+		t.Fatalf("payloads = %d, want %d", len(payloads), payloadMigrationBatchSize+1)
+	}
+	if _, exists := payloads[noPayload.Id]; exists {
+		t.Fatal("log without full record must not appear in payload map")
+	}
+	if got := payloads[ids[payloadMigrationBatchSize]]; got == nil || got.ClientRequest != fmt.Sprintf(`{"seq":%d}`, payloadMigrationBatchSize) {
+		t.Fatalf("last chunk payload = %+v", got)
+	}
+
+	if empty, err := ListLogPayloads(context.Background(), nil); err != nil || len(empty) != 0 {
+		t.Fatalf("empty id list = %#v, err=%v", empty, err)
+	}
+}
+
+func TestWalkLogExportRowsAttachesPayloadsOnlyWhenRequested(t *testing.T) {
+	setupLogTestDB(t)
+	base := int64(1_700_000_000_000)
+	full := seedLog(t, &Log{RequestId: "with-payload", Type: LogTypeConsume, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 100})
+	seedLog(t, &Log{RequestId: "without-payload", Type: LogTypeConsume, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 200})
+	seedLog(t, &Log{RequestId: "other-model", Type: LogTypeConsume, SrcModel: "claude", Status: 200, CreatedAt: base + 300})
+	if err := CreateLogPayload(full.Id, &FullLogData{ClientRequest: `{"model":"gpt-4o"}`, ClientResponse: `{"ok":true}`}); err != nil {
+		t.Fatalf("create payload: %v", err)
+	}
+
+	q := &LogQuery{Model: "gpt-4o"}
+	snapshot, err := PrepareLogExport(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withPayload := map[string]*FullLogData{}
+	if err := WalkLogExportRows(context.Background(), q, snapshot, true, func(item *Log, payload *FullLogData) error {
+		withPayload[item.RequestId] = payload
+		return nil
+	}); err != nil {
+		t.Fatalf("walk with payload: %v", err)
+	}
+	if len(withPayload) != 2 {
+		t.Fatalf("rows = %#v, want 2 filtered rows", withPayload)
+	}
+	if withPayload["without-payload"] != nil {
+		t.Fatalf("log without full record must yield nil payload: %+v", withPayload["without-payload"])
+	}
+	data := withPayload["with-payload"]
+	if data == nil || data.ClientRequest != `{"model":"gpt-4o"}` || data.ClientResponse != `{"ok":true}` {
+		t.Fatalf("payload = %+v", data)
+	}
+
+	summaryOnly := true
+	if err := WalkLogExportRows(context.Background(), q, snapshot, false, func(_ *Log, payload *FullLogData) error {
+		if payload != nil {
+			summaryOnly = false
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk summary: %v", err)
+	}
+	if !summaryOnly {
+		t.Fatal("summary export must not decompress payloads")
 	}
 }

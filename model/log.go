@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/apirelay/apirelay/common/logger"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -155,6 +156,41 @@ func GetLogPayload(logID int) (*FullLogData, error) {
 	if err := LogDB.Where("log_id = ?", logID).First(&payload).Error; err != nil {
 		return nil, err
 	}
+	return decodeLogPayload(&payload)
+}
+
+// ListLogPayloads 批量读取并解压多条日志的完整载荷，用于导出时避免逐条查询。
+// 单条载荷损坏只跳过该条，不影响整批导出。
+func ListLogPayloads(ctx context.Context, logIDs []int) (map[int]*FullLogData, error) {
+	result := make(map[int]*FullLogData, len(logIDs))
+	if len(logIDs) == 0 {
+		return result, nil
+	}
+	for start := 0; start < len(logIDs); start += payloadMigrationBatchSize {
+		end := start + payloadMigrationBatchSize
+		if end > len(logIDs) {
+			end = len(logIDs)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var payloads []LogPayload
+		if err := LogDB.WithContext(ctx).Where("log_id IN ?", logIDs[start:end]).Find(&payloads).Error; err != nil {
+			return nil, err
+		}
+		for index := range payloads {
+			data, err := decodeLogPayload(&payloads[index])
+			if err != nil {
+				logger.L().Warn("decode log payload for export failed", zap.Int("log_id", payloads[index].LogId), zap.Error(err))
+				continue
+			}
+			result[payloads[index].LogId] = data
+		}
+	}
+	return result, nil
+}
+
+func decodeLogPayload(payload *LogPayload) (*FullLogData, error) {
 	gr, err := gzip.NewReader(bytes.NewReader(payload.CompressedData))
 	if err != nil {
 		return nil, err
@@ -398,11 +434,23 @@ func PrepareLogExport(ctx context.Context, q *LogQuery) (*LogExportSnapshot, err
 	return &LogExportSnapshot{Total: result.Total, MaxID: result.MaxID}, nil
 }
 
-// WalkLogExport 按 ID keyset 分批读取日志；每批 Find 完成后再调用回调，
-// 避免慢速网络下载长期占用 SQLite 的唯一连接。
+// WalkLogExport 按 ID keyset 分批读取日志摘要。
 func WalkLogExport(ctx context.Context, q *LogQuery, snapshot *LogExportSnapshot, visit func(*Log) error) error {
+	return WalkLogExportRows(ctx, q, snapshot, false, func(item *Log, _ *FullLogData) error {
+		return visit(item)
+	})
+}
+
+// WalkLogExportRows 按 ID keyset 分批读取日志；每批 Find 完成后再调用回调，
+// 避免慢速网络下载长期占用 SQLite 的唯一连接。
+// includePayload 为 true 时按批一次性解压该批的完整载荷，无详情的日志回调 nil。
+func WalkLogExportRows(ctx context.Context, q *LogQuery, snapshot *LogExportSnapshot, includePayload bool, visit func(*Log, *FullLogData) error) error {
 	if snapshot == nil || snapshot.MaxID <= 0 || snapshot.Total == 0 {
 		return nil
+	}
+	batchSize := logMigrationBatchSize
+	if includePayload {
+		batchSize = payloadMigrationBatchSize
 	}
 	lastID := 0
 	for {
@@ -415,17 +463,31 @@ func WalkLogExport(ctx context.Context, q *LogQuery, snapshot *LogExportSnapshot
 			tx = tx.Where("id < ?", lastID)
 		}
 		var batch []*Log
-		if err := tx.Order("id DESC").Limit(logMigrationBatchSize).Find(&batch).Error; err != nil {
+		if err := tx.Order("id DESC").Limit(batchSize).Find(&batch).Error; err != nil {
 			return err
 		}
 		if len(batch) == 0 {
 			return nil
 		}
+		payloads := map[int]*FullLogData{}
+		if includePayload {
+			ids := make([]int, 0, len(batch))
+			for _, item := range batch {
+				if item.HasFullRecord {
+					ids = append(ids, item.Id)
+				}
+			}
+			loaded, err := ListLogPayloads(ctx, ids)
+			if err != nil {
+				return err
+			}
+			payloads = loaded
+		}
 		for _, item := range batch {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if err := visit(item); err != nil {
+			if err := visit(item, payloads[item.Id]); err != nil {
 				return err
 			}
 		}

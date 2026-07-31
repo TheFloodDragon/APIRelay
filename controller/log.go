@@ -55,6 +55,15 @@ var logCSVHeader = []string{
 	"created_at_utc",
 }
 
+// logPayloadCSVHeader 是完整导出追加的报文列，仅在 include_payload=true 时写入。
+var logPayloadCSVHeader = []string{
+	"failover_attempts",
+	"client_request",
+	"upstream_request",
+	"upstream_response",
+	"client_response",
+}
+
 // ListLogs GET /api/logs 调用日志查询。
 func ListLogs(c *gin.Context) {
 	q, err := parseLogQuery(c, true)
@@ -70,20 +79,31 @@ func ListLogs(c *gin.Context) {
 	ok(c, gin.H{"items": logs, "total": total, "page": q.Page, "page_size": q.PageSize})
 }
 
-// ExportLogs GET /api/logs/export 按当前筛选导出日志摘要 CSV。
+// ExportLogs GET /api/logs/export 按当前筛选导出日志 CSV。
+// include_payload=true 时追加完整请求/响应报文列。
 func ExportLogs(c *gin.Context) {
 	q, err := parseLogQuery(c, false)
 	if err != nil {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	includePayload, err := parseBoolQuery(c, "include_payload")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	withPayload := includePayload != nil && *includePayload
 	snapshot, err := model.PrepareLogExport(c.Request.Context(), q)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	filename := "apirelay-logs-" + time.Now().UTC().Format("20060102-150405") + ".csv"
+	scope := "logs"
+	if withPayload {
+		scope = "logs-full"
+	}
+	filename := "apirelay-" + scope + "-" + time.Now().UTC().Format("20060102-150405") + ".csv"
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	c.Header("Cache-Control", "no-store")
@@ -97,14 +117,22 @@ func ExportLogs(c *gin.Context) {
 		return
 	}
 	writer := csv.NewWriter(buffer)
-	if err := writer.Write(logCSVHeader); err != nil {
+	header := logCSVHeader
+	if withPayload {
+		header = append(append([]string{}, logCSVHeader...), logPayloadCSVHeader...)
+	}
+	if err := writer.Write(header); err != nil {
 		logExportError(c, err)
 		return
 	}
 
 	written := 0
-	err = model.WalkLogExport(c.Request.Context(), q, snapshot, func(item *model.Log) error {
-		if err := writer.Write(logCSVRow(item)); err != nil {
+	err = model.WalkLogExportRows(c.Request.Context(), q, snapshot, withPayload, func(item *model.Log, payload *model.FullLogData) error {
+		row := logCSVRow(item)
+		if withPayload {
+			row = append(row, logPayloadCSVRow(payload)...)
+		}
+		if err := writer.Write(row); err != nil {
 			return err
 		}
 		written++
@@ -172,6 +200,19 @@ func logCSVRow(item *model.Log) []string {
 		strconv.Itoa(item.PayloadOriginalSize),
 		strconv.Itoa(item.PayloadCompressedSize),
 		createdAtUTC,
+	}
+}
+
+func logPayloadCSVRow(payload *model.FullLogData) []string {
+	if payload == nil {
+		return make([]string, len(logPayloadCSVHeader))
+	}
+	return []string{
+		payload.FailoverAttempts,
+		payload.ClientRequest,
+		payload.UpstreamRequest,
+		payload.UpstreamResponse,
+		payload.ClientResponse,
 	}
 }
 

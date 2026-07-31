@@ -1,6 +1,7 @@
 <script setup>
 import { computed, getCurrentInstance, onMounted, ref } from 'vue'
 import api, { copyText, downloadBlob, takeLatest, fmtTime as fmt, cost } from '../api'
+import { confirmAction } from '../composables/useConfirm'
 import PageState from '../components/PageState.vue'
 import ConsoleIcon from '../components/ConsoleIcon.vue'
 import LogFilterPanel from '../components/LogFilterPanel.vue'
@@ -12,7 +13,7 @@ const page = ref(1)
 const pageSize = 20
 const total = ref(0)
 const loading = ref(true)
-const exporting = ref(false)
+const exportingScope = ref('')
 const error = ref('')
 const selectedLog = ref(null)
 const fullPayload = ref(null)
@@ -259,20 +260,29 @@ function nextPage() {
   load()
 }
 
-function exportFilename(now = new Date()) {
+function exportFilename(scope, now = new Date()) {
   const pad = (value) => String(value).padStart(2, '0')
-  return `apirelay-logs-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.csv`
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  return `apirelay-logs${scope === 'full' ? '-full' : ''}-${stamp}.csv`
 }
 
-async function exportLogs() {
-  exporting.value = true
+async function exportLogs(scope = 'summary') {
+  if (exportingScope.value) return
+  if (scope === 'full' && !(await confirmAction({
+    title: '导出完整报文',
+    message: '完整导出会附带请求与响应正文、请求头，其中可能包含密钥等敏感信息，文件也远大于摘要。请确认下载后妥善保管。',
+    confirmLabel: '继续导出',
+  }))) return
+  exportingScope.value = scope
   try {
-    await downloadBlob('/logs/export', exportFilename(), { params: filterParams() })
-    proxy.$toast.add('日志 CSV 已导出', 'success')
+    const params = filterParams()
+    if (scope === 'full') params.include_payload = true
+    await downloadBlob('/logs/export', exportFilename(scope), { params })
+    proxy.$toast.add(scope === 'full' ? '完整日志 CSV 已导出' : '日志 CSV 已导出', 'success')
   } catch (err) {
     proxy.$toast.add(err.message || '日志导出失败', 'error')
   } finally {
-    exporting.value = false
+    exportingScope.value = ''
   }
 }
 
@@ -342,9 +352,19 @@ onMounted(load)
         <p class="mt-1 text-xs text-soft">按请求定位路由、故障转移、延迟与计费。</p>
       </div>
       <div class="flex items-center gap-2">
-        <button class="btn btn-sm" type="button" :disabled="exporting" @click="exportLogs">
+        <button class="btn btn-sm" type="button" :disabled="Boolean(exportingScope)" @click="exportLogs('summary')">
           <ConsoleIcon name="download" class="h-4 w-4" />
-          {{ exporting ? '导出中…' : '导出 CSV' }}
+          {{ exportingScope === 'summary' ? '导出中…' : '导出摘要' }}
+        </button>
+        <button
+          class="btn btn-sm"
+          type="button"
+          :disabled="Boolean(exportingScope)"
+          title="附带完整请求与响应报文，文件更大且含敏感内容"
+          @click="exportLogs('full')"
+        >
+          <ConsoleIcon name="download" class="h-4 w-4" />
+          {{ exportingScope === 'full' ? '导出中…' : '导出完整报文' }}
         </button>
         <button class="btn btn-sm" type="button" :disabled="loading" @click="load">
           <ConsoleIcon name="arrowPath" class="h-4 w-4" :class="{ 'animate-spin': loading }" />
