@@ -9,6 +9,12 @@ database:
   driver: sqlite        # sqlite | mysql | postgres
   dsn: ./apirelay.db
 
+# 可选：独立日志数据库。删除整段则 logs/log_payloads 继续与主库共用。
+# 修改数据库连接后需重启；首次启用会复制主库历史日志，但不会删除旧表。
+log_database:
+  driver: sqlite        # 留空时继承 database.driver
+  dsn: ./apirelay-logs.db
+
 log:
   level: info           # debug | info | warn | error
   path: ./logs          # 为空则只输出到 stdout

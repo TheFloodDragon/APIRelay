@@ -139,6 +139,7 @@ func registerAdminRoutes(r *gin.Engine, cfg *config.Config) {
 		api.DELETE("/tokens/:id", controller.DeleteToken)
 
 		api.GET("/logs", controller.ListLogs)
+		api.GET("/logs/export", controller.ExportLogs)
 		api.GET("/logs/:id", controller.GetLogDetail)
 	}
 }

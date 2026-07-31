@@ -28,11 +28,12 @@ var configFilePath = struct {
 // Config 是 APIRelay 的全局配置。
 // 加载顺序：默认值 -> config.yaml -> 环境变量覆盖。
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Database DatabaseConfig `yaml:"database"`
-	Log      LogConfig      `yaml:"log"`
-	Relay    RelayConfig    `yaml:"relay"`
-	Auth     AuthConfig     `yaml:"auth"`
+	Server      ServerConfig    `yaml:"server"`
+	Database    DatabaseConfig  `yaml:"database"`
+	LogDatabase *DatabaseConfig `yaml:"log_database,omitempty"`
+	Log         LogConfig       `yaml:"log"`
+	Relay       RelayConfig     `yaml:"relay"`
+	Auth        AuthConfig      `yaml:"auth"`
 }
 
 type ServerConfig struct {
@@ -210,11 +211,22 @@ func (c *Config) Normalize() {
 	c.Server.CORSAllowedOrigins = normalizeList(c.Server.CORSAllowedOrigins)
 	c.Server.TrustedProxies = normalizeList(c.Server.TrustedProxies)
 
-	if strings.TrimSpace(c.Database.Driver) == "" {
+	c.Database.Driver = strings.ToLower(strings.TrimSpace(c.Database.Driver))
+	if c.Database.Driver == "" {
 		c.Database.Driver = "sqlite"
 	}
-	if strings.TrimSpace(c.Database.DSN) == "" {
+	c.Database.DSN = strings.TrimSpace(c.Database.DSN)
+	if c.Database.DSN == "" {
 		c.Database.DSN = "./apirelay.db"
+	}
+	if c.LogDatabase != nil {
+		c.LogDatabase.Driver = strings.ToLower(strings.TrimSpace(c.LogDatabase.Driver))
+		c.LogDatabase.DSN = strings.TrimSpace(c.LogDatabase.DSN)
+		if c.LogDatabase.DSN == "" {
+			c.LogDatabase = nil
+		} else if c.LogDatabase.Driver == "" {
+			c.LogDatabase.Driver = c.Database.Driver
+		}
 	}
 	if strings.TrimSpace(c.Log.Level) == "" {
 		c.Log.Level = "info"
@@ -301,6 +313,19 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("APIRELAY_DB_DSN"); v != "" {
 		cfg.Database.DSN = v
+	}
+	logDBDriver, hasLogDBDriver := os.LookupEnv("APIRELAY_LOG_DB_DRIVER")
+	logDBDSN, hasLogDBDSN := os.LookupEnv("APIRELAY_LOG_DB_DSN")
+	if hasLogDBDriver || hasLogDBDSN {
+		if cfg.LogDatabase == nil {
+			cfg.LogDatabase = &DatabaseConfig{}
+		}
+		if hasLogDBDriver {
+			cfg.LogDatabase.Driver = logDBDriver
+		}
+		if hasLogDBDSN {
+			cfg.LogDatabase.DSN = logDBDSN
+		}
 	}
 	if v := os.Getenv("APIRELAY_LOG_LEVEL"); v != "" {
 		cfg.Log.Level = strings.ToLower(v)

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, getCurrentInstance, onMounted, ref } from 'vue'
-import api, { copyText, takeLatest, fmtTime as fmt, cost } from '../api'
+import api, { copyText, downloadBlob, takeLatest, fmtTime as fmt, cost } from '../api'
 import PageState from '../components/PageState.vue'
 import ConsoleIcon from '../components/ConsoleIcon.vue'
 import LogFilterPanel from '../components/LogFilterPanel.vue'
@@ -12,6 +12,7 @@ const page = ref(1)
 const pageSize = 20
 const total = ref(0)
 const loading = ref(true)
+const exporting = ref(false)
 const error = ref('')
 const selectedLog = ref(null)
 const fullPayload = ref(null)
@@ -141,8 +142,8 @@ function statusTone(log) {
   return 'bg-faint'
 }
 
-function logParams() {
-  const params = { page: page.value, page_size: pageSize }
+function filterParams() {
+  const params = {}
   for (const [key, value] of Object.entries(filters.value)) {
     if (key === 'range') continue
     const normalized = String(value || '').trim()
@@ -155,6 +156,14 @@ function logParams() {
     params.end_time = end
   }
   return params
+}
+
+function paginationParams() {
+  return { page: page.value, page_size: pageSize }
+}
+
+function logParams() {
+  return { ...filterParams(), ...paginationParams() }
 }
 
 async function load() {
@@ -250,6 +259,23 @@ function nextPage() {
   load()
 }
 
+function exportFilename(now = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0')
+  return `apirelay-logs-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.csv`
+}
+
+async function exportLogs() {
+  exporting.value = true
+  try {
+    await downloadBlob('/logs/export', exportFilename(), { params: filterParams() })
+    proxy.$toast.add('日志 CSV 已导出', 'success')
+  } catch (err) {
+    proxy.$toast.add(err.message || '日志导出失败', 'error')
+  } finally {
+    exporting.value = false
+  }
+}
+
 function buildDiagnosticPackage(log) {
   const attempts = log._failover_chain || []
   const lines = [
@@ -315,10 +341,16 @@ onMounted(load)
         </div>
         <p class="mt-1 text-xs text-soft">按请求定位路由、故障转移、延迟与计费。</p>
       </div>
-      <button class="btn btn-sm" type="button" :disabled="loading" @click="load">
-        <ConsoleIcon name="arrowPath" class="h-4 w-4" :class="{ 'animate-spin': loading }" />
-        {{ loading ? '刷新中…' : '刷新' }}
-      </button>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-sm" type="button" :disabled="exporting" @click="exportLogs">
+          <ConsoleIcon name="download" class="h-4 w-4" />
+          {{ exporting ? '导出中…' : '导出 CSV' }}
+        </button>
+        <button class="btn btn-sm" type="button" :disabled="loading" @click="load">
+          <ConsoleIcon name="arrowPath" class="h-4 w-4" :class="{ 'animate-spin': loading }" />
+          {{ loading ? '刷新中…' : '刷新' }}
+        </button>
+      </div>
     </header>
 
     <LogFilterPanel

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/apirelay/apirelay/common/config"
+	"gorm.io/gorm"
 )
 
 // TestSQLiteWALEnabled 验证 sqlite 分支已开启 WAL 与外键约束。
@@ -126,4 +127,129 @@ func TestRetrySettle_ExhaustsOnPersistentBusy(t *testing.T) {
 	if calls != settleMaxRetries {
 		t.Errorf("calls = %d, want %d", calls, settleMaxRetries)
 	}
+}
+
+func TestInitDBSharesLogDatabaseByDefault(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "shared.db")
+	if err := InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: dsn}); err != nil {
+		t.Fatalf("init shared db: %v", err)
+	}
+	t.Cleanup(func() { _ = CloseDatabases() })
+	if DB == nil || LogDB == nil || DB != LogDB {
+		t.Fatalf("shared mode handles: DB=%p LogDB=%p", DB, LogDB)
+	}
+	if !DB.Migrator().HasTable(&Log{}) || !DB.Migrator().HasTable(&LogPayload{}) {
+		t.Fatal("shared database should contain log tables")
+	}
+}
+
+func TestIndependentLogDatabaseMigratesLegacyLogsAndKeepsSource(t *testing.T) {
+	dir := t.TempDir()
+	primaryCfg := config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(dir, "primary.db")}
+	logCfg := config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(dir, "logs.db")}
+
+	if err := InitDB(&primaryCfg); err != nil {
+		t.Fatalf("init legacy db: %v", err)
+	}
+	legacy := &Log{RequestId: "legacy-1", Type: LogTypeConsume, Status: 200, SrcModel: "legacy-model", CreatedAt: 1_700_000_000_000}
+	if err := CreateLog(legacy); err != nil {
+		t.Fatalf("create legacy log: %v", err)
+	}
+	if err := CreateLogPayload(legacy.Id, &FullLogData{ClientRequest: `{"hello":"世界"}`}); err != nil {
+		t.Fatalf("create legacy payload: %v", err)
+	}
+
+	if err := InitDatabases(&primaryCfg, &logCfg); err != nil {
+		t.Fatalf("enable independent log db: %v", err)
+	}
+	t.Cleanup(func() { _ = CloseDatabases() })
+	if DB == LogDB {
+		t.Fatal("independent mode should use different handles")
+	}
+
+	var sourceLogs, targetLogs, targetPayloads int64
+	if err := DB.Model(&Log{}).Count(&sourceLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := LogDB.Model(&Log{}).Count(&targetLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := LogDB.Model(&LogPayload{}).Count(&targetPayloads).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sourceLogs != 1 || targetLogs != 1 || targetPayloads != 1 {
+		t.Fatalf("migrated counts source=%d target=%d payload=%d", sourceLogs, targetLogs, targetPayloads)
+	}
+	payload, err := GetLogPayload(legacy.Id)
+	if err != nil || payload.ClientRequest != `{"hello":"世界"}` {
+		t.Fatalf("migrated payload = %#v, err = %v", payload, err)
+	}
+
+	fresh := &Log{RequestId: "new-log", Type: LogTypeConsume, Status: 201}
+	if err := CreateLog(fresh); err != nil {
+		t.Fatalf("create independent log: %v", err)
+	}
+	if fresh.Id <= legacy.Id {
+		t.Fatalf("new log id = %d, want > %d", fresh.Id, legacy.Id)
+	}
+	if err := DB.Model(&Log{}).Count(&sourceLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := LogDB.Model(&Log{}).Count(&targetLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sourceLogs != 1 || targetLogs != 2 {
+		t.Fatalf("post-cutover counts source=%d target=%d", sourceLogs, targetLogs)
+	}
+
+	for name, db := range map[string]*gorm.DB{"primary": DB, "logs": LogDB} {
+		var journalMode string
+		var busyTimeout int
+		if err := db.Raw("PRAGMA journal_mode").Scan(&journalMode).Error; err != nil {
+			t.Fatalf("%s journal mode: %v", name, err)
+		}
+		if err := db.Raw("PRAGMA busy_timeout").Scan(&busyTimeout).Error; err != nil {
+			t.Fatalf("%s busy timeout: %v", name, err)
+		}
+		if journalMode != "wal" || busyTimeout != 5000 {
+			t.Fatalf("%s sqlite tuning mode=%q timeout=%d", name, journalMode, busyTimeout)
+		}
+	}
+
+	if err := InitDatabases(&primaryCfg, &logCfg); err != nil {
+		t.Fatalf("repeat independent init: %v", err)
+	}
+	if err := LogDB.Model(&Log{}).Count(&targetLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if targetLogs != 2 {
+		t.Fatalf("repeat init duplicated logs: %d", targetLogs)
+	}
+
+	if err := InitDB(&primaryCfg); err == nil {
+		t.Fatal("removing log database config after cutover should fail")
+	}
+}
+
+func TestIndependentLogDatabaseRejectsConflictingUnclaimedTarget(t *testing.T) {
+	dir := t.TempDir()
+	primaryCfg := config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(dir, "primary.db")}
+	logCfg := config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(dir, "logs.db")}
+
+	if err := InitDB(&primaryCfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateLog(&Log{RequestId: "source", Type: LogTypeConsume}); err != nil {
+		t.Fatal(err)
+	}
+	if err := InitDB(&logCfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateLog(&Log{RequestId: "target", Type: LogTypeConsume}); err != nil {
+		t.Fatal(err)
+	}
+	if err := InitDatabases(&primaryCfg, &logCfg); err == nil {
+		t.Fatal("expected conflicting source and target logs to be rejected")
+	}
+	_ = CloseDatabases()
 }

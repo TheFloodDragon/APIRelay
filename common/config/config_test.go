@@ -148,3 +148,39 @@ func TestTrustedProxiesDefaultEmpty(t *testing.T) {
 		t.Fatalf("default trusted proxies should be empty, got %#v", cfg.Server.TrustedProxies)
 	}
 }
+
+func TestLogDatabaseDefaultsToSharedAndInheritsDriver(t *testing.T) {
+	cfg := Default()
+	if cfg.LogDatabase != nil {
+		t.Fatalf("default log database should be nil, got %#v", cfg.LogDatabase)
+	}
+	cfg.LogDatabase = &DatabaseConfig{DSN: " ./apirelay-logs.db "}
+	cfg.Normalize()
+	if cfg.LogDatabase == nil {
+		t.Fatal("log database should remain configured")
+	}
+	if cfg.LogDatabase.Driver != "sqlite" || cfg.LogDatabase.DSN != "./apirelay-logs.db" {
+		t.Fatalf("normalized log database = %#v", cfg.LogDatabase)
+	}
+
+	cfg.LogDatabase = &DatabaseConfig{Driver: "postgres", DSN: "   "}
+	cfg.Normalize()
+	if cfg.LogDatabase != nil {
+		t.Fatalf("empty log database DSN should fall back to shared mode: %#v", cfg.LogDatabase)
+	}
+}
+
+func TestLogDatabaseEnvironmentOverrides(t *testing.T) {
+	t.Setenv("APIRELAY_LOG_DB_DRIVER", "POSTGRES")
+	t.Setenv("APIRELAY_LOG_DB_DSN", " postgres://logs.example/apirelay ")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogDatabase == nil {
+		t.Fatal("environment should enable the log database")
+	}
+	if cfg.LogDatabase.Driver != "postgres" || cfg.LogDatabase.DSN != "postgres://logs.example/apirelay" {
+		t.Fatalf("environment log database = %#v", cfg.LogDatabase)
+	}
+}

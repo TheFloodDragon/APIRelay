@@ -11,8 +11,8 @@ func setupTestDB(t *testing.T) {
 	if err := InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	DB.Exec("DELETE FROM logs")
-	DB.Exec("DELETE FROM log_payloads")
+	LogDB.Exec("DELETE FROM logs")
+	LogDB.Exec("DELETE FROM log_payloads")
 	DB.Exec("DELETE FROM settings")
 	invalidateModelHealthConfigCache()
 	invalidateBillingConfigCache()

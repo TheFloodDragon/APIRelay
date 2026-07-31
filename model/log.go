@@ -3,12 +3,14 @@ package model
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/apirelay/apirelay/common/logger"
+	"gorm.io/gorm"
 )
 
 // Log 是一条调用日志（核心需求：运行调用日志完善）。
@@ -61,7 +63,7 @@ type Log struct {
 // LogPayload 存储一条日志的完整请求/响应详情，gzip 压缩 JSON 后存入 blob。
 type LogPayload struct {
 	LogId            int    `json:"-" gorm:"primaryKey;index"`
-	CompressedData   []byte `json:"-" gorm:"type:blob"`
+	CompressedData   []byte `json:"-"`
 	OriginalSize     int    `json:"original_size"`
 	CompressedSize   int    `json:"compressed_size"`
 	CompressionAlgo  string `json:"compression_algo" gorm:"size:16"` // "gzip"
@@ -92,11 +94,20 @@ func CreateLog(l *Log) error {
 	if l.CreatedAt == 0 {
 		l.CreatedAt = nowMilli()
 	}
-	if err := DB.Create(l).Error; err != nil {
+	if err := LogDB.Create(l).Error; err != nil {
 		logger.L().Error("create log failed")
 		return err
 	}
 	return nil
+}
+
+// GetLogByID 查询单条日志摘要。
+func GetLogByID(id int) (*Log, error) {
+	var item Log
+	if err := LogDB.Where("id = ?", id).First(&item).Error; err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 // CreateLogPayload gzip 压缩并写入完整日志载荷。
@@ -115,29 +126,33 @@ func CreateLogPayload(logID int, data *FullLogData) error {
 	if err := gw.Close(); err != nil {
 		return err
 	}
-	compressed := buf.Bytes()
+	return storeCompressedLogPayload(logID, buf.Bytes(), originalSize)
+}
 
-	payload := &LogPayload{
-		LogId:           logID,
-		CompressedData:  compressed,
-		OriginalSize:    originalSize,
-		CompressedSize:  len(compressed),
-		CompressionAlgo: "gzip",
-	}
-	if err := DB.Create(payload).Error; err != nil {
-		return err
-	}
-	return DB.Model(&Log{}).Where("id = ?", logID).Updates(map[string]any{
-		"has_full_record":         true,
-		"payload_original_size":   originalSize,
-		"payload_compressed_size": len(compressed),
-	}).Error
+func storeCompressedLogPayload(logID int, compressed []byte, originalSize int) error {
+	return LogDB.Transaction(func(tx *gorm.DB) error {
+		payload := &LogPayload{
+			LogId:           logID,
+			CompressedData:  compressed,
+			OriginalSize:    originalSize,
+			CompressedSize:  len(compressed),
+			CompressionAlgo: "gzip",
+		}
+		if err := tx.Create(payload).Error; err != nil {
+			return err
+		}
+		return tx.Model(&Log{}).Where("id = ?", logID).Updates(map[string]any{
+			"has_full_record":         true,
+			"payload_original_size":   originalSize,
+			"payload_compressed_size": len(compressed),
+		}).Error
+	})
 }
 
 // GetLogPayload 读取并解压指定日志的完整载荷。
 func GetLogPayload(logID int) (*FullLogData, error) {
 	var payload LogPayload
-	if err := DB.Where("log_id = ?", logID).First(&payload).Error; err != nil {
+	if err := LogDB.Where("log_id = ?", logID).First(&payload).Error; err != nil {
 		return nil, err
 	}
 	gr, err := gzip.NewReader(bytes.NewReader(payload.CompressedData))
@@ -198,23 +213,7 @@ func saveFullLogPayloadSync(logID int, capture interface{}) error {
 	if err := gw.Close(); err != nil {
 		return err
 	}
-	compressed := buf.Bytes()
-
-	payload := &LogPayload{
-		LogId:           logID,
-		CompressedData:  compressed,
-		OriginalSize:    originalSize,
-		CompressedSize:  len(compressed),
-		CompressionAlgo: "gzip",
-	}
-	if err := DB.Create(payload).Error; err != nil {
-		return err
-	}
-	return DB.Model(&Log{}).Where("id = ?", logID).Updates(map[string]any{
-		"has_full_record":         true,
-		"payload_original_size":   originalSize,
-		"payload_compressed_size": len(compressed),
-	}).Error
+	return storeCompressedLogPayload(logID, buf.Bytes(), originalSize)
 }
 
 type captureData struct {
@@ -308,9 +307,10 @@ type LogQuery struct {
 	PageSize          int
 }
 
-// ListLogs 分页查询日志。
-func ListLogs(q *LogQuery) ([]*Log, int64, error) {
-	tx := DB.Model(&Log{})
+func applyLogFilters(tx *gorm.DB, q *LogQuery) *gorm.DB {
+	if q == nil {
+		return tx
+	}
 	if q.UserId > 0 {
 		tx = tx.Where("user_id = ?", q.UserId)
 	}
@@ -353,7 +353,12 @@ func ListLogs(q *LogQuery) ([]*Log, int64, error) {
 	if q.EndTime > 0 {
 		tx = tx.Where("created_at <= ?", q.EndTime)
 	}
+	return tx
+}
 
+// ListLogs 分页查询日志。
+func ListLogs(q *LogQuery) ([]*Log, int64, error) {
+	tx := applyLogFilters(LogDB.Model(&Log{}), q)
 	var total int64
 	if err := tx.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -373,13 +378,68 @@ func ListLogs(q *LogQuery) ([]*Log, int64, error) {
 	return logs, total, err
 }
 
+// LogExportSnapshot 固定一次导出的匹配数量和最大日志 ID。
+type LogExportSnapshot struct {
+	Total int64
+	MaxID int
+}
+
+// PrepareLogExport 创建导出快照，后续新增日志不会混入当前文件。
+func PrepareLogExport(ctx context.Context, q *LogQuery) (*LogExportSnapshot, error) {
+	type aggregate struct {
+		Total int64
+		MaxID int
+	}
+	var result aggregate
+	tx := applyLogFilters(LogDB.WithContext(ctx).Model(&Log{}), q)
+	if err := tx.Select("COUNT(*) AS total, COALESCE(MAX(id), 0) AS max_id").Scan(&result).Error; err != nil {
+		return nil, err
+	}
+	return &LogExportSnapshot{Total: result.Total, MaxID: result.MaxID}, nil
+}
+
+// WalkLogExport 按 ID keyset 分批读取日志；每批 Find 完成后再调用回调，
+// 避免慢速网络下载长期占用 SQLite 的唯一连接。
+func WalkLogExport(ctx context.Context, q *LogQuery, snapshot *LogExportSnapshot, visit func(*Log) error) error {
+	if snapshot == nil || snapshot.MaxID <= 0 || snapshot.Total == 0 {
+		return nil
+	}
+	lastID := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		tx := applyLogFilters(LogDB.WithContext(ctx).Model(&Log{}), q).
+			Where("id <= ?", snapshot.MaxID)
+		if lastID > 0 {
+			tx = tx.Where("id < ?", lastID)
+		}
+		var batch []*Log
+		if err := tx.Order("id DESC").Limit(logMigrationBatchSize).Find(&batch).Error; err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		for _, item := range batch {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := visit(item); err != nil {
+				return err
+			}
+		}
+		lastID = batch[len(batch)-1].Id
+	}
+}
+
 func ListModelLastUsed() (map[string]int64, error) {
 	type row struct {
 		Model      string
 		LastUsedAt int64
 	}
 	var rows []row
-	if err := DB.Model(&Log{}).
+	if err := LogDB.Model(&Log{}).
 		Select("src_model AS model, MAX(created_at) AS last_used_at").
 		Where("src_model <> ''").
 		Group("src_model").
@@ -478,7 +538,7 @@ FROM (
 WHERE health_rank <= ?
 ORDER BY created_at DESC, id DESC`, partition)
 	var rows []modelHealthSample
-	err := DB.Raw(query, "", LogTypeConsume, LogTypeError, cutoff, cfg.RecentCount).Scan(&rows).Error
+	err := LogDB.Raw(query, "", LogTypeConsume, LogTypeError, cutoff, cfg.RecentCount).Scan(&rows).Error
 	return rows, cfg, err
 }
 
@@ -579,7 +639,7 @@ type LogStat struct {
 // SumLogStat 统计指定时间范围内的汇总。
 func SumLogStat(start, end int64) (*LogStat, error) {
 	var s LogStat
-	tx := DB.Model(&Log{}).Where("type = ?", LogTypeConsume)
+	tx := LogDB.Model(&Log{}).Where("type = ?", LogTypeConsume)
 	if start > 0 {
 		tx = tx.Where("created_at >= ?", start)
 	}

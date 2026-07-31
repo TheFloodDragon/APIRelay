@@ -110,7 +110,7 @@ func setupBillingSessionTestDB(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 	model.DB.Exec("DELETE FROM tokens")
-	model.DB.Exec("DELETE FROM logs")
+	model.LogDB.Exec("DELETE FROM logs")
 }
 
 func TestInterruptedStreamUsagePrefersActualAndEstimatesMissingValues(t *testing.T) {

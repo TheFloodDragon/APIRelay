@@ -1,5 +1,6 @@
 <script setup>
 import {
+  ArrowDownTrayIcon,
   ArrowPathIcon,
   ArrowRightStartOnRectangleIcon,
   Bars3Icon,
@@ -35,6 +36,7 @@ const props = defineProps({
 })
 
 const icons = {
+  download: ArrowDownTrayIcon,
   arrowPath: ArrowPathIcon,
   arrowRightStart: ArrowRightStartOnRectangleIcon,
   bars: Bars3Icon,

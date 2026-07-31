@@ -38,11 +38,17 @@ func main() {
 	}
 	defer logger.Sync()
 
-	if err := model.InitDB(&cfg.Database); err != nil {
+	if err := model.InitDatabases(&cfg.Database, cfg.LogDatabase); err != nil {
 		logger.L().Fatal("init db failed", zap.Error(err))
 	}
+	defer func() {
+		if err := model.CloseDatabases(); err != nil {
+			logger.L().Warn("close databases failed", zap.Error(err))
+		}
+	}()
 
-	// 启动异步 worker（日志落库 + 配额结算），退出前优雅 flush
+	// 启动异步 worker（日志落库 + 配额结算），退出前优雅 flush。
+	// defer 为 LIFO：先排空 worker，再关闭数据库。
 	model.StartAsyncWorker()
 	defer model.StopAsyncWorker()
 

@@ -1,6 +1,8 @@
 package model
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,7 +14,7 @@ func setupLogTestDB(t *testing.T) {
 	if err := InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	DB.Exec("DELETE FROM logs")
+	LogDB.Exec("DELETE FROM logs")
 	DB.Exec("DELETE FROM settings")
 	invalidateModelHealthConfigCache()
 }
@@ -170,5 +172,82 @@ func TestEmptyModelHealthStat(t *testing.T) {
 	}
 	if health.Total != 0 || health.Success != 0 || health.Failed != 0 || health.Availability != 0 {
 		t.Fatalf("empty health should be zeroed: %+v", health)
+	}
+}
+
+func TestLogQueriesUseIndependentLogDatabase(t *testing.T) {
+	dir := t.TempDir()
+	primaryCfg := config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(dir, "primary.db")}
+	logCfg := config.DatabaseConfig{Driver: "sqlite", DSN: filepath.Join(dir, "logs.db")}
+	if err := InitDatabases(&primaryCfg, &logCfg); err != nil {
+		t.Fatalf("init independent dbs: %v", err)
+	}
+	t.Cleanup(func() { _ = CloseDatabases() })
+
+	// 主库人为放置同 ID 干扰记录，日志 API 仍必须只读取 LogDB。
+	if err := DB.AutoMigrate(&Log{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := DB.Create(&Log{Id: 1, RequestId: "primary-interference", Type: LogTypeConsume, Status: 200, SrcModel: "wrong-model", CreatedAt: time.Now().UnixMilli()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	target := &Log{RequestId: "log-target", Type: LogTypeConsume, Status: 200, SrcModel: "right-model", PromptTokens: 7, CompletionTokens: 3, CreatedAt: time.Now().UnixMilli()}
+	if err := CreateLog(target); err != nil {
+		t.Fatal(err)
+	}
+
+	items, total, err := ListLogs(&LogQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(items) != 1 || items[0].RequestId != "log-target" {
+		t.Fatalf("independent list total=%d items=%+v", total, items)
+	}
+	item, err := GetLogByID(target.Id)
+	if err != nil || item.RequestId != "log-target" {
+		t.Fatalf("get target log = %+v, err=%v", item, err)
+	}
+	lastUsed, err := ListModelLastUsed()
+	if err != nil || lastUsed["right-model"] == 0 || lastUsed["wrong-model"] != 0 {
+		t.Fatalf("last used = %#v, err=%v", lastUsed, err)
+	}
+	stat, err := SumLogStat(0, 0)
+	if err != nil || stat.TotalRequests != 1 || stat.TotalPromptTk != 7 || stat.TotalCompletion != 3 {
+		t.Fatalf("stat = %+v, err=%v", stat, err)
+	}
+}
+
+func TestWalkLogExportUsesSnapshotFiltersAndIgnoresPagination(t *testing.T) {
+	setupLogTestDB(t)
+	base := int64(1_700_000_000_000)
+	seedLog(t, &Log{RequestId: "match-old", Type: LogTypeConsume, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 100})
+	seedLog(t, &Log{RequestId: "other", Type: LogTypeError, SrcModel: "claude", Status: 500, CreatedAt: base + 200})
+	seedLog(t, &Log{RequestId: "match-new", Type: LogTypeConsume, SrcModel: "gpt-4o", Status: 201, CreatedAt: base + 300})
+
+	q := &LogQuery{Model: "gpt-4o", Page: 1, PageSize: 1}
+	snapshot, err := PrepareLogExport(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Total != 2 {
+		t.Fatalf("snapshot total = %d, want 2", snapshot.Total)
+	}
+	seedLog(t, &Log{RequestId: "after-snapshot", Type: LogTypeConsume, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 400})
+
+	var got []string
+	if err := WalkLogExport(context.Background(), q, snapshot, func(item *Log) error {
+		got = append(got, item.RequestId)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"match-new", "match-old"}
+	if len(got) != len(want) {
+		t.Fatalf("export rows = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("export row %d = %q, want %q", index, got[index], want[index])
+		}
 	}
 }

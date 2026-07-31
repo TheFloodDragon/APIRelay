@@ -30,6 +30,14 @@ func TestSetup_Smoke(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("healthz status = %d, want 200", rec.Code)
 	}
+
+	// 静态导出路由必须注册在受保护的管理 API 下，且不能被 /logs/:id 吞掉。
+	exportRec := httptest.NewRecorder()
+	exportReq := httptest.NewRequest(http.MethodGet, "/api/logs/export", nil)
+	r.ServeHTTP(exportRec, exportReq)
+	if exportRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated log export status = %d, want 401", exportRec.Code)
+	}
 }
 
 // TestSetup_InvalidTrustedProxy 非法 CIDR 应导致装配失败。

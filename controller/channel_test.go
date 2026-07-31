@@ -146,7 +146,7 @@ func setupControllerHealthTestDB(t *testing.T) *model.Channel {
 	if err := model.InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {
 		t.Fatal(err)
 	}
-	model.DB.Exec("DELETE FROM logs")
+	model.LogDB.Exec("DELETE FROM logs")
 	model.DB.Exec("DELETE FROM channels")
 	model.DB.Exec("DELETE FROM abilities")
 	ch := &model.Channel{

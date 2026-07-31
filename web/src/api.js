@@ -14,6 +14,32 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+async function blobErrorMessage(data) {
+  if (typeof Blob === 'undefined' || !(data instanceof Blob)) return ''
+  try {
+    let text = ''
+    if (typeof data.text === 'function') {
+      text = await data.text()
+    } else if (typeof FileReader !== 'undefined') {
+      text = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(reader.error)
+        reader.readAsText(data)
+      })
+    }
+    if (!text) return ''
+    try {
+      const body = JSON.parse(text)
+      return body?.message || ''
+    } catch {
+      return text
+    }
+  } catch {
+    return ''
+  }
+}
+
 // 响应拦截：401 跳登录；统一解包 {success,data,message}，直接返回 data 字段
 api.interceptors.response.use(
   (resp) => {
@@ -23,14 +49,15 @@ api.interceptors.response.use(
     }
     return body && typeof body === 'object' && 'data' in body ? body.data : body
   },
-  (err) => {
+  async (err) => {
     if (err.response && err.response.status === 401) {
       localStorage.removeItem(TOKEN_KEY)
       if (router.currentRoute.value.name !== 'login') {
         router.push({ name: 'login' })
       }
     }
-    const msg = err.response?.data?.message || err.message || '网络错误'
+    const blobMessage = await blobErrorMessage(err.response?.data)
+    const msg = blobMessage || err.response?.data?.message || err.message || '网络错误'
     return Promise.reject(new Error(msg))
   }
 )
@@ -63,6 +90,25 @@ export function takeLatest(fn) {
     const result = await fn(...args)
     if (my !== seq) return undefined // 已被更新的调用取代
     return result
+  }
+}
+
+/**
+ * 通过已鉴权的 axios 实例下载 Blob，并触发浏览器保存文件。
+ */
+export async function downloadBlob(url, filename, config = {}) {
+  const blob = await api.request({ method: 'get', ...config, url, responseType: 'blob' })
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename
+  link.style.display = 'none'
+  document.body.appendChild(link)
+  try {
+    link.click()
+  } finally {
+    link.remove()
+    URL.revokeObjectURL(objectUrl)
   }
 }
 
