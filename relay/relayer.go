@@ -350,6 +350,10 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		}
 		ad.Init(info)
 
+		// 每次尝试前清空上一轮的限流信息，避免用前一个渠道的恢复时刻冷却当前渠道。
+		info.RateLimitRetryAfterMs = 0
+		info.RateLimitSource = ""
+
 		log.Info("relay.attempt",
 			zap.String("request_id", info.RequestID),
 			zap.Int("iter", iter),
@@ -434,7 +438,15 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		// 记录熔断器失败。客户端主动取消不计入渠道失败。
 		circuitbreaker.GetManager().RecordFailure(ch.Id, err.Error())
 
-		decision := state.OnFailure(ch.Id, status, retryable, err.Error())
+		retryAfter := time.Duration(info.RateLimitRetryAfterMs) * time.Millisecond
+		if retryAfter > 0 {
+			log.Info("relay.rate_limit_hint",
+				zap.Int("channel_id", ch.Id),
+				zap.String("header", info.RateLimitSource),
+				zap.Duration("retry_after", retryAfter),
+			)
+		}
+		decision := state.OnFailureWithHint(ch.Id, status, retryable, err.Error(), retryAfter)
 		state.RecordAttempt(FailoverAttempt{
 			Iter:          iter,
 			Switches:      switches,
@@ -588,6 +600,13 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 			info.FullLogCapture.UpstreamRespBody = append([]byte(nil), respBody...)
 		}
 		retryable := isRetryableStatus(resp.StatusCode)
+		// 限流类响应通常会在头里明确告知恢复时刻，采用它比固定冷却精确得多。
+		if isRateLimitStatus(resp.StatusCode) {
+			if hint := parseRateLimitHint(resp.Header, time.Now()); hint != nil {
+				info.RateLimitRetryAfterMs = hint.RetryAfter.Milliseconds()
+				info.RateLimitSource = hint.Source
+			}
+		}
 		// 记录详细错误（含上游响应体）用于日志与故障转移决策；
 		// 对客户端的友好提示在 friendlyUpstreamError 中生成。
 		detail := extractUpstreamErrorMessage(respBody)

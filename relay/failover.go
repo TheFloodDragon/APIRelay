@@ -79,9 +79,25 @@ func NewFailoverState(cooldownSeconds, channelMaxRetries int) *FailoverState {
 //   - 临时性错误（429/503/网络）且同渠道重试次数未耗尽：同渠道重试。
 //   - 否则：冷却并切换渠道。
 func (s *FailoverState) OnFailure(channelID, status int, retryable bool, errMsg string) FailoverDecision {
+	return s.OnFailureWithHint(channelID, status, retryable, errMsg, 0)
+}
+
+// OnFailureWithHint 与 OnFailure 相同，但允许传入上游告知的恢复等待时长。
+//
+// retryAfter > 0 时用它替代配置的固定冷却：固定值太短会在上游仍限流时反复重试
+// （部分厂商因此延长封禁），太长则在配额恢复后仍把渠道排除在外浪费容量。
+// 同渠道立即重试也会被跳过——上游已明确说了要等，重试必然再次 429。
+func (s *FailoverState) OnFailureWithHint(channelID, status int, retryable bool, errMsg string, retryAfter time.Duration) FailoverDecision {
 	s.LastStatus, s.LastErr = status, errMsg
 	if !retryable {
 		return DecisionFatal
+	}
+
+	// 上游给出了明确的恢复时刻：同渠道重试没有意义，直接冷却并切换。
+	if retryAfter > 0 {
+		s.FailedChannels[channelID] = struct{}{}
+		model.SetChannelCooldown(channelID, time.Now().Add(retryAfter).UnixMilli())
+		return DecisionSwitchChannel
 	}
 
 	if isTransientStatus(status) && s.SameChannelRetries[channelID] < s.maxSameChannelRetries {
@@ -144,6 +160,20 @@ func (s *FailoverState) SameChannelDelay(ctx context.Context) bool {
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// isRateLimitStatus 判断该状态码是否可能携带限流恢复时刻。
+//
+// 403 也纳入：部分上游用它表达配额耗尽而非权限不足，并同样返回 Retry-After。
+func isRateLimitStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, // 429
+		http.StatusForbidden,          // 403 配额耗尽（部分上游）
+		http.StatusServiceUnavailable, // 503
+		http.StatusGatewayTimeout:     // 504
+		return true
+	}
+	return false
 }
 
 // isTransientStatus 判断是否为适合"同渠道重试"的瞬时错误。

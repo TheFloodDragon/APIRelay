@@ -71,6 +71,13 @@ type RelayInfo struct {
 	// FailoverChain JSON：记录本次请求尝试过的渠道、错误与决策链，写入日志 Content 便于诊断。
 	FailoverChain string
 
+	// RateLimitRetryAfterMs 上游在 429/503 响应头中告知的恢复等待时长（毫秒）。
+	// 0 表示未解析到，故障转移会回退固定冷却时长。
+	// 每次尝试前由调度层重置，避免上一个渠道的限流信息污染下一个渠道的冷却决策。
+	RateLimitRetryAfterMs int64
+	// RateLimitSource 命中的响应头名，仅用于日志排查。
+	RateLimitSource string
+
 	// 计时
 	StartAtMs   int64
 	FirstByteMs int

@@ -553,10 +553,16 @@ func ReorderChannels(orderedIDs []int) error {
 
 // SetChannelCooldown 设置渠道冷却截止时间。
 func SetChannelCooldown(id int, until int64) {
+	if DB == nil {
+		return
+	}
 	DB.Model(&Channel{}).Where("id = ?", id).Update("cooldown_until", until)
 }
 
 // ClearChannelCooldown 清除渠道冷却（请求成功后调用，仅当当前确有冷却时更新）。
 func ClearChannelCooldown(id int) {
+	if DB == nil {
+		return
+	}
 	DB.Model(&Channel{}).Where("id = ? AND cooldown_until > 0", id).Update("cooldown_until", 0)
 }
