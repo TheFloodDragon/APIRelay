@@ -184,6 +184,80 @@ func TestProbeModels_HeaderOverride(t *testing.T) {
 	}
 }
 
+// 中转站把 base_url 挂在 /anthropic 这类兼容后缀下时，/anthropic/v1/models 会 404，
+// 真正可用的是剥掉后缀的 /v1/models。探测必须自动降级到下一个候选。
+func TestProbeModels_FallsBackToStrippedCompatSuffix(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-4"}]}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{Type: 2, BaseURL: srv.URL + "/anthropic", Key: "k"}
+	models, err := ProbeModels(ch)
+	if err != nil {
+		t.Fatalf("probe should fall back to the stripped suffix: %v", err)
+	}
+	if len(models) != 1 || models[0] != "claude-sonnet-4" {
+		t.Fatalf("models = %v", models)
+	}
+	// 应先尝试带后缀的候选，失败后才降级。
+	if len(paths) < 2 || paths[0] != "/anthropic/v1/models" {
+		t.Fatalf("probe order = %v, want the suffixed candidate first", paths)
+	}
+}
+
+// 非 /v1 的版本段（如智谱 /paas/v4）不应被插入 /v1。
+func TestProbeModels_RespectsNonV1VersionSegment(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/api/paas/v4/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-4"}]}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{Type: 1, BaseURL: srv.URL + "/api/paas/v4", Key: "k"}
+	models, err := ProbeModels(ch)
+	if err != nil {
+		t.Fatalf("probe failed: %v", err)
+	}
+	if len(models) != 1 || models[0] != "glm-4" {
+		t.Fatalf("models = %v", models)
+	}
+	if len(paths) != 1 || paths[0] != "/api/paas/v4/models" {
+		t.Fatalf("probe order = %v, want a single direct hit", paths)
+	}
+}
+
+// 所有候选都失败时应返回上游状态，而不是掩盖成解析错误。
+func TestProbeModels_ReportsUpstreamStatusWhenAllCandidatesFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`upstream down`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{Type: 1, BaseURL: srv.URL, Key: "k"}
+	_, err := ProbeModels(ch)
+	if err == nil {
+		t.Fatal("expected an error when every candidate fails")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Fatalf("error = %v, want it to mention the upstream status", err)
+	}
+}
+
 func TestProbeModels_RetriesBearerForAnthropicCompatibleAggregator(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

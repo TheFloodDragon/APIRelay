@@ -62,6 +62,22 @@ func applyKeyForTransientChannel(ch *model.Channel) {
 	ch.ApplySubmittedKey(existing)
 }
 
+// validateTransientTarget 对「未保存配置」类接口校验目标地址，防止 SSRF。
+//
+// 只拦截未保存的临时配置：已保存渠道的 base_url 是管理员既有配置，
+// 正常转发本就会访问它，拦截会破坏「上游部署在内网」这类合法用例。
+// 而临时配置是本次请求现填的，正是攻击面所在。
+func validateTransientTarget(c *gin.Context, ch *model.Channel) bool {
+	if ch == nil || ch.Id > 0 {
+		return true // 已保存渠道按既有配置处理
+	}
+	if err := relay.ValidateChannelProbeTarget(c.Request.Context(), ch); err != nil {
+		fail(c, http.StatusBadRequest, err.Error())
+		return false
+	}
+	return true
+}
+
 func validateOverrides(c *gin.Context, ch *model.Channel) bool {
 	if _, err := ch.ParseHeaderOverride(); err != nil {
 		fail(c, http.StatusBadRequest, "header_override: "+err.Error())
@@ -275,7 +291,10 @@ func ProbeModelsByConfig(c *gin.Context) {
 		return
 	}
 	applyKeyForTransientChannel(&in)
-	models, err := relay.ProbeModels(&in)
+	if !validateTransientTarget(c, &in) {
+		return
+	}
+	models, err := relay.ProbeModelsContext(c.Request.Context(), &in)
 	if err != nil {
 		fail(c, http.StatusBadGateway, "拉取模型失败: "+err.Error())
 		return
@@ -335,6 +354,9 @@ func TestChannelByConfig(c *gin.Context) {
 		return
 	}
 	applyKeyForTransientChannel(&ch)
+	if !validateTransientTarget(c, &ch) {
+		return
+	}
 	if req.Model == "" {
 		fail(c, http.StatusBadRequest, "缺少 model")
 		return
@@ -412,6 +434,9 @@ func TestChannelBatchByConfig(c *gin.Context) {
 		return
 	}
 	applyKeyForTransientChannel(&ch)
+	if !validateTransientTarget(c, &ch) {
+		return
+	}
 	if len(req.Models) == 0 {
 		fail(c, http.StatusBadRequest, "缺少 models")
 		return

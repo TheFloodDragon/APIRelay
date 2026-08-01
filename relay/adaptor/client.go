@@ -241,6 +241,49 @@ func isFakeIP(ip net.IP) bool {
 	return v4 != nil && v4[0] == 198 && (v4[1] == 18 || v4[1] == 19)
 }
 
+// ProbeHTTPClient 返回用于「管理端触发的探测/连通性测试」的客户端。
+//
+// 它复用当前生效的代理与超时策略，但额外在建连层拦截内网、环回与云元数据地址。
+// 正常转发路径不走这里：用户可能把上游合法部署在内网。
+//
+// 每次调用新建 Transport 而不共享全局连接池，代价是探测请求无法复用连接 ——
+// 这是有意的取舍：探测是低频操作，换来的是守卫逻辑不可能被绕过。
+func ProbeHTTPClient(timeout time.Duration) (*http.Client, func(), error) {
+	snapshot, err := buildProbeClient(timeout)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return snapshot.client, snapshot.transport.CloseIdleConnections, nil
+}
+
+func buildProbeClient(timeout time.Duration) (*clientSnapshot, error) {
+	// 直接复用当前生效客户端的代理函数，而不是从 NetworkStatus 重建配置 ——
+	// status.EffectiveProxyURL 是脱敏后的展示值，含凭据时无法还原。
+	HTTPClient() // 确保已初始化
+	current := clientState.Load()
+
+	dialer := &net.Dialer{Timeout: upstreamDialTimeout, KeepAlive: 30 * time.Second}
+	transport := &http.Transport{
+		DialContext:           probeGuardDialer(dialer.DialContext),
+		MaxIdleConns:          10,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       upstreamIdleConnTimeout,
+		TLSHandshakeTimeout:   upstreamTLSHandshakeTimeout,
+		ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
+		ExpectContinueTimeout: time.Second,
+	}
+	status := NetworkStatus{Mode: ProxyModeDirect, EffectiveSource: "direct"}
+	if current != nil {
+		transport.Proxy = current.transport.Proxy
+		status = current.status
+	}
+	return &clientSnapshot{
+		client:    &http.Client{Timeout: timeout, Transport: transport},
+		transport: transport,
+		status:    status,
+	}, nil
+}
+
 // NetworkTestResult 是网络诊断的结构化结果。
 type NetworkTestResult struct {
 	Success     bool     `json:"success"`
