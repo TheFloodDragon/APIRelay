@@ -1,6 +1,7 @@
 <script setup>
-import { nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { ref, useId } from 'vue'
 import ConsoleIcon from './ConsoleIcon.vue'
+import { useOverlayLayer } from '../composables/useOverlayLayer'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -12,64 +13,18 @@ const emit = defineEmits(['close'])
 
 const panel = ref(null)
 const titleId = useId()
-const focusSelector = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
-let previousFocus = null
-let previousOverflow = ''
 
 function requestClose() {
   if (!props.persistent) emit('close')
 }
 
-function onKeydown(event) {
-  if (event.key === 'Escape') {
-    if (!props.persistent) {
-      event.stopPropagation()
-      emit('close')
-    }
-    return
-  }
-  if (event.key !== 'Tab' || !panel.value) return
-  const focusable = [...panel.value.querySelectorAll(focusSelector)].filter((element) => element.offsetParent !== null)
-  if (!focusable.length) {
-    event.preventDefault()
-    panel.value.focus()
-    return
-  }
-  const first = focusable[0]
-  const last = focusable[focusable.length - 1]
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault()
-    last.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault()
-    first.focus()
-  }
-}
-
-watch(
-  () => props.open,
-  async (open) => {
-    if (open) {
-      previousFocus = document.activeElement
-      previousOverflow = document.body.style.overflow
-      document.body.style.overflow = 'hidden'
-      document.addEventListener('keydown', onKeydown, true)
-      await nextTick()
-      const target = panel.value?.querySelector('[data-autofocus]') || panel.value?.querySelector(focusSelector)
-      ;(target || panel.value)?.focus()
-    } else {
-      document.removeEventListener('keydown', onKeydown, true)
-      document.body.style.overflow = previousOverflow
-      previousFocus?.focus?.()
-      previousFocus = null
-    }
-  },
-  { immediate: true }
-)
-
-onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKeydown, true)
-  document.body.style.overflow = previousOverflow
+// Esc / Tab 陷阱 / 焦点恢复 / body 滚动锁统一由弹层栈接管，
+// 保证嵌套弹层时只有栈顶响应 Esc。
+useOverlayLayer({
+  panel,
+  isOpen: () => props.open,
+  isPersistent: () => props.persistent,
+  onRequestClose: () => emit('close'),
 })
 </script>
 

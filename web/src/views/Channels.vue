@@ -1,7 +1,7 @@
 <script setup>
-import { computed, getCurrentInstance, onMounted, ref } from 'vue'
+import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import api, { copyText } from '../api'
+import api from '../api'
 import { resetBreakerAndConfirm } from '../breakerReset'
 import { confirmAction } from '../composables/useConfirm'
 import { DEFAULT_HEALTH_CONFIG, hasHealth, healthTotal, healthText, healthTitle, healthClass as healthClassBy } from '../health'
@@ -69,13 +69,18 @@ const dropIndex = ref(null)
 const reordering = ref(false)
 const channelQuery = ref('')
 const statusFilter = ref('all')
+// 响应式时钟，供 breakerState 判断冷却是否已过期（见 syncCooldownClock）。
+const nowMs = ref(Date.now())
 
 const blank = () => ({
   id: 0,
   name: '',
   type: 1,
   base_url: '',
+  // key 只用于提交新凭据；后端不再回显明文，留空表示沿用已保存的值。
   key: '',
+  key_masked: '',
+  has_key: false,
   group: 'default',
   header_override: '',
   body_override: '',
@@ -85,6 +90,9 @@ const blank = () => ({
   status: 1,
 })
 const form = ref(blank())
+
+// 凭据是否满足要求：已保存过（has_key）或本次表单填写了新值。
+const hasCredential = computed(() => Boolean(form.value.has_key || String(form.value.key || '').trim()))
 
 const sortedChannels = computed(() => {
   const query = channelQuery.value.trim().toLowerCase()
@@ -123,7 +131,7 @@ const editorBusy = computed(() => saving.value || probing.value || batchTesting.
 const canSave = computed(() => Boolean(
   form.value.name.trim()
   && form.value.base_url.trim()
-  && String(form.value.key || '').trim()
+  && hasCredential.value
   && enabledCount.value > 0
   && headerValidation.value.valid
   && bodyValidation.value.valid
@@ -131,14 +139,14 @@ const canSave = computed(() => Boolean(
 const saveHint = computed(() => {
   if (!form.value.name.trim()) return '填写渠道名称后可保存'
   if (!form.value.base_url.trim()) return '填写 Base URL 后可保存'
-  if (!String(form.value.key || '').trim()) return '填写 API Key 后可保存'
+  if (!hasCredential.value) return '填写 API Key 后可保存'
   if (!enabledCount.value) return '至少启用一个模型后可保存'
   if (!headerValidation.value.valid) return '修正请求头配置后可保存'
   if (!bodyValidation.value.valid) return '修正请求体配置后可保存'
   return '配置完整，可以保存'
 })
 const editorSteps = computed(() => ({
-  connection: Boolean(form.value.name.trim() && form.value.base_url.trim() && String(form.value.key || '').trim()),
+  connection: Boolean(form.value.name.trim() && form.value.base_url.trim() && hasCredential.value),
   models: enabledCount.value > 0,
   overrides: headerValidation.value.valid && bodyValidation.value.valid,
   reliability: true,
@@ -159,7 +167,9 @@ const checkupRate = computed(() => {
 const testRecordRows = computed(() => models.value
   .map((model) => ({ model, result: testResults.value[model.name] }))
   .filter((row) => row.result || testing.value[row.model.name]))
-const isDirty = computed(() => showEditor.value && editorBaseline.value !== editorSnapshot())
+// 用 computed 缓存快照，避免 isDirty 与依赖它的模板节点在每次按键时重复序列化整个模型数组。
+const currentSnapshot = computed(() => JSON.stringify({ form: form.value, models: models.value, rules: rules.value }))
+const isDirty = computed(() => showEditor.value && editorBaseline.value !== currentSnapshot.value)
 const saveStatus = computed(() => {
   if (saving.value) return { label: '保存中', tone: 'saving' }
   if (isDirty.value) return { label: '有未保存更改', tone: 'dirty' }
@@ -170,7 +180,7 @@ const selectedChannel = computed(() => channels.value.find((channel) => channel.
 const editorTitle = computed(() => (form.value.id ? `渠道配置 · ${form.value.name || '未命名渠道'}` : '新建渠道'))
 
 function editorSnapshot() {
-  return JSON.stringify({ form: form.value, models: models.value, rules: rules.value })
+  return currentSnapshot.value
 }
 
 function markEditorBaseline() {
@@ -228,7 +238,9 @@ function channelHealth(channel) {
 function breakerState(channel) {
   if (checkupLoadingId.value === channel.id) return 'test'
   if (channel.status !== 1) return 'off'
-  if (channel.cooldown_until && channel.cooldown_until > Date.now()) return 'trip'
+  // 读响应式时钟而非 Date.now()：后者不是响应式源，冷却到点后
+  // 「已熔断」标记会一直挂着，直到用户手动刷新或触发其它响应式变更。
+  if (channel.cooldown_until && channel.cooldown_until > nowMs.value) return 'trip'
   return 'run'
 }
 
@@ -259,27 +271,31 @@ function updateSet(target, value, active) {
   target.value = next
 }
 
-async function copyKey(channel) {
-  if (!channel.key) return
-  const copied = await copyText(channel.key)
-  if (copied) notify(`已复制「${channel.name}」的上游 Key`, 'success')
-  else notify('浏览器阻止了剪贴板写入，请手动复制 Key', 'warn')
-}
+// load 会被 save / toggleChannel / removeChannel / resetBreaker / 刷新按钮多路并发调用。
+// 没有守卫时后发起的请求若先返回，旧响应会覆盖新列表，乐观更新过的 status 也会被
+// 回滚成过期值。用自增序号只接受最新一次请求的结果。
+let loadSeq = 0
 
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
   loadError.value = ''
   try {
     const data = (await api.get('/channels')) || []
+    if (seq !== loadSeq) return // 已有更新的请求在飞，丢弃本次结果
     channels.value = data.map((channel) => ({ ...channel, _models: parseModels(channel) }))
     selectedIds.value = new Set([...selectedIds.value].filter((id) => channels.value.some((channel) => channel.id === id)))
     const stillListed = channels.value.some((channel) => channel.id === selectedChannelId.value)
     if (!stillListed && !showEditor.value) selectedChannelId.value = null
+    nowMs.value = Date.now()
+    syncCooldownClock()
   } catch (error) {
+    if (seq !== loadSeq) return // 过期请求的错误不应覆盖当前状态
     loadError.value = error.message || '渠道清单加载失败'
     notify(`加载失败：${loadError.value}`, 'error')
   } finally {
-    loading.value = false
+    // 仅最新请求负责收起 loading，避免过期请求提前结束加载态。
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -304,12 +320,34 @@ async function loadMeta() {
   }
 }
 
+// 行级稳定标识。用数组 index 作 v-for key 时，addModel 的头部插入会让所有既有行的
+// key 整体位移，Vue 复用 DOM 时把上一行的输入状态（焦点、IME 组合中的文本）留在错误的
+// 模型上；removeModel 的 splice 同理。_uid 只存在于前端，不参与提交 payload。
+let modelRowSeq = 0
+function nextRowUid() {
+  modelRowSeq += 1
+  return `m${modelRowSeq}`
+}
+
+function newModelRow(overrides = {}) {
+  return {
+    _uid: nextRowUid(),
+    name: '',
+    enabled: true,
+    protocol: '',
+    upstream: '',
+    input: 0,
+    output: 0,
+    ...overrides,
+  }
+}
+
 function parseModels(channel) {
   if (channel.model_configs) {
     try {
       const list = JSON.parse(channel.model_configs)
       if (Array.isArray(list)) {
-        return list.map((model) => ({
+        return list.map((model) => newModelRow({
           name: model.name || '',
           enabled: model.enabled !== false,
           protocol: model.protocol || '',
@@ -323,7 +361,7 @@ function parseModels(channel) {
     }
   }
   return (channel.models || '').split(',').map((item) => item.trim()).filter(Boolean)
-    .map((name) => ({ name, enabled: true, protocol: '', upstream: '', input: 0, output: 0 }))
+    .map((name) => newModelRow({ name }))
 }
 
 function parseRules(channel) {
@@ -381,7 +419,8 @@ async function openEdit(channel) {
   if (!channel) return
   if (!(await confirmDiscardChanges())) return
   selectedChannelId.value = channel.id
-  form.value = { ...blank(), ...channel, key: channel.key || '' }
+  // 后端不回显明文凭据：key 始终以空值进入表单，留空提交即表示沿用已保存的值。
+  form.value = { ...blank(), ...channel, key: '' }
   models.value = (Array.isArray(channel._models) ? channel._models : parseModels(channel)).map((item) => ({ ...item }))
   rules.value = parseRules(channel)
   resetEditorState()
@@ -407,7 +446,7 @@ function addModel() {
     notify('模型已存在', 'warn')
     return
   }
-  models.value.unshift({ name, enabled: true, protocol: '', upstream: '', input: 0, output: 0 })
+  models.value.unshift(newModelRow({ name }))
   newModelName.value = ''
 }
 
@@ -426,9 +465,11 @@ function removeModel(index, model) {
 
 function testPayload() {
   return {
+    // 带上 id 让后端在 key 留空时回退到已保存的凭据（编辑态不再持有明文）。
+    id: form.value.id || 0,
     type: form.value.type,
     base_url: form.value.base_url,
-    key: form.value.key,
+    key: String(form.value.key || '').trim(),
     group: form.value.group || 'default',
     protocol_rules: JSON.stringify(rules.value.filter((rule) => rule.pattern.trim() && rule.protocol)),
     header_override: form.value.header_override || '',
@@ -446,7 +487,7 @@ async function testModel(model) {
     notify('请先填写 Base URL', 'warn')
     return
   }
-  if (!form.value.key) {
+  if (!hasCredential.value) {
     notify('请先填写 API Key', 'warn')
     return
   }
@@ -487,7 +528,7 @@ async function testAllInModal() {
     notify('请先填写 Base URL', 'warn')
     return
   }
-  if (!form.value.key) {
+  if (!hasCredential.value) {
     notify('请先填写 API Key', 'warn')
     return
   }
@@ -579,7 +620,7 @@ async function checkupChannel(channel) {
 async function fetchModels() {
   if (probing.value || saving.value || batchTesting.value || hasModelTesting.value) return
   if (!validateHeaders('探测模型')) return
-  if (!form.value.base_url || !form.value.key) {
+  if (!form.value.base_url || !hasCredential.value) {
     editorError.value = '请先填写 Base URL 和 API Key'
     return
   }
@@ -587,9 +628,10 @@ async function fetchModels() {
   probing.value = true
   try {
     const data = await api.post('/channels/probe-models', {
+      id: form.value.id || 0,
       type: form.value.type,
       base_url: form.value.base_url,
-      key: form.value.key,
+      key: String(form.value.key || '').trim(),
       header_override: form.value.header_override || '',
     })
     const fetched = data.models || []
@@ -597,7 +639,7 @@ async function fetchModels() {
     let added = 0
     fetched.forEach((name) => {
       if (!existing.has(name)) {
-        models.value.push({ name, enabled: true, protocol: '', upstream: '', input: 0, output: 0 })
+        models.value.push(newModelRow({ name }))
         existing.add(name)
         added += 1
       }
@@ -621,17 +663,24 @@ function cleanPayload() {
     output: Number(model.output) || 0,
   }))
   const cleanRules = rules.value.filter((rule) => rule.pattern.trim() && rule.protocol)
-  return {
+  const payload = {
     ...form.value,
     name: form.value.name.trim(),
     base_url: form.value.base_url.trim(),
-    key: String(form.value.key || '').trim(),
     group: form.value.group.trim() || 'default',
     weight: Math.max(1, Number(form.value.weight) || 1),
     model_configs: JSON.stringify(cleanModels),
     protocol_rules: JSON.stringify(cleanRules),
     models: cleanModels.filter((model) => model.enabled).map((model) => model.name).join(','),
   }
+  // 只读展示字段不回传。
+  delete payload.key_masked
+  delete payload.has_key
+  // 凭据留空表示沿用已保存的值，此时不发送该字段，避免误传空串。
+  const key = String(form.value.key || '').trim()
+  if (key) payload.key = key
+  else delete payload.key
+  return payload
 }
 
 async function save() {
@@ -829,6 +878,34 @@ async function persistOrder(previous) {
   }
 }
 
+// 冷却状态的响应式时钟。低频推进（5s）即可：冷却是分钟级的，
+// 用户感知不到几秒误差，但必须让 chip 和筛选计数在到点后自动恢复。
+let clockTimer = null
+
+function syncCooldownClock() {
+  const hasCooldown = channels.value.some(
+    (channel) => channel.cooldown_until && channel.cooldown_until > nowMs.value,
+  )
+  if (hasCooldown && clockTimer === null) {
+    clockTimer = window.setInterval(() => {
+      nowMs.value = Date.now()
+      // 冷却全部结束后停表，避免页面常驻空转的定时器。
+      if (!channels.value.some((channel) => channel.cooldown_until && channel.cooldown_until > nowMs.value)) {
+        stopCooldownClock()
+      }
+    }, 5000)
+  } else if (!hasCooldown) {
+    stopCooldownClock()
+  }
+}
+
+function stopCooldownClock() {
+  if (clockTimer !== null) {
+    window.clearInterval(clockTimer)
+    clockTimer = null
+  }
+}
+
 onMounted(async () => {
   await Promise.all([loadMeta(), load()])
   if (route.query.action === 'new') {
@@ -838,6 +915,11 @@ onMounted(async () => {
     router.replace({ query })
   }
 })
+
+onBeforeUnmount(stopCooldownClock)
+
+// 暴露 load 供测试直接验证并发竞态守卫（多条业务路径都会调用它）。
+defineExpose({ load })
 </script>
 
 <template>
@@ -1050,12 +1132,15 @@ onMounted(async () => {
                   <div><label class="field-label" for="channel-type">默认协议 *</label><select id="channel-type" v-model.number="form.type" class="input" @change="onTypeChange"><option v-for="type in channelTypes" :key="type.value" :value="type.value">{{ type.name }}</option></select></div>
                   <div class="md:col-span-2"><label class="field-label" for="channel-url">Base URL *</label><input id="channel-url" v-model="form.base_url" class="input input-mono" placeholder="https://api.openai.com" autocomplete="off" /></div>
                   <div class="md:col-span-2">
-                    <label class="field-label" for="channel-key">API Key *</label>
+                    <label class="field-label" for="channel-key">API Key {{ form.has_key ? '' : '*' }}</label>
                     <div class="channel-key-row">
-                      <input id="channel-key" v-model="form.key" :type="revealKey ? 'text' : 'password'" class="input input-mono min-w-0" placeholder="upstream-key" name="apirelay-upstream-key" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-form-type="other" />
+                      <input id="channel-key" v-model="form.key" :type="revealKey ? 'text' : 'password'" class="input input-mono min-w-0" :placeholder="form.has_key ? '留空表示不修改' : 'upstream-key'" name="apirelay-upstream-key" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-form-type="other" aria-describedby="channel-key-hint" />
                       <button type="button" class="btn shrink-0" :aria-pressed="revealKey" :aria-label="revealKey ? '隐藏 API Key' : '显示 API Key'" @click="revealKey = !revealKey"><ConsoleIcon :name="revealKey ? 'x' : 'key'" class="h-4 w-4" />{{ revealKey ? '隐藏' : '显示' }}</button>
-                      <button type="button" class="btn shrink-0" :disabled="!form.key" @click="copyKey(form)">复制</button>
                     </div>
+                    <p id="channel-key-hint" class="field-hint">
+                      <template v-if="form.has_key">已保存凭据 <code class="input-mono">{{ form.key_masked }}</code>，留空则保持不变；填入新值将覆盖。</template>
+                      <template v-else>上游厂商密钥。保存后不再回显明文，仅显示掩码。</template>
+                    </p>
                   </div>
                 </div>
               </ConsoleSection>
@@ -1064,8 +1149,8 @@ onMounted(async () => {
             <div v-show="editorTab === 'models'" class="space-y-3">
               <ConsoleSection title="模型与价格" :description="`${enabledCount} 个启用，共 ${models.length} 个配置；价格单位为 USD / 1M tokens。`" eyebrow="Models" flush>
                 <template #actions>
-                  <button type="button" class="btn btn-sm" :disabled="editorBusy || !form.base_url || !form.key || enabledCount === 0" @click="testAllInModal"><ConsoleIcon name="bolt" class="h-4 w-4" />{{ batchTesting ? `批测中 ${batchDone}/${batchTotal}` : '批量测试' }}</button>
-                  <button type="button" class="btn btn-sm" :disabled="editorBusy || !form.base_url || !form.key" @click="fetchModels"><ConsoleIcon name="arrowPath" class="h-4 w-4" :class="{ 'animate-spin': probing }" />{{ probing ? '探测中' : '探测模型' }}</button>
+                  <button type="button" class="btn btn-sm" :disabled="editorBusy || !form.base_url || !hasCredential || enabledCount === 0" @click="testAllInModal"><ConsoleIcon name="bolt" class="h-4 w-4" />{{ batchTesting ? `批测中 ${batchDone}/${batchTotal}` : '批量测试' }}</button>
+                  <button type="button" class="btn btn-sm" :disabled="editorBusy || !form.base_url || !hasCredential" @click="fetchModels"><ConsoleIcon name="arrowPath" class="h-4 w-4" :class="{ 'animate-spin': probing }" />{{ probing ? '探测中' : '探测模型' }}</button>
                 </template>
                 <div class="p-3 sm:p-4">
                   <InlineNotice v-if="batchTesting || batchSummary" class="mb-3" :tone="batchSummary?.failed ? 'warning' : 'info'" title="批量测试"><span v-if="batchTesting">执行中 {{ batchDone }} / {{ batchTotal }}</span><span v-else-if="batchSummary">通过 {{ batchSummary.success }}，失败 {{ batchSummary.failed }}，总计 {{ batchSummary.total }}。</span></InlineNotice>
@@ -1076,7 +1161,7 @@ onMounted(async () => {
                   <div v-if="models.length" class="model-table-wrap mt-3 hidden lg:block">
                     <table class="table-eng min-w-[780px]" aria-label="模型配置表">
                       <thead><tr><th class="w-16">启用</th><th>模型名称</th><th class="w-36">协议</th><th>上游映射</th><th class="w-24 text-right">输入价</th><th class="w-24 text-right">输出价</th><th class="w-20 text-right">测试</th><th class="w-20 text-right">删除</th></tr></thead>
-                      <tbody><tr v-for="(model, index) in models" :key="index">
+                      <tbody><tr v-for="(model, index) in models" :key="model._uid">
                         <td><button type="button" class="channel-switch" :class="{ 'channel-switch-on': model.enabled }" :aria-pressed="model.enabled" @click="model.enabled = !model.enabled"><span></span></button></td>
                         <td><input v-model="model.name" class="input input-mono py-1 text-[12px]" placeholder="显示名" /></td>
                         <td><select v-model="model.protocol" class="input py-1 text-[12px]"><option value="">继承规则</option><option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option></select></td>
@@ -1089,7 +1174,7 @@ onMounted(async () => {
                     </table>
                   </div>
                   <div v-if="models.length" class="mt-3 grid gap-3 lg:hidden">
-                    <article v-for="(model, index) in models" :key="index" class="rounded-lg border border-line bg-surface p-3">
+                    <article v-for="(model, index) in models" :key="model._uid" class="rounded-lg border border-line bg-surface p-3">
                       <div class="flex items-center justify-between gap-2"><span class="font-medium">模型 {{ index + 1 }}</span><button type="button" class="channel-switch" :class="{ 'channel-switch-on': model.enabled }" :aria-pressed="model.enabled" @click="model.enabled = !model.enabled"><span></span></button></div>
                       <div class="mt-3 grid gap-2">
                         <input v-model="model.name" class="input input-mono" placeholder="模型名称" />

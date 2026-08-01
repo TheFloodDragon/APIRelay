@@ -1,5 +1,5 @@
 <script setup>
-import { computed, getCurrentInstance, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import api from '../api'
 import PageState from '../components/PageState.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -123,8 +123,17 @@ function protocolName(value) {
   return protocols.value.find((item) => item.value === value)?.name || value || '未指定'
 }
 
+// 行级稳定标识。用数组 index 作 v-for key 时，moveRule 的位置交换会让 Vue
+// 复用错误的 DOM 节点，把上一行的输入状态（焦点、IME 组合中的文本）留在别的规则上；
+// removeRule / removePrice 的 splice 同理。_uid 只存在于前端，提交时会被剥离。
+let settingsRowSeq = 0
+function nextSettingsUid() {
+  settingsRowSeq += 1
+  return `s${settingsRowSeq}`
+}
+
 function addRule() {
-  rules.value.push({ pattern: '', protocol: protocols.value[0]?.value || 'anthropic' })
+  rules.value.push({ _uid: nextSettingsUid(), pattern: '', protocol: protocols.value[0]?.value || 'anthropic' })
 }
 
 function moveRule(index, direction) {
@@ -142,7 +151,7 @@ function removeRule(index) {
 }
 
 function addPrice() {
-  prices.value.push({ model: '', input: 0, output: 0 })
+  prices.value.push({ _uid: nextSettingsUid(), model: '', input: 0, output: 0 })
 }
 
 function removePrice(index) {
@@ -166,11 +175,13 @@ async function loadSettings() {
       api.get('/settings/model-health'),
     ])
     rules.value = (ruleData || []).map((item) => ({
+      _uid: nextSettingsUid(),
       pattern: item.pattern || '',
       protocol: item.protocol || 'anthropic',
     }))
     protocols.value = protocolData || []
     prices.value = (priceData || []).map((item) => ({
+      _uid: nextSettingsUid(),
       model: item.model || '',
       input: item.input || 0,
       output: item.output || 0,
@@ -426,6 +437,19 @@ watchSection(modelHealth, 'health')
 watchSection(breaker, 'breaker')
 
 onMounted(loadSettings)
+
+// 组件卸载时清掉所有待触发的防抖 timer。
+// 否则离开设置页后回调仍会执行：向已卸载组件的 ref 写值并发起 PUT 请求，
+// 表现为「改完立刻切页会发生看不见的保存」，且失败时无处呈现。
+onBeforeUnmount(() => {
+  Object.keys(saveTimers).forEach((section) => {
+    window.clearTimeout(saveTimers[section])
+    delete saveTimers[section]
+  })
+})
+
+// 暴露给测试：校验行级稳定 key、payload 剥离逻辑与防抖 timer 清理。
+defineExpose({ rules, prices, addRule, addPrice, moveRule, rulesPayload, pricesPayload, testPrompt })
 </script>
 
 <template>
@@ -517,7 +541,7 @@ onMounted(loadSettings)
               <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
                 <div class="min-w-0">
                   <div class="space-y-2">
-                    <article v-for="(rule, index) in rules" :key="index" class="rounded-md border border-line bg-surface p-3">
+                    <article v-for="(rule, index) in rules" :key="rule._uid" class="rounded-md border border-line bg-surface p-3">
                       <div class="mb-3 flex items-center justify-between gap-2"><span class="text-xs font-medium text-ink">规则 {{ index + 1 }}</span><div class="flex flex-wrap gap-1"><button class="btn btn-sm" type="button" :disabled="index === 0" :aria-label="`上移规则 ${index + 1}`" @click="moveRule(index, -1)">上移</button><button class="btn btn-sm" type="button" :disabled="index === rules.length - 1" :aria-label="`下移规则 ${index + 1}`" @click="moveRule(index, 1)">下移</button><button class="btn btn-danger btn-sm" type="button" :aria-label="`删除规则 ${index + 1}`" @click="removeRule(index)">删除</button></div></div>
                       <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]"><label><span class="field-label">模型正则</span><input v-model="rule.pattern" class="input input-mono" placeholder="^claude- 或 gpt-.*" /></label><label><span class="field-label">上游协议</span><select v-model="rule.protocol" class="input" @change="saveImmediately('protocols')"><option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option></select></label></div>
                     </article>
@@ -537,7 +561,7 @@ onMounted(loadSettings)
             <template #actions><span class="font-mono text-[11px]" :class="sectionStatus('prices').class" :title="sectionStatus('prices').title" aria-live="polite">{{ sectionStatus('prices').text }}</span></template>
             <PageState :loading="loadingSettings" :error="settingsError" @retry="loadSettings">
               <div class="space-y-2">
-                <article v-for="(price, index) in prices" :key="index" class="rounded-md border border-line bg-surface p-3">
+                <article v-for="(price, index) in prices" :key="price._uid" class="rounded-md border border-line bg-surface p-3">
                   <div class="mb-3 flex items-center justify-between gap-2"><span class="text-xs font-medium text-ink">价格 {{ index + 1 }}</span><button class="btn btn-danger btn-sm" type="button" :aria-label="`删除价格 ${index + 1}`" @click="removePrice(index)">删除</button></div>
                   <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_150px_150px]"><label><span class="field-label">模型</span><input v-model="price.model" class="input input-mono" placeholder="模型名或 default" /></label><label><span class="field-label">输入 $/1M</span><input v-model.number="price.input" class="input input-mono text-right" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0" /></label><label><span class="field-label">输出 $/1M</span><input v-model.number="price.output" class="input input-mono text-right" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0" /></label></div>
                 </article>
