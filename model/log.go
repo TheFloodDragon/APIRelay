@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/apirelay/apirelay/common/logger"
@@ -19,14 +20,24 @@ type Log struct {
 	Id                int    `json:"id" gorm:"primaryKey"`
 	RequestId         string `json:"request_id" gorm:"size:64;index"`
 	UpstreamRequestId string `json:"upstream_request_id" gorm:"size:128"`
-	CreatedAt         int64  `json:"created_at" gorm:"index"`
-	Type              int    `json:"type" gorm:"index"` // 见 LogType*
 
-	UserId    int    `json:"user_id" gorm:"index"`
-	TokenId   int    `json:"token_id" gorm:"index"`
+	// 日志查询几乎总是「时间范围 + 某个维度」的组合，单列索引选择性不足，
+	// 大表上会退化成按时间扫一大段再逐行过滤。下面几个复合索引把常用组合覆盖掉：
+	//   idx_log_created            纯时间范围（保留期清理、仪表盘）
+	//   idx_log_type_created       type + 时间（模型健康聚合的窗口查询）
+	//   idx_log_user_created       按用户 + 时间
+	//   idx_log_token_created      按令牌 + 时间
+	//   idx_log_channel_created    按渠道 + 时间
+	//   idx_log_model_created      按模型 + 时间（ListModelLastUsed / 健康聚合）
+	//   idx_log_channel_model_created  渠道内按模型聚合健康统计
+	CreatedAt int64 `json:"created_at" gorm:"index:idx_log_created;index:idx_log_type_created,priority:2;index:idx_log_user_created,priority:2;index:idx_log_token_created,priority:2;index:idx_log_channel_created,priority:2;index:idx_log_model_created,priority:2;index:idx_log_channel_model_created,priority:3"`
+	Type      int   `json:"type" gorm:"index:idx_log_type_created,priority:1"` // 见 LogType*
+
+	UserId    int    `json:"user_id" gorm:"index:idx_log_user_created,priority:1"`
+	TokenId   int    `json:"token_id" gorm:"index:idx_log_token_created,priority:1"`
 	TokenName string `json:"token_name" gorm:"size:128"`
 
-	ChannelId   int    `json:"channel_id" gorm:"index"`
+	ChannelId   int    `json:"channel_id" gorm:"index:idx_log_channel_created,priority:1;index:idx_log_channel_model_created,priority:1"`
 	ChannelName string `json:"channel_name" gorm:"size:128"`
 	Group       string `json:"group" gorm:"size:64"`
 
@@ -34,8 +45,9 @@ type Log struct {
 	EndpointType string `json:"endpoint_type" gorm:"size:32"`
 	ApiType      string `json:"api_type" gorm:"size:32"`
 
-	SrcModel    string `json:"src_model" gorm:"size:128;index"` // 客户端请求的模型
-	MappedModel string `json:"mapped_model" gorm:"size:128"`    // 实际转发到上游的模型
+	// 客户端请求的模型
+	SrcModel    string `json:"src_model" gorm:"size:128;index:idx_log_model_created,priority:1;index:idx_log_channel_model_created,priority:2"`
+	MappedModel string `json:"mapped_model" gorm:"size:128"` // 实际转发到上游的模型
 
 	IsStream                 bool  `json:"is_stream"`
 	PromptTokens             int   `json:"prompt_tokens"`
@@ -63,7 +75,8 @@ type Log struct {
 
 // LogPayload 存储一条日志的完整请求/响应详情，gzip 压缩 JSON 后存入 blob。
 type LogPayload struct {
-	LogId            int    `json:"-" gorm:"primaryKey;index"`
+	// 主键已自带唯一索引，无需额外 index（重复索引在大表上纯粹浪费空间与写入开销）。
+	LogId            int    `json:"-" gorm:"primaryKey"`
 	CompressedData   []byte `json:"-"`
 	OriginalSize     int    `json:"original_size"`
 	CompressedSize   int    `json:"compressed_size"`
@@ -541,35 +554,95 @@ func EmptyModelHealthStat(channelID int, modelName string) *ModelHealthStat {
 	return item
 }
 
-// ListModelHealthByChannel 按 channel_id + src_model 聚合当前策略范围内的调用健康统计。
-func ListModelHealthByChannel() (map[int]map[string]*ModelHealthStat, error) {
+// 模型健康聚合的短 TTL 缓存。
+//
+// listModelHealthSamples 用 ROW_NUMBER() 窗口函数扫描窗口内全部日志（默认 24h），
+// 而渠道列表页和模型聚合页每次刷新都会调用它，ListAggregatedModels 一次请求里
+// 更是要跑多次聚合查询。在大日志表上这是最重的查询路径。
+//
+// 健康统计本身是统计量，几十秒的滞后不影响可用性判断，因此加一层很短的 TTL 缓存。
+// 缓存键包含策略配置：调整窗口/样本数后立即失效，不会读到旧策略的结果。
+const modelHealthCacheTTL = 30 * time.Second
+
+type modelHealthCacheEntry struct {
+	byChannel map[int]map[string]*ModelHealthStat
+	byModel   map[string]*ModelHealthStat
+	cfg       ModelHealthConfig
+	at        time.Time
+}
+
+var (
+	modelHealthCacheMu sync.RWMutex
+	modelHealthCache   *modelHealthCacheEntry
+)
+
+// InvalidateModelHealthCache 清空健康聚合缓存。策略变更后调用。
+func InvalidateModelHealthCache() {
+	modelHealthCacheMu.Lock()
+	modelHealthCache = nil
+	modelHealthCacheMu.Unlock()
+}
+
+// loadModelHealthCache 返回可用的缓存条目；未命中时执行聚合并回填。
+// 两个维度（按渠道 / 按模型）共用一次查询结果，避免重复扫描日志表。
+func loadModelHealthCache() (*modelHealthCacheEntry, error) {
+	cfg := GetModelHealthConfig()
+
+	modelHealthCacheMu.RLock()
+	cached := modelHealthCache
+	modelHealthCacheMu.RUnlock()
+	if cached != nil && cached.cfg == cfg && time.Since(cached.at) < modelHealthCacheTTL {
+		return cached, nil
+	}
+
+	// 一次查询同时算出两个维度：按渠道聚合的样本已包含区分模型所需的全部信息。
 	rows, cfg, err := listModelHealthSamples(true)
 	if err != nil {
 		return nil, err
 	}
-	stats := aggregateModelHealth(rows, cfg, true)
-	result := make(map[int]map[string]*ModelHealthStat)
-	for _, item := range stats {
-		if result[item.ChannelId] == nil {
-			result[item.ChannelId] = make(map[string]*ModelHealthStat)
+
+	byChannel := make(map[int]map[string]*ModelHealthStat)
+	for _, item := range aggregateModelHealth(rows, cfg, true) {
+		if byChannel[item.ChannelId] == nil {
+			byChannel[item.ChannelId] = make(map[string]*ModelHealthStat)
 		}
-		result[item.ChannelId][item.Model] = item
+		byChannel[item.ChannelId][item.Model] = item
 	}
-	return result, nil
+
+	// 跨渠道维度需要独立查询：按 (channel_id, src_model) 分区取的 TopN
+	// 与按 src_model 分区取的 TopN 是不同样本集，不能由前者合并得出。
+	modelRows, _, err := listModelHealthSamples(false)
+	if err != nil {
+		return nil, err
+	}
+	byModel := make(map[string]*ModelHealthStat)
+	for _, item := range aggregateModelHealth(modelRows, cfg, false) {
+		byModel[item.Model] = item
+	}
+
+	entry := &modelHealthCacheEntry{byChannel: byChannel, byModel: byModel, cfg: cfg, at: time.Now()}
+	modelHealthCacheMu.Lock()
+	modelHealthCache = entry
+	modelHealthCacheMu.Unlock()
+	return entry, nil
+}
+
+// ListModelHealthByChannel 按 channel_id + src_model 聚合当前策略范围内的调用健康统计。
+func ListModelHealthByChannel() (map[int]map[string]*ModelHealthStat, error) {
+	entry, err := loadModelHealthCache()
+	if err != nil {
+		return nil, err
+	}
+	return entry.byChannel, nil
 }
 
 // ListModelHealthByModel 按 src_model 聚合当前策略范围内的跨渠道模型健康统计。
 func ListModelHealthByModel() (map[string]*ModelHealthStat, error) {
-	rows, cfg, err := listModelHealthSamples(false)
+	entry, err := loadModelHealthCache()
 	if err != nil {
 		return nil, err
 	}
-	stats := aggregateModelHealth(rows, cfg, false)
-	result := make(map[string]*ModelHealthStat, len(stats))
-	for _, item := range stats {
-		result[item.Model] = item
-	}
-	return result, nil
+	return entry.byModel, nil
 }
 
 type modelHealthSample struct {

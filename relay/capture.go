@@ -46,35 +46,80 @@ func captureUpstreamRequest(req *http.Request, body []byte, cfg *model.LoggingCo
 	return headers, body
 }
 
-// captureUpstreamResponse 采集上游响应（在 DoRequest 后、body 读取时采集）
-func captureUpstreamResponse(resp *http.Response, cfg *model.LoggingConfig) (map[string]string, io.ReadCloser) {
-	if !cfg.RecordUpstreamResp {
-		return nil, resp.Body
-	}
-	headers := sanitizeHeaders(resp.Header, cfg.SanitizedHeaderKeys)
-	// 使用 TeeReader 采集 body 同时不影响后续读取
-	var buf bytes.Buffer
-	teeBody := io.TeeReader(resp.Body, &buf)
-	return headers, &teeReadCloser{Reader: teeBody, buf: &buf, closer: resp.Body}
+// maxCapturedBodyBytes 单个采集字段的字节上限。
+//
+// 开启完整日志时，流式请求会同时持有多份正文副本（上游流缓冲 + 客户端响应缓冲）。
+// 没有上限时，一次长会话流式响应就能让单请求常驻内存达到正文的数倍。
+// 超限后停止累积并追加截断标记，保留可诊断的开头部分。
+const maxCapturedBodyBytes = 1 * 1024 * 1024
+
+var capturedTruncationMarker = []byte("\n...[truncated by apirelay: capture size limit reached]")
+
+// boundedBuffer 是带字节上限的采集缓冲：超限后丢弃后续写入，但不报错（采集不应影响转发）。
+type boundedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
 }
 
-// teeReadCloser 包装 TeeReader，读完后将采集的数据保存到 FullLogCapture
+func newBoundedBuffer(limit int) *boundedBuffer {
+	if limit <= 0 {
+		limit = maxCapturedBodyBytes
+	}
+	return &boundedBuffer{limit: limit}
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	// 始终返回 len(p)：TeeReader 会把短写当作错误并中断上游读取。
+	if remaining := b.limit - b.buf.Len(); remaining > 0 {
+		if len(p) <= remaining {
+			b.buf.Write(p)
+		} else {
+			b.buf.Write(p[:remaining])
+			b.truncated = true
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+// Bytes 返回采集内容；被截断时追加显式标记，避免误读为完整正文。
+func (b *boundedBuffer) Bytes() []byte {
+	out := make([]byte, 0, b.buf.Len()+len(capturedTruncationMarker))
+	out = append(out, b.buf.Bytes()...)
+	if b.truncated {
+		out = append(out, capturedTruncationMarker...)
+	}
+	return out
+}
+
+// appendCapped 在总长不超过 limit 的前提下追加数据，超限时只追加一次截断标记。
+func appendCapped(dst, src []byte, limit int) []byte {
+	if limit <= 0 {
+		limit = maxCapturedBodyBytes
+	}
+	if len(dst) >= limit {
+		if !bytes.HasSuffix(dst, capturedTruncationMarker) {
+			dst = append(dst, capturedTruncationMarker...)
+		}
+		return dst
+	}
+	if remaining := limit - len(dst); len(src) > remaining {
+		dst = append(dst, src[:remaining]...)
+		return append(dst, capturedTruncationMarker...)
+	}
+	return append(dst, src...)
+}
+
+// teeReadCloser 包装 TeeReader，读取时同步把数据写入采集缓冲。
 type teeReadCloser struct {
 	io.Reader
-	buf    *bytes.Buffer
 	closer io.Closer
 }
 
 func (t *teeReadCloser) Close() error {
 	return t.closer.Close()
-}
-
-// captureClientResponse 采集返回客户端的响应（在写出前调用）
-func captureClientResponse(c *gin.Context, body []byte, cfg *model.LoggingConfig) map[string]string {
-	if !cfg.RecordClientResp {
-		return nil
-	}
-	return sanitizeHeaders(c.Writer.Header(), cfg.SanitizedHeaderKeys)
 }
 
 // shouldCaptureFullLog 判断是否需要采集完整日志
@@ -118,7 +163,8 @@ func (w *captureResponseWriter) syncMeta() {
 func (w *captureResponseWriter) Write(data []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(data)
 	if n > 0 && w.capture != nil && w.cfg != nil && w.cfg.RecordClientResp {
-		w.capture.ClientRespBody = append(w.capture.ClientRespBody, data[:n]...)
+		// 有上限地累积：流式响应逐块写出，无上限 append 会随会话长度线性增长。
+		w.capture.ClientRespBody = appendCapped(w.capture.ClientRespBody, data[:n], maxCapturedBodyBytes)
 	}
 	w.syncMeta()
 	return n, err

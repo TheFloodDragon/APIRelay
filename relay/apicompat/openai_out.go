@@ -1,7 +1,10 @@
 package apicompat
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/apirelay/apirelay/dto"
@@ -11,11 +14,24 @@ import (
 // IR -> OpenAI 出站序列化（中转站对外是 OpenAI 协议时使用）
 // ============================================================================
 
+// newRandomSuffix 生成用于补齐响应 ID 的随机十六进制后缀。
+func newRandomSuffix() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// 随机源不可用时退化为时间戳，仍优于返回固定值。
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
+}
+
 // IRToOpenAIResponse 将统一响应序列化为 OpenAI 非流式响应。
 func IRToOpenAIResponse(r *dto.UnifiedResponse, model string) *dto.OpenAIChatResponse {
+	// 上游未回传 ID 时生成一个唯一值。
+	// 此前写的是 "chatcmpl-" + r.ID，而该分支恰好是 r.ID 为空的情况，
+	// 结果所有响应共用固定字符串 "chatcmpl-"，客户端无法区分请求。
 	id := r.ID
 	if id == "" {
-		id = "chatcmpl-" + r.ID
+		id = "chatcmpl-" + newRandomSuffix()
 	}
 	content, _ := json.Marshal(r.Content)
 	msg := &dto.OpenAIMessage{Role: "assistant", Content: content}

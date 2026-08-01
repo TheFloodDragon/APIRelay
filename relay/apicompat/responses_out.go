@@ -2,6 +2,7 @@ package apicompat
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/apirelay/apirelay/dto"
@@ -49,8 +50,10 @@ func IRToResponsesResponse(r *dto.UnifiedResponse, model string) *dto.ResponsesR
 	return resp
 }
 
+// funcCallID 生成第 i 个工具调用的 Responses 协议 ID。
+// 此前用 string(rune('0'+i))，i>=10 时会产出 "fc_:"、"fc_;" 等非数字字符。
 func funcCallID(i int) string {
-	return "fc_" + string(rune('0'+i))
+	return "fc_" + strconv.Itoa(i)
 }
 
 // ResponsesSSEEvent 一条待写出的 Responses SSE 事件。

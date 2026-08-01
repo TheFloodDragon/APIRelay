@@ -184,3 +184,75 @@ func TestLogDatabaseEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("environment log database = %#v", cfg.LogDatabase)
 	}
 }
+
+func TestLogRetentionDefaultsAreDisabled(t *testing.T) {
+	cfg := Default()
+	// 升级到本版本不应静默开始删除既有日志。
+	if cfg.LogRetention.Enabled {
+		t.Fatal("log retention must be disabled by default")
+	}
+	if cfg.LogRetention.Days != DefaultLogRetentionDays {
+		t.Fatalf("days = %d", cfg.LogRetention.Days)
+	}
+	if cfg.LogRetention.PayloadDays != DefaultLogPayloadRetentionDays {
+		t.Fatalf("payload days = %d", cfg.LogRetention.PayloadDays)
+	}
+	if cfg.LogRetention.BatchSize != DefaultLogRetentionBatchSize {
+		t.Fatalf("batch size = %d", cfg.LogRetention.BatchSize)
+	}
+}
+
+func TestNormalizeLogRetentionGuardsAgainstDestructiveValues(t *testing.T) {
+	// Days <= 0 必须回退默认保留期，绝不能变成"删除全部"。
+	got := normalizeLogRetention(LogRetentionConfig{Enabled: true, Days: 0})
+	if got.Days != DefaultLogRetentionDays {
+		t.Fatalf("zero days should fall back to default, got %d", got.Days)
+	}
+	got = normalizeLogRetention(LogRetentionConfig{Enabled: true, Days: -10})
+	if got.Days != DefaultLogRetentionDays {
+		t.Fatalf("negative days should fall back to default, got %d", got.Days)
+	}
+
+	// 载荷保留期不能超过摘要保留期（摘要删除会级联删除载荷）。
+	got = normalizeLogRetention(LogRetentionConfig{Enabled: true, Days: 7, PayloadDays: 30})
+	if got.PayloadDays != 7 {
+		t.Fatalf("payload days = %d, want clamped to 7", got.PayloadDays)
+	}
+
+	// 未配置载荷保留期时跟随摘要。
+	got = normalizeLogRetention(LogRetentionConfig{Enabled: true, Days: 14})
+	if got.PayloadDays != 14 {
+		t.Fatalf("payload days = %d, want 14", got.PayloadDays)
+	}
+
+	// 批量大小有上下界，避免长事务阻塞 SQLite 唯一写连接。
+	got = normalizeLogRetention(LogRetentionConfig{Enabled: true, Days: 7, BatchSize: -1})
+	if got.BatchSize != DefaultLogRetentionBatchSize {
+		t.Fatalf("batch size = %d", got.BatchSize)
+	}
+	got = normalizeLogRetention(LogRetentionConfig{Enabled: true, Days: 7, BatchSize: 1 << 20})
+	if got.BatchSize != maxLogRetentionBatchSize {
+		t.Fatalf("batch size = %d, want clamped to %d", got.BatchSize, maxLogRetentionBatchSize)
+	}
+
+	got = normalizeLogRetention(LogRetentionConfig{Enabled: true, Days: 7, IntervalMinutes: 0})
+	if got.IntervalMinutes != DefaultLogRetentionIntervalMinutes {
+		t.Fatalf("interval = %d", got.IntervalMinutes)
+	}
+}
+
+func TestLogRetentionEnvironmentOverrides(t *testing.T) {
+	t.Setenv("APIRELAY_LOG_RETENTION_ENABLED", "true")
+	t.Setenv("APIRELAY_LOG_RETENTION_DAYS", "14")
+	t.Setenv("APIRELAY_LOG_RETENTION_PAYLOAD_DAYS", "3")
+	t.Setenv("APIRELAY_LOG_RETENTION_INTERVAL_MINUTES", "15")
+	t.Setenv("APIRELAY_LOG_RETENTION_BATCH_SIZE", "250")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := cfg.LogRetention
+	if !r.Enabled || r.Days != 14 || r.PayloadDays != 3 || r.IntervalMinutes != 15 || r.BatchSize != 250 {
+		t.Fatalf("log retention env overrides not applied: %#v", r)
+	}
+}

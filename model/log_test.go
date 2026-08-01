@@ -167,6 +167,73 @@ func TestListModelHealthAppliesTimeAndRecentCountPerAggregationKey(t *testing.T)
 	}
 }
 
+// 健康聚合在 TTL 内应复用缓存，避免渠道列表页每次刷新都对日志表跑窗口全扫。
+func TestModelHealthAggregationUsesShortLivedCache(t *testing.T) {
+	setupLogTestDB(t)
+	base := time.Now().Add(-time.Minute).UnixMilli()
+	seedLog(t, &Log{RequestId: "ok-1", Type: LogTypeConsume, ChannelId: 1, SrcModel: "gpt-4o", Status: 200, CreatedAt: base})
+
+	first, err := ListModelHealthByChannel()
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if first[1]["gpt-4o"].Total != 1 {
+		t.Fatalf("first total = %d, want 1", first[1]["gpt-4o"].Total)
+	}
+
+	// 直接插入新日志但不失效缓存：TTL 内的第二次调用应返回旧结果。
+	seedLog(t, &Log{RequestId: "ok-2", Type: LogTypeConsume, ChannelId: 1, SrcModel: "gpt-4o", Status: 200, CreatedAt: base + 10})
+	cached, err := ListModelHealthByChannel()
+	if err != nil {
+		t.Fatalf("cached call: %v", err)
+	}
+	if cached[1]["gpt-4o"].Total != 1 {
+		t.Fatalf("cached total = %d, want 1 (cache should be reused within TTL)", cached[1]["gpt-4o"].Total)
+	}
+
+	// 显式失效后应看到最新数据。
+	InvalidateModelHealthCache()
+	fresh, err := ListModelHealthByChannel()
+	if err != nil {
+		t.Fatalf("after invalidate: %v", err)
+	}
+	if fresh[1]["gpt-4o"].Total != 2 {
+		t.Fatalf("total after invalidate = %d, want 2", fresh[1]["gpt-4o"].Total)
+	}
+}
+
+// 策略变更必须立刻反映到聚合结果，不能等 TTL 自然过期。
+func TestModelHealthCacheInvalidatedOnPolicyChange(t *testing.T) {
+	setupLogTestDB(t)
+	now := time.Now()
+	// 两条都在 24h 默认窗口内，但只有一条在 1h 窗口内。
+	seedLog(t, &Log{RequestId: "old", Type: LogTypeConsume, ChannelId: 1, SrcModel: "m", Status: 200, CreatedAt: now.Add(-3 * time.Hour).UnixMilli()})
+	seedLog(t, &Log{RequestId: "recent", Type: LogTypeConsume, ChannelId: 1, SrcModel: "m", Status: 200, CreatedAt: now.Add(-time.Minute).UnixMilli()})
+
+	before, err := ListModelHealthByChannel()
+	if err != nil {
+		t.Fatalf("before: %v", err)
+	}
+	if before[1]["m"].Total != 2 {
+		t.Fatalf("default window total = %d, want 2", before[1]["m"].Total)
+	}
+
+	// 收窄窗口到 1h：SaveModelHealthConfig 会级联失效聚合缓存。
+	if _, err := SaveModelHealthConfig(ModelHealthConfig{RecentCount: 100, WindowHours: 1, HealthyThreshold: 90, WarningThreshold: 50}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	after, err := ListModelHealthByChannel()
+	if err != nil {
+		t.Fatalf("after: %v", err)
+	}
+	if after[1]["m"].Total != 1 {
+		t.Fatalf("narrowed window total = %d, want 1 (policy change must invalidate cache)", after[1]["m"].Total)
+	}
+	if after[1]["m"].WindowHours != 1 {
+		t.Fatalf("window hours = %d, want 1", after[1]["m"].WindowHours)
+	}
+}
+
 func TestEmptyModelHealthStat(t *testing.T) {
 	health := EmptyModelHealthStat(7, "never-called")
 	if health.ChannelId != 7 || health.Model != "never-called" {

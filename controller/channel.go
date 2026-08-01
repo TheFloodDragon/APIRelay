@@ -40,7 +40,26 @@ func ListChannels(c *gin.Context) {
 			ch.ModelHealth[item.Name] = stat
 		}
 	}
+	model.PrepareChannelsForAPI(list)
 	ok(c, list)
+}
+
+// applyKeyForTransientChannel 为「未保存配置」类接口（探测/测试）解析凭据。
+//
+// 因为编辑表单不再回显明文 key，用户在编辑已保存渠道时提交的 key 可能为空。
+// 此时按 payload 里的 id 回退到库中已保存的凭据，使「不改 key 直接点测试」仍然可用；
+// 新建渠道（无 id）则凭据必须来自本次提交。
+func applyKeyForTransientChannel(ch *model.Channel) {
+	if ch == nil {
+		return
+	}
+	var existing *model.Channel
+	if strings.TrimSpace(ch.KeyInput) == "" && ch.Id > 0 {
+		if saved, err := model.GetChannelByID(ch.Id); err == nil {
+			existing = saved
+		}
+	}
+	ch.ApplySubmittedKey(existing)
 }
 
 func validateOverrides(c *gin.Context, ch *model.Channel) bool {
@@ -64,6 +83,8 @@ func CreateChannel(c *gin.Context) {
 	if !validateOverrides(c, &ch) {
 		return
 	}
+	// 新建渠道没有可沿用的旧值，凭据必填。
+	ch.ApplySubmittedKey(nil)
 	if strings.TrimSpace(ch.Key) == "" {
 		fail(c, http.StatusBadRequest, "API Key 不能为空")
 		return
@@ -81,6 +102,7 @@ func CreateChannel(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	ch.PrepareForAPI()
 	ok(c, ch)
 }
 
@@ -99,6 +121,8 @@ func UpdateChannel(c *gin.Context) {
 	if !validateOverrides(c, &in) {
 		return
 	}
+	// 编辑表单不回显明文凭据：提交为空表示沿用已保存的 key，非空才覆盖。
+	in.ApplySubmittedKey(existing)
 	if strings.TrimSpace(in.Key) == "" {
 		fail(c, http.StatusBadRequest, "API Key 不能为空")
 		return
@@ -112,6 +136,7 @@ func UpdateChannel(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	in.PrepareForAPI()
 	ok(c, in)
 }
 
@@ -158,6 +183,7 @@ func UpdateChannelStatus(c *gin.Context) {
 		fail(c, http.StatusNotFound, "供应商不存在")
 		return
 	}
+	channel.PrepareForAPI()
 	ok(c, channel)
 }
 
@@ -176,6 +202,7 @@ func UpdateChannelModelStatus(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	channel.PrepareForAPI()
 	ok(c, channel)
 }
 
@@ -193,6 +220,7 @@ func DeleteChannelModels(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	channel.PrepareForAPI()
 	ok(c, channel)
 }
 
@@ -246,6 +274,7 @@ func ProbeModelsByConfig(c *gin.Context) {
 	if !validateOverrides(c, &in) {
 		return
 	}
+	applyKeyForTransientChannel(&in)
 	models, err := relay.ProbeModels(&in)
 	if err != nil {
 		fail(c, http.StatusBadGateway, "拉取模型失败: "+err.Error())
@@ -305,6 +334,7 @@ func TestChannelByConfig(c *gin.Context) {
 	if !validateOverrides(c, &ch) {
 		return
 	}
+	applyKeyForTransientChannel(&ch)
 	if req.Model == "" {
 		fail(c, http.StatusBadRequest, "缺少 model")
 		return
@@ -381,6 +411,7 @@ func TestChannelBatchByConfig(c *gin.Context) {
 	if !validateOverrides(c, &ch) {
 		return
 	}
+	applyKeyForTransientChannel(&ch)
 	if len(req.Models) == 0 {
 		fail(c, http.StatusBadRequest, "缺少 models")
 		return

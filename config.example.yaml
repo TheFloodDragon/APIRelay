@@ -20,12 +20,24 @@ log:
   path: ./logs          # 为空则只输出到 stdout
   format: console       # console | json
 
+# 调用日志表（logs / log_payloads）的自动清理。
+# 这两张表默认只增不删，长期运行会无界增长（完整日志载荷是 gzip blob，单条可达数百 KB）。
+# 注意：清理是不可逆删除，默认关闭，需显式开启。
+log_retention:
+  enabled: false          # 是否启用自动清理
+  days: 30                # 日志摘要保留天数
+  payload_days: 7         # 完整报文载荷保留天数（可短于 days；超过后仅删载荷、保留摘要）
+  interval_minutes: 60    # 清理任务执行间隔
+  batch_size: 500         # 单批删除行数；SQLite 下不宜过大，避免长事务阻塞日志落库
+
 relay:
   max_retries: 3           # 跨渠道总重试次数
   channel_max_retries: 1   # 单个渠道重试次数
   cooldown_seconds: 60     # 渠道故障冷却时间
   request_timeout: 0       # 秒，0 表示不限（完整请求级 timeout；流式默认建议保持 0）
   max_body_bytes: 20971520 # Relay API 请求体上限（20 MiB）
+  # 非流式上游响应体上限（64 MiB）。防止上游异常返回超大响应打爆网关内存。
+  max_upstream_body_bytes: 67108864
   default_group: default
 
   # 熔断器配置

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -39,7 +40,7 @@ func (ChannelHealth) TableName() string {
 func GetChannelHealth(channelId int) (*ChannelHealth, error) {
 	var h ChannelHealth
 	err := DB.Where("channel_id = ?", channelId).First(&h).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return &ChannelHealth{
 			ChannelId:    channelId,
 			CircuitState: CircuitClosed,

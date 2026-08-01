@@ -2,8 +2,14 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"sync"
+
+	"github.com/apirelay/apirelay/common/logger"
+
+	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // Setting 是全局键值配置表。
@@ -97,10 +103,15 @@ func GetSetting(key string) (string, error) {
 		return "", nil
 	}
 	var s Setting
-	err := DB.Where("`key` = ?", key).First(&s).Error
+	err := DB.Where(quoteIdent(DB, "key")+" = ?", key).First(&s).Error
 	if err != nil {
-		// 不存在视为空值
-		return "", nil
+		// 仅「记录不存在」视为空值。其它错误（连接中断、表缺失等）必须上抛：
+		// 缓存层依赖返回值决定是否置 loaded，静默吞错会把一次瞬时 DB 故障
+		// 固化成整个进程生命周期内的错误配置。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", err
 	}
 	return s.Value, nil
 }
@@ -149,7 +160,12 @@ func GetGlobalProtocolRules() []ProtocolRule {
 	if protocolRulesLoaded { // double-check
 		return protocolRulesCache
 	}
-	raw, _ := GetSetting(SettingKeyProtocolRules)
+	raw, err := GetSetting(SettingKeyProtocolRules)
+	if err != nil {
+		// DB 故障时不缓存，下次调用重试，避免把瞬时错误固化为空规则。
+		logger.L().Warn("load protocol rules failed", zap.Error(err))
+		return nil
+	}
 	var rules []ProtocolRule
 	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &rules)
@@ -189,7 +205,11 @@ func GetGlobalModelPrices() []ModelPrice {
 	if modelPricesLoaded { // double-check
 		return modelPricesCache
 	}
-	raw, _ := GetSetting(SettingKeyModelPrices)
+	raw, err := GetSetting(SettingKeyModelPrices)
+	if err != nil {
+		logger.L().Warn("load model prices failed", zap.Error(err))
+		return nil
+	}
 	var prices []ModelPrice
 	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &prices)
@@ -267,7 +287,13 @@ func GetBillingConfig() BillingConfig {
 		CacheWriteMultiplier: DefaultCacheWriteMultiplier,
 		CacheReadMultiplier:  DefaultCacheReadMultiplier,
 	}
-	if raw, _ := GetSetting(SettingKeyBilling); raw != "" {
+	raw, err := GetSetting(SettingKeyBilling)
+	if err != nil {
+		// DB 故障时返回默认倍率但不缓存，避免固化。
+		logger.L().Warn("load billing config failed", zap.Error(err))
+		return NormalizeBillingConfig(cfg)
+	}
+	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg)
 	}
 	cfg = NormalizeBillingConfig(cfg)
@@ -332,7 +358,13 @@ func GetLoggingConfig() *LoggingConfig {
 	if loggingConfigLoaded { // double-check
 		return loggingConfigCache
 	}
-	raw, _ := GetSetting(SettingKeyLogging)
+	raw, err := GetSetting(SettingKeyLogging)
+	if err != nil {
+		// DB 故障时返回安全默认（关闭完整日志采集）但不缓存，下次调用重试。
+		logger.L().Warn("load logging config failed", zap.Error(err))
+		fallback := NormalizeLoggingConfig(LoggingConfig{Enabled: false})
+		return &fallback
+	}
 	var cfg LoggingConfig
 	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg)
@@ -414,7 +446,11 @@ func GetModelHealthConfig() ModelHealthConfig {
 		return modelHealthConfigCache
 	}
 	var cfg ModelHealthConfig
-	raw, _ := GetSetting(SettingKeyModelHealth)
+	raw, err := GetSetting(SettingKeyModelHealth)
+	if err != nil {
+		logger.L().Warn("load model health config failed", zap.Error(err))
+		return NormalizeModelHealthConfig(cfg)
+	}
 	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg)
 	}
@@ -435,6 +471,9 @@ func invalidateModelHealthConfigCache() {
 	modelHealthConfigLoaded = false
 	modelHealthConfigCache = ModelHealthConfig{}
 	modelHealthConfigMu.Unlock()
+	// 聚合结果依赖该策略（窗口长度、样本数），策略变更后必须立刻重算，
+	// 否则设置页保存后要等 TTL 过期才能看到新口径的统计。
+	InvalidateModelHealthCache()
 }
 
 // GetNetworkConfig 返回持久化的上游网络配置；未配置时默认跟随系统代理。

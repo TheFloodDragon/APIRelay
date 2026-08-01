@@ -509,6 +509,20 @@ func CloseDatabases() error {
 // 纯 Go sqlite 驱动在多写连接下易触发 "database is locked"，
 // 因此写并发安全下限是单连接（SetMaxOpenConns(1)）。
 func tuneSQLite(db *gorm.DB) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	// 必须先把连接池压到单连接，再执行 PRAGMA。
+	// journal_mode 之外的 PRAGMA 都是 per-connection 设置，若池中存在多个连接，
+	// 只有恰好被 Exec 用到的那一个会生效，其余连接的 busy_timeout/foreign_keys 均为默认值。
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	// 不设 ConnMaxLifetime：连接被回收后新建的连接不会重放这些 PRAGMA，
+	// busy_timeout 归零会让 SQLite BUSY 重试更容易失败。单连接场景下长期复用是期望行为。
+	sqlDB.SetConnMaxLifetime(0)
+	sqlDB.SetConnMaxIdleTime(0)
+
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL",
@@ -520,13 +534,6 @@ func tuneSQLite(db *gorm.DB) error {
 			return err
 		}
 	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		return err
-	}
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-	sqlDB.SetConnMaxLifetime(time.Hour)
 	return nil
 }
 

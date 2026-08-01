@@ -47,6 +47,27 @@ func (r *Relayer) channelMaxRetries() int {
 	return relaycommon.RuntimeChannelMaxRetries(r.cfg.ChannelMaxRetries)
 }
 
+// upstreamErrorBodyLimit 错误响应体的读取上限（仅用于日志与故障转移决策）。
+const upstreamErrorBodyLimit = 64 * 1024
+
+// upstreamDrainLimit 关闭前最多排空的字节数，用于保住 keep-alive 连接。
+const upstreamDrainLimit = 256 * 1024
+
+func (r *Relayer) maxUpstreamBodyBytes() int64 {
+	if r == nil || r.cfg == nil || r.cfg.MaxUpstreamBodyBytes <= 0 {
+		return config.DefaultMaxUpstreamBodyBytes
+	}
+	return r.cfg.MaxUpstreamBodyBytes
+}
+
+// drainBody 丢弃剩余正文，使底层连接可以放回 Transport 的空闲池复用。
+func drainBody(body io.Reader) {
+	if body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, upstreamDrainLimit))
+}
+
 // HandleOpenAIChat 处理对外的 OpenAI /v1/chat/completions 请求。
 func (r *Relayer) HandleOpenAIChat(c *gin.Context) {
 	r.handle(c, constant.EndpointOpenAI, apicompat.ParseOpenAIRequest)
@@ -145,7 +166,7 @@ func (r *Relayer) handle(c *gin.Context, ep constant.EndpointType, parse func([]
 	}
 
 	if info.FullLogCapture != nil && model.GetLoggingConfig().RecordClientRequest {
-		info.FullLogCapture.ClientBody = append([]byte(nil), body...)
+		info.FullLogCapture.ClientBody = appendCapped(nil, body, maxCapturedBodyBytes)
 	}
 
 	ir, err := parse(body)
@@ -559,7 +580,10 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, upstreamErrorBodyLimit))
+		// 排空剩余正文再让 defer 关闭：未读完的 body 会让 http.Transport 丢弃该连接，
+		// 上游持续返回大错误体（如带完整 HTML 页的 502）时每次失败都要重建 TCP+TLS。
+		drainBody(resp.Body)
 		if info.FullLogCapture != nil && model.GetLoggingConfig().RecordUpstreamResp {
 			info.FullLogCapture.UpstreamRespBody = append([]byte(nil), respBody...)
 		}
@@ -577,7 +601,10 @@ func (r *Relayer) doOnce(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest
 }
 
 func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, adp adaptor.Adaptor, resp *http.Response, out Outbound, billing *BillingSession) (int, bool, error) {
-	body, err := io.ReadAll(resp.Body)
+	// 限制非流式响应体大小：上游异常或恶意返回超大 body 会打爆网关内存，
+	// 且该正文随后还要被 JSON 解析并可能被日志采集持有。多读 1 字节用于探测超限。
+	limit := r.maxUpstreamBodyBytes()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		switch category := classifyRelayError(relayContext(info), err); category {
 		case ErrorCategoryClientCanceled:
@@ -590,15 +617,19 @@ func (r *Relayer) handleNonStream(c *gin.Context, info *RelayInfo, ir *dto.Unifi
 			return http.StatusBadGateway, true, fmt.Errorf("read upstream body: %w", err)
 		}
 	}
+	if int64(len(body)) > limit {
+		drainBody(resp.Body)
+		return http.StatusBadGateway, true, fmt.Errorf("upstream response body exceeds %d bytes", limit)
+	}
 	if len(body) == 0 {
 		return http.StatusBadGateway, true, errEmptyUpstreamResponse
 	}
 
-	// 采集上游响应 body
+	// 采集上游响应 body（受采集上限约束，避免大响应长期驻留内存）
 	if info.FullLogCapture != nil && shouldCaptureFullLog() {
 		cfg := model.GetLoggingConfig()
 		if cfg.RecordUpstreamResp {
-			info.FullLogCapture.UpstreamRespBody = body
+			info.FullLogCapture.UpstreamRespBody = appendCapped(nil, body, maxCapturedBodyBytes)
 		}
 	}
 
@@ -621,11 +652,12 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 	}
 
 	// 流式上游正文用 TeeReader 边消费边采集，不改变 adaptor 的读取与取消语义。
-	var upstreamCaptureBuf *bytes.Buffer
+	// 缓冲带字节上限，避免长会话流式响应把单请求内存推高到正文的数倍。
+	var upstreamCaptureBuf *boundedBuffer
 	if info.FullLogCapture != nil {
 		cfg := model.GetLoggingConfig()
 		if cfg.RecordUpstreamResp {
-			upstreamCaptureBuf = &bytes.Buffer{}
+			upstreamCaptureBuf = newBoundedBuffer(maxCapturedBodyBytes)
 			originalBody := resp.Body
 			resp.Body = &teeReadCloser{Reader: io.TeeReader(originalBody, upstreamCaptureBuf), closer: originalBody}
 			info.FullLogCapture.UpstreamStatus = resp.StatusCode
@@ -661,7 +693,8 @@ func (r *Relayer) handleStream(c *gin.Context, info *RelayInfo, ir *dto.UnifiedR
 		usage = observedUsage
 	}
 	if upstreamCaptureBuf != nil {
-		info.FullLogCapture.UpstreamRespBody = append([]byte(nil), upstreamCaptureBuf.Bytes()...)
+		// Bytes 已返回独立副本（并在超限时带截断标记），无需再拷贝一次。
+		info.FullLogCapture.UpstreamRespBody = upstreamCaptureBuf.Bytes()
 	}
 
 	if err != nil {

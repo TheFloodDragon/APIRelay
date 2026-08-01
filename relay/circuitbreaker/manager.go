@@ -2,6 +2,7 @@ package circuitbreaker
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/apirelay/apirelay/model"
 )
@@ -13,22 +14,29 @@ type Manager struct {
 	breakers sync.Map // map[int]*CircuitBreaker
 }
 
-var globalManager *Manager
-var once sync.Once
+// globalManager 用 atomic.Pointer 保存。
+//
+// 此前是裸指针 + sync.Once：GetManager 里 `if globalManager == nil` 的读取发生在
+// once.Do 之外，与 InitManager 内部的写入构成数据竞争（once.Do 只为调用 Do 的 goroutine
+// 建立 happens-before，覆盖不到这个前置裸读）。而 GetManager 在每个请求的选渠道与
+// 成功/失败记录路径上都会被调用，竞争窗口实际存在。
+var globalManager atomic.Pointer[Manager]
+var initOnce sync.Once
 
-// InitManager 初始化全局熔断器管理器
+// InitManager 初始化全局熔断器管理器（仅首次调用生效）。
 func InitManager(cfg Config) {
-	once.Do(func() {
-		globalManager = &Manager{cfg: cfg.normalized()}
+	initOnce.Do(func() {
+		globalManager.Store(&Manager{cfg: cfg.normalized()})
 	})
 }
 
-// GetManager 获取全局熔断器管理器
+// GetManager 获取全局熔断器管理器；未初始化时用默认配置惰性初始化。
 func GetManager() *Manager {
-	if globalManager == nil {
-		InitManager(DefaultConfig())
+	if m := globalManager.Load(); m != nil {
+		return m
 	}
-	return globalManager
+	InitManager(DefaultConfig())
+	return globalManager.Load()
 }
 
 // GetBreaker 获取指定渠道的熔断器实例（懒加载）
@@ -72,14 +80,9 @@ func (m *Manager) UpdateConfig(cfg Config) {
 		breaker := value.(*CircuitBreaker)
 		breaker.mu.Lock()
 		breaker.cfg = cfg
+		// 窗口长度可能变短，先按新窗口裁剪再全量重算（配置变更是罕见路径）。
 		breaker.pruneEventsLocked(breaker.currentTime())
-		breaker.totalRequests = len(breaker.requestEvents)
-		breaker.failedRequests = 0
-		for _, event := range breaker.requestEvents {
-			if event.failed {
-				breaker.failedRequests++
-			}
-		}
+		breaker.recountWindowLocked()
 		breaker.mu.Unlock()
 		return true
 	})

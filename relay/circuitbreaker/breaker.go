@@ -57,7 +57,7 @@ func (cb *CircuitBreaker) acquireProbe(reserve bool) bool {
 	defer func() {
 		cb.mu.Unlock()
 		if health != nil {
-			go persistHealth(health)
+			queuePersist(health)
 		}
 	}()
 
@@ -69,11 +69,14 @@ func (cb *CircuitBreaker) acquireProbe(reserve bool) bool {
 		if cb.openedAt == nil || now.Sub(*cb.openedAt) < time.Duration(cb.cfg.TimeoutSeconds)*time.Second {
 			return false
 		}
+		if !reserve {
+			// Peek 必须是只读的：调度层会对每个候选渠道调用它，若在这里迁移状态，
+			// 一次选渠道扫描就会把根本没被选中的渠道全部翻成 HalfOpen 并触发落库。
+			// 熔断已超时说明下一个真正的 reserve 调用可以放行，这里只报告可行性。
+			return true
+		}
 		cb.toHalfOpenLocked(now)
 		health = cb.stateSnapshotLocked()
-		if !reserve {
-			return cb.halfOpenInFlight < cb.cfg.SuccessThreshold
-		}
 		fallthrough
 	case model.CircuitHalfOpen:
 		if cb.halfOpenInFlight >= cb.cfg.SuccessThreshold {
@@ -125,7 +128,7 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Unlock()
 
 	if health != nil {
-		go persistHealth(health)
+		queuePersist(health)
 	}
 }
 
@@ -169,22 +172,24 @@ func (cb *CircuitBreaker) RecordFailure(errMsg string) {
 	cb.mu.Unlock()
 
 	if health != nil {
-		go persistHealth(health)
+		queuePersist(health)
 	}
 }
 
+// recordEventLocked 把一次请求结果计入滑动窗口。
+//
+// failedRequests 用增量维护：此前每次请求都要全量遍历窗口内事件重算，
+// 高 QPS 渠道在 60s 窗口下事件数可达数万，等于每请求在写锁临界区内做一次全扫描。
 func (cb *CircuitBreaker) recordEventLocked(now time.Time, failed bool) {
 	cb.requestEvents = append(cb.requestEvents, requestEvent{at: now, failed: failed})
+	if failed {
+		cb.failedRequests++
+	}
 	cb.pruneEventsLocked(now)
 	cb.totalRequests = len(cb.requestEvents)
-	cb.failedRequests = 0
-	for _, event := range cb.requestEvents {
-		if event.failed {
-			cb.failedRequests++
-		}
-	}
 }
 
+// pruneEventsLocked 剔除窗口外事件，并同步扣减 failedRequests。
 func (cb *CircuitBreaker) pruneEventsLocked(now time.Time) {
 	window := time.Duration(cb.cfg.WindowSeconds) * time.Second
 	if window <= 0 || len(cb.requestEvents) == 0 {
@@ -193,11 +198,26 @@ func (cb *CircuitBreaker) pruneEventsLocked(now time.Time) {
 	cutoff := now.Add(-window)
 	keepFrom := 0
 	for keepFrom < len(cb.requestEvents) && cb.requestEvents[keepFrom].at.Before(cutoff) {
+		if cb.requestEvents[keepFrom].failed && cb.failedRequests > 0 {
+			cb.failedRequests--
+		}
 		keepFrom++
 	}
 	if keepFrom > 0 {
 		copy(cb.requestEvents, cb.requestEvents[keepFrom:])
 		cb.requestEvents = cb.requestEvents[:len(cb.requestEvents)-keepFrom]
+	}
+}
+
+// recountWindowLocked 从事件列表全量重算计数。
+// 仅用于配置变更等罕见路径；常规请求路径走 recordEventLocked 的增量维护。
+func (cb *CircuitBreaker) recountWindowLocked() {
+	cb.totalRequests = len(cb.requestEvents)
+	cb.failedRequests = 0
+	for _, event := range cb.requestEvents {
+		if event.failed {
+			cb.failedRequests++
+		}
 	}
 }
 
@@ -223,7 +243,12 @@ func (cb *CircuitBreaker) currentTime() time.Time {
 	return time.Now()
 }
 
+// stateSnapshotLocked 生成一份用于持久化的状态快照，并推进持久化版本号。
+//
+// 版本号必须每次递增：UpsertChannelHealth 依赖它丢弃过期快照，若多次快照共用同一版本，
+// 并发落库的先后顺序完全随机，新状态可能被旧快照覆盖。
 func (cb *CircuitBreaker) stateSnapshotLocked() *model.ChannelHealth {
+	cb.persistVersion++
 	health := &model.ChannelHealth{
 		ChannelId:            cb.channelID,
 		ConsecutiveFailures:  cb.consecutiveFailures,
@@ -253,7 +278,39 @@ func (cb *CircuitBreaker) snapshotLocked(timestamp time.Time, isSuccess bool, er
 	return health
 }
 
-// persistHealth 异步持久化到数据库
+// 熔断状态落库队列。
+//
+// 此前每次状态变更都 `go persistHealth(...)`：无数量上限、无排队，
+// 高失败率时会瞬间派生大量 goroutine 争抢 SQLite 的单写连接。
+// 改为单 goroutine 顺序消费的有界队列；队列满时丢弃本次快照
+// （状态会在后续变更或进程重启时从内存/DB 重新对齐，丢一帧快照不影响正确性）。
+const persistQueueSize = 256
+
+var (
+	persistQueue     chan *model.ChannelHealth
+	persistQueueOnce sync.Once
+)
+
+func queuePersist(health *model.ChannelHealth) {
+	if health == nil {
+		return
+	}
+	persistQueueOnce.Do(func() {
+		persistQueue = make(chan *model.ChannelHealth, persistQueueSize)
+		go func() {
+			for h := range persistQueue {
+				persistHealth(h)
+			}
+		}()
+	})
+	select {
+	case persistQueue <- health:
+	default:
+		// 队列积压：丢弃最新快照，避免阻塞请求路径。
+	}
+}
+
+// persistHealth 持久化到数据库
 func persistHealth(health *model.ChannelHealth) {
 	if health == nil || model.DB == nil {
 		return

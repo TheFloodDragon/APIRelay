@@ -11,13 +11,20 @@ import (
 )
 
 const (
-	DefaultConfigPath                      = "config.yaml"
-	DefaultAdminMaxBodyBytes         int64 = 2 * 1024 * 1024
-	DefaultRelayMaxBodyBytes         int64 = 20 * 1024 * 1024
-	DefaultInitialAdminUsername            = "admin"
-	DefaultLoginMaxFailures                = 5
-	DefaultLoginFailureWindowSeconds       = 10 * 60
-	DefaultLoginLockoutSeconds             = 15 * 60
+	DefaultConfigPath                 = "config.yaml"
+	DefaultAdminMaxBodyBytes    int64 = 2 * 1024 * 1024
+	DefaultRelayMaxBodyBytes    int64 = 20 * 1024 * 1024
+	DefaultMaxUpstreamBodyBytes int64 = 64 * 1024 * 1024
+	// 调用日志保留期默认值（仅在 log_retention.enabled 为 true 时生效）。
+	DefaultLogRetentionDays            = 30
+	DefaultLogPayloadRetentionDays     = 7
+	DefaultLogRetentionIntervalMinutes = 60
+	DefaultLogRetentionBatchSize       = 500
+	maxLogRetentionBatchSize           = 10000
+	DefaultInitialAdminUsername        = "admin"
+	DefaultLoginMaxFailures            = 5
+	DefaultLoginFailureWindowSeconds   = 10 * 60
+	DefaultLoginLockoutSeconds         = 15 * 60
 )
 
 var configFilePath = struct {
@@ -32,8 +39,10 @@ type Config struct {
 	Database    DatabaseConfig  `yaml:"database"`
 	LogDatabase *DatabaseConfig `yaml:"log_database,omitempty"`
 	Log         LogConfig       `yaml:"log"`
-	Relay       RelayConfig     `yaml:"relay"`
-	Auth        AuthConfig      `yaml:"auth"`
+	// LogRetention 调用日志表的自动清理策略。
+	LogRetention LogRetentionConfig `yaml:"log_retention"`
+	Relay        RelayConfig        `yaml:"relay"`
+	Auth         AuthConfig         `yaml:"auth"`
 }
 
 type ServerConfig struct {
@@ -64,6 +73,24 @@ type LogConfig struct {
 	Format string `yaml:"format"`
 }
 
+// LogRetentionConfig 控制调用日志表（logs / log_payloads）的保留期。
+//
+// 这些表只增不删时会无界增长（完整日志载荷是 gzip blob，单条可达数百 KB）。
+// 保留期属于运维参数，放在配置文件而非 Web 设置页，避免误改成极小值造成不可逆删除。
+type LogRetentionConfig struct {
+	// Enabled 是否启用自动清理。默认关闭，避免升级后意外删除既有数据。
+	Enabled bool `yaml:"enabled"`
+	// Days 保留天数；超过该时长的日志会被删除。必须 > 0。
+	Days int `yaml:"days"`
+	// PayloadDays 完整日志载荷的保留天数，可比 Days 更短（载荷体积远大于摘要）。
+	// <= 0 时跟随 Days。
+	PayloadDays int `yaml:"payload_days"`
+	// IntervalMinutes 清理任务的执行间隔（分钟）。
+	IntervalMinutes int `yaml:"interval_minutes"`
+	// BatchSize 单批删除的行数。SQLite 单连接下不宜过大，否则长事务会阻塞写入。
+	BatchSize int `yaml:"batch_size"`
+}
+
 type RelayConfig struct {
 	// MaxRetries 单次请求跨渠道最大切换次数。
 	// 语义：N 次切换 = 最多尝试 N+1 个渠道（首选渠道 + N 个备用渠道）。
@@ -76,6 +103,9 @@ type RelayConfig struct {
 	RequestTimeout int `yaml:"request_timeout"`
 	// MaxBodyBytes Relay API 请求体上限。
 	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+	// MaxUpstreamBodyBytes 非流式上游响应体上限。
+	// 上游异常或恶意返回超大响应时防止打爆网关内存（该正文还会被解析并可能进入日志采集）。
+	MaxUpstreamBodyBytes int64 `yaml:"max_upstream_body_bytes"`
 	// DefaultGroup 令牌未指定分组时使用的默认分组
 	DefaultGroup string `yaml:"default_group"`
 	// CircuitBreaker 熔断器配置
@@ -123,13 +153,22 @@ func Default() *Config {
 			DSN:    "./apirelay.db",
 		},
 		Log: LogConfig{Level: "info", Path: "./logs", Format: "console"},
+		LogRetention: LogRetentionConfig{
+			// 默认关闭：升级到本版本不应静默删除既有日志，需运维显式开启。
+			Enabled:         false,
+			Days:            DefaultLogRetentionDays,
+			PayloadDays:     DefaultLogPayloadRetentionDays,
+			IntervalMinutes: DefaultLogRetentionIntervalMinutes,
+			BatchSize:       DefaultLogRetentionBatchSize,
+		},
 		Relay: RelayConfig{
-			MaxRetries:        3,
-			ChannelMaxRetries: 1,
-			CooldownSeconds:   60,
-			RequestTimeout:    0,
-			MaxBodyBytes:      DefaultRelayMaxBodyBytes,
-			DefaultGroup:      "default",
+			MaxRetries:           3,
+			ChannelMaxRetries:    1,
+			CooldownSeconds:      60,
+			RequestTimeout:       0,
+			MaxBodyBytes:         DefaultRelayMaxBodyBytes,
+			MaxUpstreamBodyBytes: DefaultMaxUpstreamBodyBytes,
+			DefaultGroup:         "default",
 			CircuitBreaker: CircuitBreakerConfig{
 				FailureThreshold:   5,
 				SuccessThreshold:   2,
@@ -235,6 +274,7 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Log.Format) == "" {
 		c.Log.Format = "console"
 	}
+	c.LogRetention = normalizeLogRetention(c.LogRetention)
 
 	if c.Relay.MaxRetries <= 0 {
 		c.Relay.MaxRetries = 3
@@ -247,6 +287,9 @@ func (c *Config) Normalize() {
 	}
 	if c.Relay.MaxBodyBytes <= 0 {
 		c.Relay.MaxBodyBytes = DefaultRelayMaxBodyBytes
+	}
+	if c.Relay.MaxUpstreamBodyBytes <= 0 {
+		c.Relay.MaxUpstreamBodyBytes = DefaultMaxUpstreamBodyBytes
 	}
 	if strings.TrimSpace(c.Relay.DefaultGroup) == "" {
 		c.Relay.DefaultGroup = "default"
@@ -336,6 +379,31 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("APIRELAY_LOG_FORMAT"); v != "" {
 		cfg.Log.Format = v
 	}
+	if v := os.Getenv("APIRELAY_LOG_RETENTION_ENABLED"); v != "" {
+		if p, err := strconv.ParseBool(v); err == nil {
+			cfg.LogRetention.Enabled = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_LOG_RETENTION_DAYS"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.LogRetention.Days = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_LOG_RETENTION_PAYLOAD_DAYS"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.LogRetention.PayloadDays = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_LOG_RETENTION_INTERVAL_MINUTES"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.LogRetention.IntervalMinutes = p
+		}
+	}
+	if v := os.Getenv("APIRELAY_LOG_RETENTION_BATCH_SIZE"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.LogRetention.BatchSize = p
+		}
+	}
 	if v := os.Getenv("APIRELAY_SESSION_SECRET"); v != "" {
 		cfg.Auth.SessionSecret = v
 	}
@@ -393,6 +461,11 @@ func applyEnv(cfg *Config) {
 			cfg.Relay.MaxBodyBytes = p
 		}
 	}
+	if v := os.Getenv("APIRELAY_MAX_UPSTREAM_BODY_BYTES"); v != "" {
+		if p, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Relay.MaxUpstreamBodyBytes = p
+		}
+	}
 	if v := os.Getenv("APIRELAY_DEFAULT_GROUP"); v != "" {
 		cfg.Relay.DefaultGroup = v
 	}
@@ -430,6 +503,33 @@ func applyEnv(cfg *Config) {
 
 func splitCSV(s string) []string {
 	return normalizeList(strings.Split(s, ","))
+}
+
+// normalizeLogRetention 补齐缺省值并限制异常输入。
+//
+// 关键安全约束：清理是不可逆删除，因此任何无法解释的配置都必须回退到保守默认值，
+// 而不是"尽力按用户写的执行"。Days <= 0 时回退默认保留期而非删除全部数据。
+func normalizeLogRetention(cfg LogRetentionConfig) LogRetentionConfig {
+	if cfg.Days <= 0 {
+		cfg.Days = DefaultLogRetentionDays
+	}
+	if cfg.PayloadDays <= 0 {
+		// 未单独配置时跟随摘要保留期。
+		cfg.PayloadDays = cfg.Days
+	}
+	if cfg.PayloadDays > cfg.Days {
+		// 载荷不可能比它关联的摘要活得更久（摘要删除时会级联删除载荷）。
+		cfg.PayloadDays = cfg.Days
+	}
+	if cfg.IntervalMinutes <= 0 {
+		cfg.IntervalMinutes = DefaultLogRetentionIntervalMinutes
+	}
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = DefaultLogRetentionBatchSize
+	} else if cfg.BatchSize > maxLogRetentionBatchSize {
+		cfg.BatchSize = maxLogRetentionBatchSize
+	}
+	return cfg
 }
 
 func normalizeList(values []string) []string {

@@ -1,6 +1,7 @@
 package adaptor
 
 import (
+	"bufio"
 	"compress/gzip"
 	"compress/zlib"
 	"io"
@@ -29,25 +30,47 @@ func DecompressResponse(resp *http.Response) {
 		return
 	}
 
+	// gzip.NewReader / zlib.NewReader 都会预读并消费头部字节，失败后无法回退。
+	// 若此时直接返回，resp.Body 的读取位置已前移，调用方会拿到缺少前几字节的残缺流，
+	// 表现为「上游确实返回了 JSON，却报 convert response 失败」且被判为不可重试。
+	//
+	// 因此用 bufio.Reader 包裹并先 Peek 校验魔数：Peek 不消费字节，
+	// 无论是否解压，后续读取都能从完整的流开始。
+	buffered := bufio.NewReader(resp.Body)
+	// 解压器构造失败时交还这个可重放的流，让上层按未压缩内容处理。
+	passthrough := &wrappedReadCloser{r: io.NopCloser(buffered), underlying: resp.Body}
+
 	var newBody io.ReadCloser
 	switch enc {
 	case "gzip":
-		zr, err := gzip.NewReader(resp.Body)
+		// gzip 魔数 0x1f 0x8b。
+		if head, err := buffered.Peek(2); err != nil || head[0] != 0x1f || head[1] != 0x8b {
+			resp.Body = passthrough
+			return
+		}
+		zr, err := gzip.NewReader(buffered)
 		if err != nil {
+			resp.Body = passthrough
 			return
 		}
 		newBody = &wrappedReadCloser{r: zr, underlying: resp.Body}
 	case "deflate":
-		// HTTP 的 deflate 绝大多数为 zlib 封装（RFC 1950）。zlib.NewReader 会预读
-		// 头部，若失败说明不是 zlib 流，此时不冒险回退（避免读到错位字节导致乱码），
-		// 直接放弃解压交由上层处理。
-		zr, err := zlib.NewReader(resp.Body)
+		// HTTP 的 deflate 绝大多数为 zlib 封装（RFC 1950）：低 4 位为压缩方法 8，
+		// 且 (CMF<<8 | FLG) 必须能被 31 整除。
+		head, err := buffered.Peek(2)
+		if err != nil || head[0]&0x0f != 8 || (uint16(head[0])<<8|uint16(head[1]))%31 != 0 {
+			resp.Body = passthrough
+			return
+		}
+		zr, err := zlib.NewReader(buffered)
 		if err != nil {
+			resp.Body = passthrough
 			return
 		}
 		newBody = &wrappedReadCloser{r: zr, underlying: resp.Body}
 	default:
-		// 未知编码（br / zstd 等）：不处理
+		// 未知编码（br / zstd 等）：不解压，但仍需交还完整可读的流。
+		resp.Body = passthrough
 		return
 	}
 

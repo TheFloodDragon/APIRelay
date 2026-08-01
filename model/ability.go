@@ -1,6 +1,11 @@
 package model
 
-import "gorm.io/gorm"
+import (
+	"github.com/apirelay/apirelay/common/logger"
+
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+)
 
 // Ability 是 (group, model) -> channel 的倒排索引，用于按模型快速选渠道。
 type Ability struct {
@@ -75,7 +80,7 @@ type ChannelCandidate struct {
 // 同时匹配精确模型名与通配符模型 "*"。结果未排序，由调度层处理分层与加权。
 func GetChannelCandidates(group, model string) ([]ChannelCandidate, error) {
 	var abilities []Ability
-	err := DB.Where("`group` = ? AND model IN ? AND enabled = ?",
+	err := DB.Where(groupColumn()+" = ? AND model IN ? AND enabled = ?",
 		group, []string{model, WildcardModel}, true).
 		Find(&abilities).Error
 	if err != nil {
@@ -121,7 +126,7 @@ func GetChannelCandidates(group, model string) ([]ChannelCandidate, error) {
 // GetAvailableModels 返回某分组下所有启用渠道支持的模型列表（去重）。
 func GetAvailableModels(group string) ([]string, error) {
 	var abilities []Ability
-	err := DB.Where("`group` = ? AND enabled = ? AND model != ?",
+	err := DB.Where(groupColumn()+" = ? AND enabled = ? AND model != ?",
 		group, true, WildcardModel).
 		Distinct("model").
 		Order("model").
@@ -156,10 +161,14 @@ func DiagnoseModel(group, modelName string) ModelAvailability {
 		return diag
 	}
 
+	groupCol := groupColumn()
+
 	// 1) 请求分组下已启用、命中该模型（精确或通配）的渠道
 	var enabled []Ability
-	DB.Where("`group` = ? AND model IN ? AND enabled = ?",
-		group, []string{modelName, WildcardModel}, true).Find(&enabled)
+	if err := DB.Where(groupCol+" = ? AND model IN ? AND enabled = ?",
+		group, []string{modelName, WildcardModel}, true).Find(&enabled).Error; err != nil {
+		logger.L().Warn("diagnose model: query enabled abilities failed", zap.Error(err))
+	}
 	enabledIDs := map[int]struct{}{}
 	for _, a := range enabled {
 		if a.Model == WildcardModel {
@@ -171,7 +180,9 @@ func DiagnoseModel(group, modelName string) ModelAvailability {
 
 	// 2) 其它分组下配置了该模型的渠道（分组写错的常见情形）
 	var otherGroup []Ability
-	DB.Where("`group` <> ? AND model = ?", group, modelName).Find(&otherGroup)
+	if err := DB.Where(groupCol+" <> ? AND model = ?", group, modelName).Find(&otherGroup).Error; err != nil {
+		logger.L().Warn("diagnose model: query other-group abilities failed", zap.Error(err))
+	}
 	ogIDs := map[int]struct{}{}
 	for _, a := range otherGroup {
 		ogIDs[a.ChannelId] = struct{}{}
@@ -180,7 +191,9 @@ func DiagnoseModel(group, modelName string) ModelAvailability {
 
 	// 3) 配置了该模型但被禁用的渠道（请求分组）
 	var disabled []Ability
-	DB.Where("`group` = ? AND model = ? AND enabled = ?", group, modelName, false).Find(&disabled)
+	if err := DB.Where(groupCol+" = ? AND model = ? AND enabled = ?", group, modelName, false).Find(&disabled).Error; err != nil {
+		logger.L().Warn("diagnose model: query disabled abilities failed", zap.Error(err))
+	}
 	disIDs := map[int]struct{}{}
 	for _, a := range disabled {
 		disIDs[a.ChannelId] = struct{}{}

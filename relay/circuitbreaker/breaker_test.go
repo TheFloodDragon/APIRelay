@@ -265,9 +265,18 @@ func TestCircuitBreakerResetAdvancesSnapshotVersion(t *testing.T) {
 	cb := NewCircuitBreaker(9992, testConfig())
 	cb.persistVersion = 6
 	cb.RecordFailure("failure")
-	cb.mu.RLock()
-	stale := cb.stateSnapshotLocked()
-	cb.mu.RUnlock()
+	cb.mu.Lock()
+	snapshot := cb.stateSnapshotLocked()
+	versionAfterSnapshot := cb.persistVersion
+	cb.mu.Unlock()
+
+	// 每次快照都必须推进版本号，否则并发落库时新状态可能被旧快照覆盖。
+	if snapshot.PersistVersion != versionAfterSnapshot {
+		t.Fatalf("snapshot version = %d, breaker version = %d", snapshot.PersistVersion, versionAfterSnapshot)
+	}
+	if versionAfterSnapshot <= 6 {
+		t.Fatalf("snapshot did not advance persist version: %d", versionAfterSnapshot)
+	}
 
 	if err := cb.Reset(); err != nil {
 		t.Fatalf("reset: %v", err)
@@ -275,10 +284,76 @@ func TestCircuitBreakerResetAdvancesSnapshotVersion(t *testing.T) {
 	cb.mu.RLock()
 	version, state, failures := cb.persistVersion, cb.state, cb.consecutiveFailures
 	cb.mu.RUnlock()
-	if version != 7 || state != model.CircuitClosed || failures != 0 {
+	if version != versionAfterSnapshot+1 || state != model.CircuitClosed || failures != 0 {
 		t.Fatalf("reset state incorrect: version=%d state=%s failures=%d", version, state, failures)
 	}
-	if stale.PersistVersion != 6 {
-		t.Fatalf("stale snapshot version = %d", stale.PersistVersion)
+}
+
+// 每次状态快照都应产生严格递增的版本号，供 UpsertChannelHealth 丢弃过期写入。
+func TestCircuitBreakerSnapshotVersionsAreMonotonic(t *testing.T) {
+	cb := NewCircuitBreaker(9991, testConfig())
+	seen := make(map[uint64]struct{})
+	var prev uint64
+	for i := 0; i < 5; i++ {
+		cb.mu.Lock()
+		snapshot := cb.stateSnapshotLocked()
+		cb.mu.Unlock()
+		if _, dup := seen[snapshot.PersistVersion]; dup {
+			t.Fatalf("duplicate persist version %d at iteration %d", snapshot.PersistVersion, i)
+		}
+		if i > 0 && snapshot.PersistVersion <= prev {
+			t.Fatalf("version not increasing: %d after %d", snapshot.PersistVersion, prev)
+		}
+		seen[snapshot.PersistVersion] = struct{}{}
+		prev = snapshot.PersistVersion
+	}
+}
+
+// PeekAllowed 必须是只读的：调度层对每个候选渠道都会调用它，
+// 不能把未被选中的渠道从 Open 翻成 HalfOpen。
+func TestPeekAllowedDoesNotMutateState(t *testing.T) {
+	cfg := testConfig()
+	cfg.FailureThreshold = 1
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	cb := NewCircuitBreaker(9990, cfg)
+	cb.now = func() time.Time { return now }
+
+	cb.RecordFailure("open immediately")
+	if cb.GetState() != model.CircuitOpen {
+		t.Fatalf("应已熔断，实际为 %s", cb.GetState())
+	}
+
+	// 未超时：Peek 应拒绝且不改状态。
+	if cb.PeekAllowed() {
+		t.Fatal("open 且未超时时 Peek 应返回 false")
+	}
+	if cb.GetState() != model.CircuitOpen {
+		t.Fatalf("Peek 不应改变状态，实际为 %s", cb.GetState())
+	}
+
+	// 已超时：Peek 报告可放行，但状态必须仍为 open，探测名额也不能被占用。
+	now = base.Add(time.Duration(cfg.TimeoutSeconds) * time.Second)
+	if !cb.PeekAllowed() {
+		t.Fatal("熔断超时后 Peek 应返回 true")
+	}
+	if cb.GetState() != model.CircuitOpen {
+		t.Fatalf("Peek 不应把 open 迁移为 half_open，实际为 %s", cb.GetState())
+	}
+	cb.mu.RLock()
+	inFlight := cb.halfOpenInFlight
+	cb.mu.RUnlock()
+	if inFlight != 0 {
+		t.Fatalf("Peek 不应占用探测名额，halfOpenInFlight = %d", inFlight)
+	}
+
+	// 多次 Peek 后，真正的 IsAllowed 仍应能完成迁移并放行。
+	cb.PeekAllowed()
+	cb.PeekAllowed()
+	if !cb.IsAllowed() {
+		t.Fatal("Peek 之后 IsAllowed 仍应放行首个试探请求")
+	}
+	if cb.GetState() != model.CircuitHalfOpen {
+		t.Fatalf("IsAllowed 后应迁移为 half_open，实际为 %s", cb.GetState())
 	}
 }

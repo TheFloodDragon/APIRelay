@@ -238,3 +238,118 @@ func TestListAggregatedModelsIncludesHealth(t *testing.T) {
 		t.Fatal("missing gpt-4o aggregate model")
 	}
 }
+
+// setupChannelKeyTestDB 建一个带已知凭据的渠道，用于凭据脱敏相关断言。
+func setupChannelKeyTestDB(t *testing.T) *model.Channel {
+	t.Helper()
+	if err := model.InitDB(&config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"}); err != nil {
+		t.Fatal(err)
+	}
+	model.DB.Exec("DELETE FROM channels")
+	model.DB.Exec("DELETE FROM abilities")
+	ch := &model.Channel{
+		Name: "secret-holder", Type: 1, Status: model.ChannelStatusEnabled,
+		BaseURL: "https://example.test", Key: "sk-supersecret-value", Group: "default", Weight: 1,
+		ModelConfigs: `[{"name":"m","enabled":true}]`,
+	}
+	if err := model.CreateChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	return ch
+}
+
+// 渠道上游凭据绝不能出现在任何管理 API 响应里，只暴露掩码。
+func TestChannelResponsesNeverLeakUpstreamKey(t *testing.T) {
+	ch := setupChannelKeyTestDB(t)
+	id := strconv.Itoa(ch.Id)
+
+	cases := []struct {
+		name    string
+		method  string
+		path    string
+		body    string
+		handler gin.HandlerFunc
+		params  []gin.Param
+	}{
+		{name: "list", method: http.MethodGet, path: "/api/channels", handler: ListChannels},
+		{
+			name: "update", method: http.MethodPut, path: "/api/channels/" + id,
+			body:    `{"name":"secret-holder","base_url":"https://example.test","model_configs":"[{\"name\":\"m\",\"enabled\":true}]"}`,
+			handler: UpdateChannel, params: []gin.Param{{Key: "id", Value: id}},
+		},
+		{
+			name: "toggle status", method: http.MethodPatch, path: "/api/channels/" + id + "/status",
+			body: `{"enabled":false}`, handler: UpdateChannelStatus, params: []gin.Param{{Key: "id", Value: id}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := performChannelRequest(t, tc.method, tc.path, tc.body, tc.handler, tc.params...)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			if body := recorder.Body.String(); strings.Contains(body, "sk-supersecret-value") {
+				t.Fatalf("response leaked upstream key: %s", body)
+			}
+			if !strings.Contains(recorder.Body.String(), "key_masked") {
+				t.Fatalf("response missing key_masked: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+// 编辑表单不回显明文，因此提交空 key 必须沿用已保存的凭据而不是清空或报错。
+func TestUpdateChannelWithEmptyKeyKeepsStoredKey(t *testing.T) {
+	ch := setupChannelKeyTestDB(t)
+	id := strconv.Itoa(ch.Id)
+
+	recorder := performChannelRequest(t, http.MethodPut, "/api/channels/"+id,
+		`{"name":"renamed","base_url":"https://example.test","model_configs":"[{\"name\":\"m\",\"enabled\":true}]"}`,
+		UpdateChannel, gin.Param{Key: "id", Value: id})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	stored, err := model.GetChannelByID(ch.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Key != "sk-supersecret-value" {
+		t.Fatalf("stored key = %q, want unchanged", stored.Key)
+	}
+	if stored.Name != "renamed" {
+		t.Fatalf("stored name = %q, want renamed", stored.Name)
+	}
+}
+
+// 提交非空 key 时应覆盖旧值。
+func TestUpdateChannelWithNewKeyOverwrites(t *testing.T) {
+	ch := setupChannelKeyTestDB(t)
+	id := strconv.Itoa(ch.Id)
+
+	recorder := performChannelRequest(t, http.MethodPut, "/api/channels/"+id,
+		`{"name":"secret-holder","base_url":"https://example.test","key":"sk-rotated","model_configs":"[{\"name\":\"m\",\"enabled\":true}]"}`,
+		UpdateChannel, gin.Param{Key: "id", Value: id})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	stored, err := model.GetChannelByID(ch.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Key != "sk-rotated" {
+		t.Fatalf("stored key = %q, want sk-rotated", stored.Key)
+	}
+}
+
+// 新建渠道没有可沿用的旧值，缺少凭据必须报错。
+func TestCreateChannelRequiresKey(t *testing.T) {
+	setupChannelKeyTestDB(t)
+	recorder := performChannelRequest(t, http.MethodPost, "/api/channels",
+		`{"name":"no-key","base_url":"https://example.test","model_configs":"[{\"name\":\"m\",\"enabled\":true}]"}`,
+		CreateChannel)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}

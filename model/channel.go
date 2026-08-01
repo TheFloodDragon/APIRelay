@@ -14,12 +14,22 @@ import (
 
 // Channel 表示一个上游渠道（一个 base_url + key + 一组模型）。
 type Channel struct {
-	Id       int    `json:"id" gorm:"primaryKey"`
-	Name     string `json:"name" gorm:"size:128"`
-	Type     int    `json:"type" gorm:"default:1"` // 供应商默认协议，见 constant.ChannelType*
-	Status   int    `json:"status" gorm:"default:1"`
-	BaseURL  string `json:"base_url" gorm:"size:256"`
-	Key      string `json:"key" gorm:"type:text"`
+	Id      int    `json:"id" gorm:"primaryKey"`
+	Name    string `json:"name" gorm:"size:128"`
+	Type    int    `json:"type" gorm:"default:1"` // 供应商默认协议，见 constant.ChannelType*
+	Status  int    `json:"status" gorm:"default:1"`
+	BaseURL string `json:"base_url" gorm:"size:256"`
+	// Key 上游厂商凭据。json:"-" 确保它永不出现在任何 API 响应里：
+	// 管理后台的 XSS、浏览器扩展或中间代理缓存都可能一次性带走全部上游密钥。
+	// 写入走 KeyInput，展示走 KeyMasked。
+	Key string `json:"-" gorm:"type:text"`
+	// KeyInput 仅接收管理端提交的新凭据，不落库。
+	// 留空表示「沿用已保存的值」，因此编辑表单无需回显明文即可保存。
+	KeyInput string `json:"key,omitempty" gorm:"-"`
+	// KeyMasked 供管理端展示的只读掩码（如 sk-1...cdef）。
+	KeyMasked string `json:"key_masked,omitempty" gorm:"-"`
+	// HasKey 标记该渠道是否已配置凭据，供前端判断表单必填状态。
+	HasKey   bool   `json:"has_key" gorm:"-"`
 	Group    string `json:"group" gorm:"size:64;default:'default'"`
 	Priority int    `json:"priority" gorm:"default:0;index"`
 	Weight   int    `json:"weight" gorm:"default:1"`
@@ -78,6 +88,52 @@ const (
 func (c *Channel) APIType() constant.APIType {
 	t, _ := constant.ChannelType2APIType(c.Type)
 	return t
+}
+
+// PrepareForAPI 填充只读展示字段并清除明文凭据，供所有返回渠道对象的响应统一调用。
+func (c *Channel) PrepareForAPI() {
+	if c == nil {
+		return
+	}
+	c.HasKey = strings.TrimSpace(c.Key) != ""
+	c.KeyMasked = MaskChannelKey(c.Key)
+	c.KeyInput = ""
+}
+
+// PrepareChannelsForAPI 批量填充展示字段。
+func PrepareChannelsForAPI(list []*Channel) {
+	for _, ch := range list {
+		ch.PrepareForAPI()
+	}
+}
+
+// ApplySubmittedKey 应用管理端提交的凭据：留空表示沿用 existing 的已保存值。
+// existing 为 nil（新建渠道）时留空即视为未配置，由调用方校验必填。
+func (c *Channel) ApplySubmittedKey(existing *Channel) {
+	if c == nil {
+		return
+	}
+	submitted := strings.TrimSpace(c.KeyInput)
+	if submitted != "" {
+		c.Key = submitted
+	} else if existing != nil {
+		c.Key = existing.Key
+	} else {
+		c.Key = ""
+	}
+	c.KeyInput = ""
+}
+
+// MaskChannelKey 返回上游凭据的展示掩码，只保留首尾少量字符用于人工核对。
+func MaskChannelKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 8 {
+		return "****"
+	}
+	return key[:4] + "…" + key[len(key)-4:]
 }
 
 // ModelList 解析 Models 字段为切片。
