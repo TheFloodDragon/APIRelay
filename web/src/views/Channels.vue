@@ -50,6 +50,14 @@ const batchDone = ref(0)
 const batchTotal = ref(0)
 const batchSummary = ref(null)
 
+// 模型行的勾选集合。存 _uid 而非模型名：名称可以被编辑成空或重名，
+// 用它作标识会在改名途中丢失选择。
+const selectedModelUids = ref(new Set())
+// 批量设价/设协议的输入值。
+const bulkPriceInput = ref('')
+const bulkPriceOutput = ref('')
+const bulkProtocol = ref('')
+
 const checkupLoadingId = ref(null)
 const showCheckup = ref(false)
 const checkupChannelName = ref('')
@@ -126,8 +134,20 @@ const routeSegments = computed(() => [
   percent: channelSummary.value.total ? Math.round((item.count / channelSummary.value.total) * 100) : 0,
 })))
 const enabledCount = computed(() => models.value.filter((model) => model.enabled && model.name.trim()).length)
+
+// ---- 模型批量选择 ----
+
+const selectedModels = computed(() => models.value.filter((model) => selectedModelUids.value.has(model._uid)))
+const selectedModelCount = computed(() => selectedModels.value.length)
+const allModelsSelected = computed(() => models.value.length > 0 && selectedModelCount.value === models.value.length)
+// 部分选中时表头复选框显示 indeterminate，比"未选中"更准确地反映状态。
+const someModelsSelected = computed(() => selectedModelCount.value > 0 && !allModelsSelected.value)
+// 已选模型中有多少是启用的，用于决定"启用/停用"按钮的语义。
+const selectedEnabledCount = computed(() => selectedModels.value.filter((model) => model.enabled).length)
 const hasModelTesting = computed(() => Object.values(testing.value).some(Boolean))
 const editorBusy = computed(() => saving.value || probing.value || batchTesting.value || hasModelTesting.value)
+// 批量操作在测试/保存进行中禁用，避免改动正在被使用的数据。
+const bulkModelActionsDisabled = computed(() => batchTesting.value || saving.value || hasModelTesting.value)
 const canSave = computed(() => Boolean(
   form.value.name.trim()
   && form.value.base_url.trim()
@@ -391,6 +411,11 @@ function resetEditorState() {
   batchSummary.value = null
   batchDone.value = 0
   batchTotal.value = 0
+  // 切换渠道时清空模型勾选与批量输入，否则会带到下一个渠道的模型列表上。
+  selectedModelUids.value = new Set()
+  bulkPriceInput.value = ''
+  bulkPriceOutput.value = ''
+  bulkProtocol.value = ''
 }
 
 async function confirmDiscardChanges() {
@@ -453,14 +478,135 @@ function addModel() {
 function removeModel(index, model) {
   if (testing.value[model?.name] || batchTesting.value) return
   models.value.splice(index, 1)
-  if (model?.name) {
-    const nextResults = { ...testResults.value }
-    const nextTesting = { ...testing.value }
-    delete nextResults[model.name]
-    delete nextTesting[model.name]
-    testResults.value = nextResults
-    testing.value = nextTesting
+  if (model?._uid) dropModelSelection([model._uid])
+  if (model?.name) forgetModelTestState([model.name])
+}
+
+// ---- 模型批量操作 ----
+//
+// 模型是编辑器内的本地状态，批量操作只改内存数组，随渠道一起保存才生效。
+// 这与渠道列表页的批量删除不同（那个立即落库），因此 UI 上要明确提示"需保存"。
+
+function forgetModelTestState(names) {
+  const nextResults = { ...testResults.value }
+  const nextTesting = { ...testing.value }
+  names.forEach((name) => {
+    if (!name) return
+    delete nextResults[name]
+    delete nextTesting[name]
+  })
+  testResults.value = nextResults
+  testing.value = nextTesting
+}
+
+function dropModelSelection(uids) {
+  const next = new Set(selectedModelUids.value)
+  uids.forEach((uid) => next.delete(uid))
+  selectedModelUids.value = next
+}
+
+function toggleModelSelected(uid) {
+  const next = new Set(selectedModelUids.value)
+  if (next.has(uid)) next.delete(uid)
+  else next.add(uid)
+  selectedModelUids.value = next
+}
+
+function toggleSelectAllModels() {
+  if (allModelsSelected.value) {
+    selectedModelUids.value = new Set()
+    return
   }
+  selectedModelUids.value = new Set(models.value.map((model) => model._uid))
+}
+
+function clearModelSelection() {
+  selectedModelUids.value = new Set()
+}
+
+// 只保留仍存在于列表中的选择项。探测模型或切换渠道后列表会变，
+// 残留的 uid 会让"已选 N 项"与实际不符。
+function pruneModelSelection() {
+  const alive = new Set(models.value.map((model) => model._uid))
+  const next = new Set()
+  selectedModelUids.value.forEach((uid) => {
+    if (alive.has(uid)) next.add(uid)
+  })
+  selectedModelUids.value = next
+}
+
+function bulkSetModelEnabled(enabled) {
+  if (bulkModelActionsDisabled.value) return
+  const targets = selectedModels.value
+  if (!targets.length) return
+  targets.forEach((model) => { model.enabled = enabled })
+  notify(`已${enabled ? '启用' : '停用'} ${targets.length} 个模型，保存后生效`, 'success')
+}
+
+async function bulkRemoveModels() {
+  if (bulkModelActionsDisabled.value) return
+  const targets = selectedModels.value
+  if (!targets.length) return
+
+  const confirmed = await confirmAction({
+    title: '批量移除模型',
+    message: `确认从当前渠道移除选中的 ${targets.length} 个模型？\n\n改动在保存渠道后生效。`,
+    confirmLabel: `移除 ${targets.length} 个模型`,
+  })
+  if (!confirmed) return
+
+  const removedUids = new Set(targets.map((model) => model._uid))
+  const removedNames = targets.map((model) => model.name).filter(Boolean)
+  models.value = models.value.filter((model) => !removedUids.has(model._uid))
+  clearModelSelection()
+  forgetModelTestState(removedNames)
+  notify(`已移除 ${targets.length} 个模型，保存后生效`, 'success')
+}
+
+function bulkSetModelProtocol() {
+  if (bulkModelActionsDisabled.value) return
+  const targets = selectedModels.value
+  if (!targets.length) return
+  const protocol = bulkProtocol.value
+  targets.forEach((model) => { model.protocol = protocol })
+  const label = protocol
+    ? (protocols.value.find((item) => item.value === protocol)?.name || protocol)
+    : '继承规则'
+  notify(`已将 ${targets.length} 个模型的协议设为「${label}」，保存后生效`, 'success')
+}
+
+function bulkSetModelPrice() {
+  if (bulkModelActionsDisabled.value) return
+  const targets = selectedModels.value
+  if (!targets.length) return
+
+  // 两个价格框都留空视为无操作，避免误把价格清零。
+  const rawInput = bulkPriceInput.value.trim()
+  const rawOutput = bulkPriceOutput.value.trim()
+  if (!rawInput && !rawOutput) {
+    notify('请先填写要应用的输入价或输出价', 'warn')
+    return
+  }
+
+  const parsed = {}
+  for (const [field, raw] of [['input', rawInput], ['output', rawOutput]]) {
+    if (!raw) continue
+    const value = Number(raw)
+    if (!Number.isFinite(value) || value < 0) {
+      notify(`${field === 'input' ? '输入价' : '输出价'}必须是非负数`, 'warn')
+      return
+    }
+    parsed[field] = value
+  }
+
+  targets.forEach((model) => {
+    if (parsed.input !== undefined) model.input = parsed.input
+    if (parsed.output !== undefined) model.output = parsed.output
+  })
+  const parts = []
+  if (parsed.input !== undefined) parts.push(`输入价 ${parsed.input}`)
+  if (parsed.output !== undefined) parts.push(`输出价 ${parsed.output}`)
+  notify(`已将 ${targets.length} 个模型的${parts.join('、')}更新，保存后生效`, 'success')
 }
 
 function testPayload() {
@@ -521,9 +667,11 @@ async function testModel(model) {
   }
 }
 
-async function testAllInModal() {
+// runBatchTest 执行一次批量测试。targets 为待测模型行，label 用于提示文案。
+// 「测试全部启用」与「测试所选」共用它，避免两套并行状态与结果合并逻辑。
+async function runBatchTest(targets, label) {
   if (batchTesting.value || saving.value || probing.value || hasModelTesting.value) return
-  if (!validateHeaders('批量测试')) return
+  if (!validateHeaders(label)) return
   if (!form.value.base_url) {
     notify('请先填写 Base URL', 'warn')
     return
@@ -532,18 +680,18 @@ async function testAllInModal() {
     notify('请先填写 API Key', 'warn')
     return
   }
-  const enabled = models.value.filter((model) => model.enabled && model.name.trim())
-  if (!enabled.length) {
-    notify('没有可测试的启用模型', 'warn')
+  const testable = targets.filter((model) => model.name.trim())
+  if (!testable.length) {
+    notify('没有可测试的模型', 'warn')
     return
   }
 
   batchTesting.value = true
-  batchTotal.value = enabled.length
+  batchTotal.value = testable.length
   batchDone.value = 0
   batchSummary.value = null
   const pending = { ...testResults.value }
-  enabled.forEach((model) => {
+  testable.forEach((model) => {
     pending[model.name.trim()] = { model: model.name.trim(), pending: true, success: false }
   })
   testResults.value = pending
@@ -551,13 +699,13 @@ async function testAllInModal() {
   try {
     const response = await api.post('/channels/test-batch', {
       ...testPayload(),
-      model_configs: JSON.stringify(enabled.map((model) => ({
+      model_configs: JSON.stringify(testable.map((model) => ({
         name: model.name.trim(),
         enabled: true,
         protocol: model.protocol || '',
         upstream: model.upstream || '',
       }))),
-      models: enabled.map((model) => model.name.trim()),
+      models: testable.map((model) => model.name.trim()),
     })
     const results = response.results || []
     const merged = { ...testResults.value }
@@ -575,7 +723,7 @@ async function testAllInModal() {
       )
     }
   } catch (error) {
-    enabled.forEach((model) => {
+    testable.forEach((model) => {
       const name = model.name.trim()
       if (testResults.value[name]?.pending) {
         testResults.value[name] = { model: name, success: false, error: error.message || '请求失败' }
@@ -586,6 +734,22 @@ async function testAllInModal() {
   } finally {
     batchTesting.value = false
   }
+}
+
+async function testAllInModal() {
+  const enabled = models.value.filter((model) => model.enabled && model.name.trim())
+  if (!enabled.length) {
+    notify('没有可测试的启用模型', 'warn')
+    return
+  }
+  await runBatchTest(enabled, '批量测试')
+}
+
+// 测试所选：不要求模型处于启用状态 —— 用户可能正是想先验证再决定启不启用。
+async function bulkTestSelectedModels() {
+  const targets = selectedModels.value
+  if (!targets.length) return
+  await runBatchTest(targets, '测试所选模型')
 }
 
 async function checkupChannel(channel) {
@@ -918,8 +1082,9 @@ onMounted(async () => {
 
 onBeforeUnmount(stopCooldownClock)
 
-// 暴露 load 供测试直接验证并发竞态守卫（多条业务路径都会调用它）。
-defineExpose({ load })
+// 暴露 load 供测试直接验证并发竞态守卫（多条业务路径都会调用它），
+// 以及模型批量操作所依赖的本地状态。
+defineExpose({ load, models, selectedModelUids, bulkPriceInput, bulkPriceOutput, bulkProtocol })
 </script>
 
 <template>
@@ -1158,10 +1323,75 @@ defineExpose({ load })
                     <input v-model="newModelName" class="input input-mono min-w-0 flex-1" placeholder="模型显示名（可使用 * 通配）" aria-label="新模型名称" @keyup.enter="addModel" />
                     <template #actions><button type="button" class="btn btn-primary btn-sm" @click="addModel"><ConsoleIcon name="plus" class="h-4 w-4" />添加模型</button></template>
                   </DataToolbar>
+
+                  <!-- 批量操作条：仅在有勾选时出现，避免常态占用空间。
+                       所有操作都只改本地状态，因此明确标注"保存后生效"。 -->
+                  <div v-if="selectedModelCount" class="model-bulk-bar mt-3" role="group" aria-label="模型批量操作">
+                    <div class="model-bulk-head">
+                      <span class="chip chip-blue shrink-0">已选 {{ selectedModelCount }} / {{ models.length }}</span>
+                      <span class="min-w-0 flex-1 text-[11px] text-soft">批量改动为本地编辑，需保存渠道后生效。</span>
+                      <button type="button" class="btn btn-sm shrink-0" @click="clearModelSelection">清空选择</button>
+                    </div>
+
+                    <div class="model-bulk-actions">
+                      <button type="button" class="btn btn-sm" :disabled="bulkModelActionsDisabled || selectedEnabledCount === selectedModelCount" @click="bulkSetModelEnabled(true)">
+                        <ConsoleIcon name="checkCircle" class="h-4 w-4" />启用所选
+                      </button>
+                      <button type="button" class="btn btn-sm" :disabled="bulkModelActionsDisabled || selectedEnabledCount === 0" @click="bulkSetModelEnabled(false)">
+                        <ConsoleIcon name="x" class="h-4 w-4" />停用所选
+                      </button>
+                      <button type="button" class="btn btn-sm" :disabled="bulkModelActionsDisabled || !form.base_url || !hasCredential" @click="bulkTestSelectedModels">
+                        <ConsoleIcon name="bolt" class="h-4 w-4" />{{ batchTesting ? `测试中 ${batchDone}/${batchTotal}` : '测试所选' }}
+                      </button>
+                      <button type="button" class="btn btn-danger btn-sm" :disabled="bulkModelActionsDisabled" @click="bulkRemoveModels">
+                        <ConsoleIcon name="trash" class="h-4 w-4" />移除所选
+                      </button>
+                    </div>
+
+                    <div class="model-bulk-fields">
+                      <label class="model-bulk-field">
+                        <span class="field-label">统一协议</span>
+                        <div class="flex min-w-0 gap-2">
+                          <select v-model="bulkProtocol" class="input min-w-0 flex-1 py-1 text-[12px]" aria-label="批量设置协议">
+                            <option value="">继承规则</option>
+                            <option v-for="protocol in protocols" :key="`bulk-${protocol.value}`" :value="protocol.value">{{ protocol.name }}</option>
+                          </select>
+                          <button type="button" class="btn btn-sm shrink-0" data-bulk-apply="protocol" aria-label="将协议应用到所选模型" :disabled="bulkModelActionsDisabled" @click="bulkSetModelProtocol">应用</button>
+                        </div>
+                      </label>
+                      <label class="model-bulk-field">
+                        <span class="field-label">统一价格（USD / 1M tokens）</span>
+                        <div class="flex min-w-0 gap-2">
+                          <input v-model="bulkPriceInput" type="number" step="0.01" min="0" class="input min-w-0 flex-1 py-1 font-mono text-[12px]" placeholder="输入价" aria-label="批量输入价" />
+                          <input v-model="bulkPriceOutput" type="number" step="0.01" min="0" class="input min-w-0 flex-1 py-1 font-mono text-[12px]" placeholder="输出价" aria-label="批量输出价" />
+                          <button type="button" class="btn btn-sm shrink-0" data-bulk-apply="price" aria-label="将价格应用到所选模型" :disabled="bulkModelActionsDisabled" @click="bulkSetModelPrice">应用</button>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
                   <div v-if="models.length" class="model-table-wrap mt-3 hidden lg:block">
                     <table class="table-eng min-w-[780px]" aria-label="模型配置表">
-                      <thead><tr><th class="w-16">启用</th><th>模型名称</th><th class="w-36">协议</th><th>上游映射</th><th class="w-24 text-right">输入价</th><th class="w-24 text-right">输出价</th><th class="w-20 text-right">测试</th><th class="w-20 text-right">删除</th></tr></thead>
-                      <tbody><tr v-for="(model, index) in models" :key="model._uid">
+                      <thead><tr>
+                        <th class="w-10">
+                          <input
+                            type="checkbox"
+                            :checked="allModelsSelected"
+                            :indeterminate="someModelsSelected"
+                            :aria-label="allModelsSelected ? '取消全选模型' : '全选模型'"
+                            @change="toggleSelectAllModels"
+                          />
+                        </th>
+                        <th class="w-16">启用</th><th>模型名称</th><th class="w-36">协议</th><th>上游映射</th><th class="w-24 text-right">输入价</th><th class="w-24 text-right">输出价</th><th class="w-20 text-right">测试</th><th class="w-20 text-right">删除</th>
+                      </tr></thead>
+                      <tbody><tr v-for="(model, index) in models" :key="model._uid" :class="{ 'model-row-selected': selectedModelUids.has(model._uid) }">
+                        <td>
+                          <input
+                            type="checkbox"
+                            :checked="selectedModelUids.has(model._uid)"
+                            :aria-label="`选择模型 ${model.name || index + 1}`"
+                            @change="toggleModelSelected(model._uid)"
+                          />
+                        </td>
                         <td><button type="button" class="channel-switch" :class="{ 'channel-switch-on': model.enabled }" :aria-pressed="model.enabled" @click="model.enabled = !model.enabled"><span></span></button></td>
                         <td><input v-model="model.name" class="input input-mono py-1 text-[12px]" placeholder="显示名" /></td>
                         <td><select v-model="model.protocol" class="input py-1 text-[12px]"><option value="">继承规则</option><option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option></select></td>
@@ -1174,8 +1404,32 @@ defineExpose({ load })
                     </table>
                   </div>
                   <div v-if="models.length" class="mt-3 grid gap-3 lg:hidden">
-                    <article v-for="(model, index) in models" :key="model._uid" class="rounded-lg border border-line bg-surface p-3">
-                      <div class="flex items-center justify-between gap-2"><span class="font-medium">模型 {{ index + 1 }}</span><button type="button" class="channel-switch" :class="{ 'channel-switch-on': model.enabled }" :aria-pressed="model.enabled" @click="model.enabled = !model.enabled"><span></span></button></div>
+                    <!-- 移动端没有表头，需要独立的全选入口，否则无法开始勾选 -->
+                    <label class="flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12px]">
+                      <input
+                        type="checkbox"
+                        class="shrink-0"
+                        :checked="allModelsSelected"
+                        :indeterminate="someModelsSelected"
+                        :aria-label="allModelsSelected ? '取消全选模型' : '全选模型'"
+                        @change="toggleSelectAllModels"
+                      />
+                      <span class="min-w-0 flex-1">{{ selectedModelCount ? `已选 ${selectedModelCount} / ${models.length}` : '全选模型' }}</span>
+                    </label>
+                    <article v-for="(model, index) in models" :key="model._uid" class="model-card rounded-lg border border-line bg-surface p-3" :class="{ 'model-card-selected': selectedModelUids.has(model._uid) }">
+                      <div class="flex items-center justify-between gap-2">
+                        <label class="flex min-w-0 items-center gap-2">
+                          <input
+                            type="checkbox"
+                            class="shrink-0"
+                            :checked="selectedModelUids.has(model._uid)"
+                            :aria-label="`选择模型 ${model.name || index + 1}`"
+                            @change="toggleModelSelected(model._uid)"
+                          />
+                          <span class="font-medium">模型 {{ index + 1 }}</span>
+                        </label>
+                        <button type="button" class="channel-switch" :class="{ 'channel-switch-on': model.enabled }" :aria-pressed="model.enabled" @click="model.enabled = !model.enabled"><span></span></button>
+                      </div>
                       <div class="mt-3 grid gap-2">
                         <input v-model="model.name" class="input input-mono" placeholder="模型名称" />
                         <select v-model="model.protocol" class="input"><option value="">继承规则</option><option v-for="protocol in protocols" :key="protocol.value" :value="protocol.value">{{ protocol.name }}</option></select>
@@ -1310,6 +1564,26 @@ defineExpose({ load })
 .detail-mobile-nav { display: none; }
 .channel-key-row { display: flex; min-width: 0; gap: 8px; }
 .model-table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid rgb(var(--color-border)); }
+/* 选中的模型行/卡片沿用渠道队列的选中视觉，保持两处交互观感一致 */
+.model-row-selected td { background: rgb(var(--color-accent-muted)); }
+.model-row-selected td:first-child { box-shadow: inset 3px 0 0 rgb(var(--color-accent)); }
+.model-card-selected { border-color: rgb(var(--color-accent) / .45); background: rgb(var(--color-accent-muted)); }
+
+.model-bulk-bar {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgb(var(--color-accent) / .35);
+  border-radius: 8px;
+  background: rgb(var(--color-accent-muted));
+  padding: 10px 12px;
+}
+.model-bulk-head { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px; }
+.model-bulk-actions { display: flex; min-width: 0; flex-wrap: wrap; gap: 6px; }
+.model-bulk-fields { display: grid; min-width: 0; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); }
+.model-bulk-field { display: grid; min-width: 0; gap: 4px; }
+@media (max-width: 900px) {
+  .model-bulk-fields { grid-template-columns: minmax(0, 1fr); }
+}
 .rule-row { display: grid; min-width: 0; grid-template-columns: minmax(0,1fr) 140px auto; gap: 8px; }
 .channel-actionbar { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .channel-action-buttons { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
