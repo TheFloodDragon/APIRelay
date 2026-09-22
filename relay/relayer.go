@@ -21,6 +21,7 @@ import (
 	"github.com/apirelay/apirelay/relay/adaptor"
 	"github.com/apirelay/apirelay/relay/apicompat"
 	"github.com/apirelay/apirelay/relay/circuitbreaker"
+	"github.com/apirelay/apirelay/relay/keypool"
 	"github.com/apirelay/apirelay/relay/relaycommon"
 
 	"github.com/gin-gonic/gin"
@@ -350,157 +351,54 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 		}
 		ad.Init(info)
 
-		// 每次尝试前清空上一轮的限流信息，避免用前一个渠道的恢复时刻冷却当前渠道。
+		// 加载该渠道下管理员启用的 Key（KeyIndex 升序）。回退兼容层：无子表记录时
+		// 返回由 Channel.Key 派生的虚拟单 Key，使旧渠道与测试路径保持原渠道级行为。
+		keys, keyErr := model.LoadEnabledChannelKeys(ch)
+		if keyErr != nil {
+			log.Warn("relay.load_keys_failed", zap.Int("channel_id", ch.Id), zap.Error(keyErr))
+		}
+		if len(keys) == 0 {
+			// 该渠道没有任何可用 Key（全部被管理员禁用，或渠道无凭据）。
+			// 视为渠道级不可用：冷却并切换，避免反复选中同一空渠道。
+			circuitbreaker.GetManager().ReleaseProbe(ch.Id)
+			state.FailedChannels[ch.Id] = struct{}{}
+			state.LastStatus, state.LastErr = http.StatusServiceUnavailable, "no enabled key for channel"
+			state.RecordAttempt(FailoverAttempt{
+				Iter: iter, Switches: switches, ChannelId: ch.Id, ChannelName: ch.Name,
+				ApiType: apiTypeLabel(info), OriginModel: info.OriginModel, UpstreamModel: info.UpstreamModel,
+				Status: http.StatusServiceUnavailable, Retryable: true, Decision: "switch_channel",
+				ErrorCategory: string(ErrorCategoryInternal), Error: "no enabled key for channel",
+			})
+			info.FailoverChain = state.ChainJSON()
+			switches++
+			continue
+		}
+
+		// 每次渠道尝试前清空上一轮的限流信息，避免用前一个渠道/Key 的恢复时刻污染当前决策。
 		info.RateLimitRetryAfterMs = 0
 		info.RateLimitSource = ""
 
-		log.Info("relay.attempt",
-			zap.String("request_id", info.RequestID),
-			zap.Int("iter", iter),
-			zap.Int("switches", switches),
-			zap.Int("channel_id", ch.Id),
-			zap.String("channel", ch.Name),
-			zap.String("api_type", ad.ChannelTypeName()),
-			zap.String("origin_model", info.OriginModel),
-			zap.String("upstream_model", info.UpstreamModel),
-			zap.Bool("stream", info.IsStream),
-		)
-
-		status, retryable, err := r.doOnce(c, info, ir, ad, out, billing)
-		if err == nil {
-			state.RecordAttempt(FailoverAttempt{
-				Iter:          iter,
-				Switches:      switches,
-				ChannelId:     ch.Id,
-				ChannelName:   ch.Name,
-				ApiType:       ad.ChannelTypeName(),
-				OriginModel:   info.OriginModel,
-				UpstreamModel: info.UpstreamModel,
-				Status:        http.StatusOK,
-				Retryable:     false,
-				Decision:      "success",
-			})
-			info.FailoverChain = state.ChainJSON()
-			model.ClearChannelCooldown(ch.Id)                // 成功后清除冷却
-			circuitbreaker.GetManager().RecordSuccess(ch.Id) // 记录熔断器成功
+		// 渠道内 Key 级故障转移。返回本次渠道尝试的聚合结果，
+		// 由外层据此决定切换渠道还是终止。熔断器成功/失败在其内部按「每渠道一次」记账。
+		outcome := r.runChannelKeyLoop(c, info, ir, ad, out, billing, state, keys, iter, switches)
+		switch outcome.kind {
+		case channelOutcomeSuccess:
 			return
-		}
-
-		category := classifyRelayError(relayContext(info), err)
-		if category == ErrorCategoryClientCanceled {
-			circuitbreaker.GetManager().ReleaseProbe(ch.Id)
-			log.Warn("relay.client_canceled",
-				zap.Int("channel_id", ch.Id),
-				zap.String("channel", ch.Name),
-				zap.Error(err),
-			)
-			r.logError(info, statusClientClosedRequest, "client canceled")
+		case channelOutcomeReturn:
+			// 已由内层写出响应并记录日志（客户端取消 / relay 超时 / 致命错误 / 响应已写出）。
 			return
-		}
-		if category == ErrorCategoryRelayTimeout {
-			status = http.StatusGatewayTimeout
-			retryable = false
-			state.RecordAttempt(FailoverAttempt{
-				Iter:          iter,
-				Switches:      switches,
-				ChannelId:     ch.Id,
-				ChannelName:   ch.Name,
-				ApiType:       ad.ChannelTypeName(),
-				OriginModel:   info.OriginModel,
-				UpstreamModel: info.UpstreamModel,
-				Status:        status,
-				Retryable:     retryable,
-				Decision:      "fatal",
-				ErrorCategory: string(category),
-				Error:         err.Error(),
-			})
-			info.FailoverChain = state.ChainJSON()
-			circuitbreaker.GetManager().RecordFailure(ch.Id, err.Error())
-			if !c.Writer.Written() {
-				out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
+		case channelOutcomeSwitchChannel:
+			// 渠道级冷却 + 排除，切换到下一个渠道。
+			if outcome.status != 0 {
+				state.LastStatus = outcome.status
 			}
-			r.logError(info, http.StatusGatewayTimeout, timeoutLogMessage(category))
-			return
-		}
-		if isTimeoutCategory(category) {
-			status = timeoutStatus(category)
-			// HTTP 响应一旦开始写出，任何错误都不可再重试，否则会把第二个
-			// 上游响应拼接到已经提交的流中。只有首字节前超时才允许故障转移。
-			retryable = !c.Writer.Written()
-		}
-		if c.Writer.Written() {
-			retryable = false
-			if status < http.StatusBadRequest {
-				status = http.StatusBadGateway
+			if outcome.errMsg != "" {
+				state.LastErr = outcome.errMsg
 			}
-		}
-
-		// 记录熔断器失败。客户端主动取消不计入渠道失败。
-		circuitbreaker.GetManager().RecordFailure(ch.Id, err.Error())
-
-		retryAfter := time.Duration(info.RateLimitRetryAfterMs) * time.Millisecond
-		if retryAfter > 0 {
-			log.Info("relay.rate_limit_hint",
-				zap.Int("channel_id", ch.Id),
-				zap.String("header", info.RateLimitSource),
-				zap.Duration("retry_after", retryAfter),
-			)
-		}
-		decision := state.OnFailureWithHint(ch.Id, status, retryable, err.Error(), retryAfter)
-		state.RecordAttempt(FailoverAttempt{
-			Iter:          iter,
-			Switches:      switches,
-			ChannelId:     ch.Id,
-			ChannelName:   ch.Name,
-			ApiType:       ad.ChannelTypeName(),
-			OriginModel:   info.OriginModel,
-			UpstreamModel: info.UpstreamModel,
-			Status:        status,
-			Retryable:     retryable,
-			Decision:      failoverDecisionLabel(decision),
-			ErrorCategory: string(category),
-			Error:         err.Error(),
-		})
-		info.FailoverChain = state.ChainJSON()
-		log.Warn("relay.attempt_failed",
-			zap.Int("channel_id", ch.Id),
-			zap.String("channel", ch.Name),
-			zap.String("api_type", ad.ChannelTypeName()),
-			zap.String("error_category", string(category)),
-			zap.Int("status", status),
-			zap.Bool("retryable", retryable),
-			zap.Int("decision", int(decision)),
-			zap.Error(err),
-		)
-
-		// 切换渠道时记录该供应商的失败日志（便于在后台逐供应商排查）。
-		// 同渠道重试不落库，避免噪声；致命错误由下方统一记录。
-		if decision == DecisionSwitchChannel {
-			r.logAttemptFailure(info, ch, status, err.Error())
-		}
-
-		switch decision {
-		case DecisionFatal:
-			// 致命错误：若尚未向客户端写出任何内容，返回友好错误响应。
-			// （此前缺失，导致非流式致命错误时客户端收到空响应。）
-			if !c.Writer.Written() {
-				out.WriteError(c, statusOrDefault(status), friendlyUpstreamError(info, status, err))
-			}
-			r.logError(info, status, err.Error())
-			return
-		case DecisionRetrySameChannel:
-			if !state.SameChannelDelay(relayContext(info)) {
-				category := classifyRelayError(relayContext(info), relayContext(info).Err())
-				if category == ErrorCategoryClientCanceled {
-					r.logError(info, statusClientClosedRequest, "client canceled")
-				} else if category == ErrorCategoryRelayTimeout {
-					r.logError(info, http.StatusGatewayTimeout, "relay request timeout")
-				}
-				return // 客户端取消或请求超时
-			}
-			// 同渠道重试不消耗切换预算
-		case DecisionSwitchChannel:
-			switches++ // 已在 OnFailure 中冷却并排除
+			state.FailedChannels[ch.Id] = struct{}{}
+			model.SetChannelCooldown(ch.Id, time.Now().Add(time.Duration(r.cfg.CooldownSeconds)*time.Second).UnixMilli())
+			r.logAttemptFailure(info, ch, statusOrDefault(outcome.status), outcome.errMsg)
+			switches++
 		}
 	}
 
@@ -511,6 +409,279 @@ func (r *Relayer) relayWithFailover(c *gin.Context, info *RelayInfo, ir *dto.Uni
 			friendlyExhaustedError(info, state.LastStatus, state.LastErr))
 	}
 	r.logError(info, statusOrDefault(state.LastStatus), state.LastErr)
+}
+
+// channelOutcomeKind 表示一次渠道尝试（含其内部 Key 循环）的聚合结果。
+type channelOutcomeKind int
+
+const (
+	// channelOutcomeSuccess 请求成功，主循环应返回。
+	channelOutcomeSuccess channelOutcomeKind = iota
+	// channelOutcomeReturn 已终止并写出响应（客户端取消 / relay 超时 / 致命错误 / 响应已写出）。
+	channelOutcomeReturn
+	// channelOutcomeSwitchChannel 该渠道 Key 全部耗尽或遇渠道级问题，应切换到下一个渠道。
+	channelOutcomeSwitchChannel
+)
+
+// channelOutcome 是渠道尝试的聚合结果。
+type channelOutcome struct {
+	kind   channelOutcomeKind
+	status int
+	errMsg string
+}
+
+// runChannelKeyLoop 在单个渠道内执行 Key 级故障转移循环。
+//
+// 语义与并发不变量：
+//   - 熔断器探测名额在外层 SelectFromCandidates 时已为该渠道占用一次；本函数保证
+//     无论内部尝试多少个 Key，最终对该渠道恰好记一次 RecordSuccess / RecordFailure /
+//     ReleaseProbe（与改造前的单 Key 流一致），不会因多 Key 循环污染熔断统计。
+//   - Key 级冷却/失效仅作用于 keypool（per-key），不触碰渠道级熔断，除非整渠道 Key 耗尽。
+//   - 顺序优先：keypool.SelectKey 按 KeyIndex 取首个可用 Key；失败后排除并取下一个。
+func (r *Relayer) runChannelKeyLoop(
+	c *gin.Context, info *RelayInfo, ir *dto.UnifiedRequest, ad adaptor.Adaptor,
+	out Outbound, billing *BillingSession, state *FailoverState,
+	keys []*model.ChannelKey, iter, switches int,
+) channelOutcome {
+	log := logger.FromContext(c.Request.Context())
+	ch := info.Channel
+	mgr := keypool.GetManager()
+	cbMgr := circuitbreaker.GetManager()
+
+	keyExcluded := make(map[int]struct{})
+	sameKeyRetries := 0
+	keyMaxRetries := r.keyMaxRetries()
+	maxKeys := r.maxKeysPerRequest()
+	keysTried := 0
+
+	// lastStatus/lastErr 记录该渠道内最后一次 Key 失败，用于渠道级聚合与日志。
+	lastStatus := 0
+	lastErr := ""
+
+	for {
+		if err := relayContext(info).Err(); err != nil {
+			category := classifyRelayError(relayContext(info), err)
+			if category == ErrorCategoryClientCanceled {
+				cbMgr.ReleaseProbe(ch.Id)
+				r.logError(info, statusClientClosedRequest, "client canceled")
+				return channelOutcome{kind: channelOutcomeReturn}
+			}
+			if category == ErrorCategoryRelayTimeout {
+				cbMgr.ReleaseProbe(ch.Id)
+				if !c.Writer.Written() {
+					out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
+				}
+				r.logError(info, http.StatusGatewayTimeout, "relay request timeout")
+				return channelOutcome{kind: channelOutcomeReturn}
+			}
+		}
+
+		nowMs := time.Now().UnixMilli()
+		key := mgr.SelectKey(keys, keyExcluded, nowMs)
+		if key == nil {
+			// 渠道内已无可用 Key：记一次渠道级熔断失败并切换渠道。
+			cbMgr.RecordFailure(ch.Id, firstNonEmpty(lastErr, "all keys exhausted"))
+			return channelOutcome{kind: channelOutcomeSwitchChannel, status: lastStatus, errMsg: firstNonEmpty(lastErr, "no available key")}
+		}
+		if maxKeys > 0 && keysTried >= maxKeys && !isVirtualKey(key) {
+			// 达到单次请求的 Key 尝试上限：切换渠道（虚拟 Key 不计入上限，保持旧行为）。
+			cbMgr.RecordFailure(ch.Id, firstNonEmpty(lastErr, "key attempt budget exhausted"))
+			return channelOutcome{kind: channelOutcomeSwitchChannel, status: lastStatus, errMsg: firstNonEmpty(lastErr, "key budget exhausted")}
+		}
+
+		// 构造 Key overlay 视图：注入该 Key 的凭据与模型配置（需求 4）。
+		info.Channel = model.BuildKeyOverlay(ch, key)
+		info.ActiveKeyId = key.Id
+		info.ActiveKeyIndex = key.KeyIndex
+		info.ApiType = ResolveAPIType(info.Channel, info.OriginModel)
+		info.UpstreamModel = info.Channel.MappedModel(info.OriginModel)
+		// overlay 可能因 Key 级协议覆盖改变 ApiType，重解析适配器。
+		curAd := ad
+		if reAd := GetAdaptor(info.ApiType); reAd != nil {
+			curAd = reAd
+			curAd.Init(info)
+		}
+
+		// 每次 Key 尝试前清空上一轮限流信息。
+		info.RateLimitRetryAfterMs = 0
+		info.RateLimitSource = ""
+
+		log.Info("relay.attempt",
+			zap.String("request_id", info.RequestID),
+			zap.Int("iter", iter),
+			zap.Int("switches", switches),
+			zap.Int("channel_id", ch.Id),
+			zap.String("channel", ch.Name),
+			zap.Int("key_id", key.Id),
+			zap.Int("key_index", key.KeyIndex),
+			zap.String("api_type", curAd.ChannelTypeName()),
+			zap.String("origin_model", info.OriginModel),
+			zap.String("upstream_model", info.UpstreamModel),
+			zap.Bool("stream", info.IsStream),
+		)
+
+		keysTried++
+		status, _, err := r.doOnce(c, info, ir, curAd, out, billing)
+		if err == nil {
+			// 成功：Key 级记成功（清冷却/失效），渠道级记成功并清冷却。
+			mgr.RecordSuccess(key)
+			state.RecordAttempt(FailoverAttempt{
+				Iter: iter, Switches: switches, ChannelId: ch.Id, ChannelName: ch.Name,
+				KeyId: key.Id, KeyIndex: key.KeyIndex,
+				ApiType: curAd.ChannelTypeName(), OriginModel: info.OriginModel, UpstreamModel: info.UpstreamModel,
+				Status: http.StatusOK, Retryable: false, Decision: "success",
+			})
+			info.FailoverChain = state.ChainJSON()
+			model.ClearChannelCooldown(ch.Id)
+			cbMgr.RecordSuccess(ch.Id)
+			return channelOutcome{kind: channelOutcomeSuccess}
+		}
+
+		category := classifyRelayError(relayContext(info), err)
+		if category == ErrorCategoryClientCanceled {
+			// 客户端取消：不误伤 Key，不计渠道失败，释放探测名额。
+			cbMgr.ReleaseProbe(ch.Id)
+			log.Warn("relay.client_canceled", zap.Int("channel_id", ch.Id), zap.Int("key_id", key.Id), zap.Error(err))
+			r.logError(info, statusClientClosedRequest, "client canceled")
+			return channelOutcome{kind: channelOutcomeReturn}
+		}
+		if category == ErrorCategoryRelayTimeout {
+			// relay 总超时：终止整个请求。渠道级记一次失败（与旧行为一致）。
+			cbMgr.RecordFailure(ch.Id, err.Error())
+			state.RecordAttempt(FailoverAttempt{
+				Iter: iter, Switches: switches, ChannelId: ch.Id, ChannelName: ch.Name,
+				KeyId: key.Id, KeyIndex: key.KeyIndex,
+				ApiType: curAd.ChannelTypeName(), OriginModel: info.OriginModel, UpstreamModel: info.UpstreamModel,
+				Status: http.StatusGatewayTimeout, Retryable: false, Decision: "fatal",
+				ErrorCategory: string(category), Error: err.Error(),
+			})
+			info.FailoverChain = state.ChainJSON()
+			if !c.Writer.Written() {
+				out.WriteError(c, http.StatusGatewayTimeout, "request timeout")
+			}
+			r.logError(info, http.StatusGatewayTimeout, timeoutLogMessage(category))
+			return channelOutcome{kind: channelOutcomeReturn}
+		}
+
+		written := c.Writer.Written()
+		if isTimeoutCategory(category) {
+			status = timeoutStatus(category)
+		}
+		if written && status < http.StatusBadRequest {
+			status = http.StatusBadGateway
+		}
+		lastStatus, lastErr = status, err.Error()
+
+		retryAfter := time.Duration(info.RateLimitRetryAfterMs) * time.Millisecond
+		if retryAfter > 0 {
+			log.Info("relay.rate_limit_hint", zap.Int("channel_id", ch.Id), zap.Int("key_id", key.Id),
+				zap.String("header", info.RateLimitSource), zap.Duration("retry_after", retryAfter))
+		}
+
+		// Key 级错误分类与决策（配额语义由 classifyKeyFailure 内部按错误文本识别）。
+		outcome := classifyKeyFailure(status, category, written, err.Error(), sameKeyRetries, keyMaxRetries)
+		if outcome.RecordKeyFailure {
+			mgr.RecordFailure(key, outcome.Reason, retryAfter, err.Error())
+		}
+		state.RecordAttempt(FailoverAttempt{
+			Iter: iter, Switches: switches, ChannelId: ch.Id, ChannelName: ch.Name,
+			KeyId: key.Id, KeyIndex: key.KeyIndex,
+			ApiType: curAd.ChannelTypeName(), OriginModel: info.OriginModel, UpstreamModel: info.UpstreamModel,
+			Status: status, Retryable: outcome.Decision != KeyDecisionFatal,
+			Decision: keyDecisionLabel(outcome.Decision), DisableReason: string(outcome.Reason),
+			ErrorCategory: string(category), Error: err.Error(),
+		})
+		info.FailoverChain = state.ChainJSON()
+		log.Warn("relay.attempt_failed",
+			zap.Int("channel_id", ch.Id), zap.String("channel", ch.Name),
+			zap.Int("key_id", key.Id), zap.Int("key_index", key.KeyIndex),
+			zap.String("api_type", curAd.ChannelTypeName()), zap.String("error_category", string(category)),
+			zap.Int("status", status), zap.String("disable_reason", string(outcome.Reason)),
+			zap.String("key_decision", keyDecisionLabel(outcome.Decision)), zap.Error(err),
+		)
+
+		switch outcome.Decision {
+		case KeyDecisionFatal:
+			// 致命错误：渠道级记一次失败并终止。
+			cbMgr.RecordFailure(ch.Id, err.Error())
+			if !c.Writer.Written() {
+				out.WriteError(c, statusOrDefault(status), friendlyUpstreamError(info, status, err))
+			}
+			r.logError(info, status, err.Error())
+			return channelOutcome{kind: channelOutcomeReturn}
+
+		case KeyDecisionSwitchChannel:
+			// 渠道级问题（连接失败等）：记一次渠道失败并切换渠道。
+			cbMgr.RecordFailure(ch.Id, err.Error())
+			return channelOutcome{kind: channelOutcomeSwitchChannel, status: status, errMsg: err.Error()}
+
+		case KeyDecisionRetrySameKey:
+			// 同 Key 瞬时重试（带退避）。不排除该 Key，不消耗 Key 预算。
+			sameKeyRetries++
+			if !keyRetryDelayWait(relayContext(info)) {
+				category := classifyRelayError(relayContext(info), relayContext(info).Err())
+				cbMgr.ReleaseProbe(ch.Id)
+				if category == ErrorCategoryClientCanceled {
+					r.logError(info, statusClientClosedRequest, "client canceled")
+				} else if category == ErrorCategoryRelayTimeout {
+					r.logError(info, http.StatusGatewayTimeout, "relay request timeout")
+				}
+				return channelOutcome{kind: channelOutcomeReturn}
+			}
+
+		case KeyDecisionSwitchKey:
+			// 排除当前 Key，重置同 Key 重试计数，取下一个可用 Key。
+			keyExcluded[key.Id] = struct{}{}
+			sameKeyRetries = 0
+		}
+	}
+}
+
+// keyMaxRetries 返回单个 Key 的瞬时错误同 Key 重试次数。
+func (r *Relayer) keyMaxRetries() int {
+	if r == nil || r.cfg == nil {
+		return 1
+	}
+	if r.cfg.KeyRotation.KeyMaxRetries < 0 {
+		return 0
+	}
+	return r.cfg.KeyRotation.KeyMaxRetries
+}
+
+// maxKeysPerRequest 返回单次请求在一个渠道内最多尝试的 Key 数；0 表示不限。
+func (r *Relayer) maxKeysPerRequest() int {
+	if r == nil || r.cfg == nil {
+		return 0
+	}
+	if r.cfg.KeyRotation.MaxKeysPerRequest < 0 {
+		return 0
+	}
+	return r.cfg.KeyRotation.MaxKeysPerRequest
+}
+
+// isVirtualKey 判断是否为回退兼容层的虚拟单 Key（无独立健康，不计入 Key 尝试上限）。
+func isVirtualKey(k *model.ChannelKey) bool {
+	return k == nil || k.Id <= 0
+}
+
+// firstNonEmpty 返回第一个非空字符串。
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// keyRetryDelayWait 在同 Key 重试前等待退避时长（带 context 取消）。返回 false 表示被取消。
+func keyRetryDelayWait(ctx context.Context) bool {
+	t := time.NewTimer(keyRetryDelay)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // doOnce 对单个渠道执行一次完整转发。

@@ -58,6 +58,12 @@ type RelayInfo struct {
 	// 选中的渠道
 	Channel *model.Channel
 
+	// 渠道内选中的 Key（API Key 轮询）。
+	// ActiveKeyId<=0 表示回退兼容层的虚拟单 Key（凭据即渠道级 Key）。
+	// info.Channel 已是该 Key 的 overlay 视图，适配器无需感知 Key 维度。
+	ActiveKeyId    int
+	ActiveKeyIndex int
+
 	IsStream bool
 
 	// 上游请求相关

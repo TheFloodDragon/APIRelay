@@ -118,6 +118,9 @@ func CreateChannel(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 将渠道级单 key 同步为首个 ChannelKey，使单 key 表单也纳入多 Key 轮询路径。
+	// 失败不阻断渠道创建：回退兼容层仍会由 Channel.Key 派生虚拟 Key，转发不受影响。
+	model.EnsurePrimaryChannelKey(&ch)
 	ch.PrepareForAPI()
 	ok(c, ch)
 }
@@ -152,6 +155,9 @@ func UpdateChannel(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 若通过单 key 表单轮换了渠道级凭据，同步更新首个 ChannelKey，保持二者一致。
+	// 多 Key 通过 /channels/:id/keys 独立管理时，此处不会误改（仅在渠道只有单个由其派生的主 Key 时同步）。
+	model.SyncPrimaryChannelKey(&in)
 	in.PrepareForAPI()
 	ok(c, in)
 }

@@ -27,6 +27,10 @@ type FailoverAttempt struct {
 	Switches      int    `json:"switches"`
 	ChannelId     int    `json:"channel_id"`
 	ChannelName   string `json:"channel_name"`
+	// KeyId / KeyIndex 记录本次尝试所用的渠道内 Key（API Key 轮询）。
+	// KeyId<=0 表示回退兼容层的虚拟单 Key。
+	KeyId    int `json:"key_id,omitempty"`
+	KeyIndex int `json:"key_index,omitempty"`
 	ApiType       string `json:"api_type"`
 	OriginModel   string `json:"origin_model"`
 	UpstreamModel string `json:"upstream_model"`
@@ -34,6 +38,8 @@ type FailoverAttempt struct {
 	Retryable     bool   `json:"retryable"`
 	Decision      string `json:"decision"`
 	ErrorCategory string `json:"error_category,omitempty"`
+	// DisableReason 本次失败导致的 Key 状态动作（冷却/失效原因），空表示未影响 Key 状态。
+	DisableReason string `json:"disable_reason,omitempty"`
 	Error         string `json:"error,omitempty"`
 	AtMs          int64  `json:"at_ms"`
 }

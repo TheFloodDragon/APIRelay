@@ -110,6 +110,38 @@ type RelayConfig struct {
 	DefaultGroup string `yaml:"default_group"`
 	// CircuitBreaker 熔断器配置
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	// KeyRotation 渠道内 API Key 轮询配置
+	KeyRotation KeyRotationConfig `yaml:"key_rotation"`
+}
+
+// KeyRotationConfig 渠道内 API Key 轮询与故障转移配置。
+type KeyRotationConfig struct {
+	// Enabled 是否启用渠道内多 Key 轮询。关闭时仍走渠道级单 Key 逻辑（回退兼容层）。
+	Enabled bool `yaml:"enabled"`
+	// Strategy 分配策略：sequential（顺序优先）| round_robin（预留）。
+	Strategy string `yaml:"strategy"`
+	// KeyMaxRetries 单个 Key 上的瞬时错误（429/5xx）同 Key 重试次数。
+	KeyMaxRetries int `yaml:"key_max_retries"`
+	// MaxKeysPerRequest 单次请求在一个渠道内最多尝试多少个 Key；0 表示全部可用 Key。
+	MaxKeysPerRequest int `yaml:"max_keys_per_request"`
+	// CooldownSeconds Key 级软冷却时长（秒）。
+	CooldownSeconds int `yaml:"cooldown_seconds"`
+	// FailureThreshold 连续上游错误/超时达此阈值则将 Key 硬失效（需恢复检测）。
+	FailureThreshold int `yaml:"failure_threshold"`
+	// AuthFailDisable 鉴权失败/额度耗尽类错误是否立即硬失效（否则仅冷却）。
+	AuthFailDisable bool `yaml:"auth_fail_disable"`
+	// Recovery 失效 Key 的主动探测恢复配置。
+	Recovery KeyRecoveryConfig `yaml:"recovery"`
+}
+
+// KeyRecoveryConfig 失效 Key 的主动探测恢复配置。
+type KeyRecoveryConfig struct {
+	// Enabled 是否启用后台主动探测恢复。
+	Enabled bool `yaml:"enabled"`
+	// IntervalSeconds 扫描失效 Key 的间隔（秒）。
+	IntervalSeconds int `yaml:"interval_seconds"`
+	// MaxBackoffSeconds 单个 Key 探测失败后的最大退避（秒）。
+	MaxBackoffSeconds int `yaml:"max_backoff_seconds"`
 }
 
 type CircuitBreakerConfig struct {
@@ -176,6 +208,20 @@ func Default() *Config {
 				ErrorRateThreshold: 0.5,
 				MinRequests:        10,
 				WindowSeconds:      60,
+			},
+			KeyRotation: KeyRotationConfig{
+				Enabled:           true,
+				Strategy:          "sequential",
+				KeyMaxRetries:     1,
+				MaxKeysPerRequest: 0,
+				CooldownSeconds:   60,
+				FailureThreshold:  5,
+				AuthFailDisable:   true,
+				Recovery: KeyRecoveryConfig{
+					Enabled:           true,
+					IntervalSeconds:   60,
+					MaxBackoffSeconds: 900,
+				},
 			},
 		},
 		Auth: AuthConfig{
@@ -315,6 +361,8 @@ func (c *Config) Normalize() {
 	if c.Relay.CircuitBreaker.WindowSeconds <= 0 {
 		c.Relay.CircuitBreaker.WindowSeconds = 60
 	}
+
+	c.Relay.KeyRotation = normalizeKeyRotation(c.Relay.KeyRotation)
 
 	if strings.TrimSpace(c.Auth.InitialAdminUsername) == "" {
 		c.Auth.InitialAdminUsername = DefaultInitialAdminUsername
@@ -528,6 +576,33 @@ func normalizeLogRetention(cfg LogRetentionConfig) LogRetentionConfig {
 		cfg.BatchSize = DefaultLogRetentionBatchSize
 	} else if cfg.BatchSize > maxLogRetentionBatchSize {
 		cfg.BatchSize = maxLogRetentionBatchSize
+	}
+	return cfg
+}
+
+// normalizeKeyRotation 补齐 Key 轮询配置的缺省值与安全下限。
+func normalizeKeyRotation(cfg KeyRotationConfig) KeyRotationConfig {
+	cfg.Strategy = strings.ToLower(strings.TrimSpace(cfg.Strategy))
+	if cfg.Strategy != "round_robin" {
+		cfg.Strategy = "sequential"
+	}
+	if cfg.KeyMaxRetries < 0 {
+		cfg.KeyMaxRetries = 0
+	}
+	if cfg.MaxKeysPerRequest < 0 {
+		cfg.MaxKeysPerRequest = 0
+	}
+	if cfg.CooldownSeconds <= 0 {
+		cfg.CooldownSeconds = 60
+	}
+	if cfg.FailureThreshold <= 0 {
+		cfg.FailureThreshold = 5
+	}
+	if cfg.Recovery.IntervalSeconds <= 0 {
+		cfg.Recovery.IntervalSeconds = 60
+	}
+	if cfg.Recovery.MaxBackoffSeconds <= 0 {
+		cfg.Recovery.MaxBackoffSeconds = 900
 	}
 	return cfg
 }

@@ -101,6 +101,14 @@ var expectedRoutes = []routeContract{
 	{http.MethodPut, "/api/settings/circuit-breaker", authSession},
 	{http.MethodGet, "/api/settings/health-stats", authSession},
 
+	{http.MethodGet, "/api/channels/:id/keys", authSession},
+	{http.MethodPost, "/api/channels/:id/keys", authSession},
+	{http.MethodPost, "/api/channels/:id/keys/reorder", authSession},
+	{http.MethodPut, "/api/channels/:id/keys/:keyId", authSession},
+	{http.MethodDelete, "/api/channels/:id/keys/:keyId", authSession},
+	{http.MethodPost, "/api/channels/:id/keys/:keyId/reset", authSession},
+	{http.MethodPost, "/api/channels/:id/keys/:keyId/test", authSession},
+
 	{http.MethodGet, "/api/tokens", authSession},
 	{http.MethodPost, "/api/tokens", authSession},
 	{http.MethodDelete, "/api/tokens/:id", authSession},

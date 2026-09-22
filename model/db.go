@@ -132,6 +132,10 @@ func InitDatabases(primaryCfg, logCfg *config.DatabaseConfig) (err error) {
 	if err := ResyncAllAbilities(); err != nil {
 		logger.L().Warn("resync abilities failed", zap.Error(err))
 	}
+	// 幂等回填渠道 Key 子表：为已配置单 Key 但尚无 channel_keys 记录的渠道建立首个 Key。
+	if err := BackfillChannelKeys(); err != nil {
+		logger.L().Warn("backfill channel keys failed", zap.Error(err))
+	}
 	logger.L().Info("database initialized",
 		zap.String("driver", primary.Driver),
 		zap.Bool("independent_log_database", separate),
@@ -225,6 +229,7 @@ func migrateCore(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&User{},
 		&Channel{},
+		&ChannelKey{},
 		&Ability{},
 		&Token{},
 		&Setting{},

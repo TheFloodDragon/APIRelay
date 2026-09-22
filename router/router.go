@@ -113,6 +113,15 @@ func registerAdminRoutes(r *gin.Engine, cfg *config.Config) {
 		api.GET("/channels/:id/health", controller.GetChannelHealth)
 		api.POST("/channels/:id/health/reset", controller.ResetChannelHealth)
 
+		// 渠道内 API Key 轮询管理
+		api.GET("/channels/:id/keys", controller.ListChannelKeys)
+		api.POST("/channels/:id/keys", controller.CreateChannelKey)
+		api.POST("/channels/:id/keys/reorder", controller.ReorderChannelKeys)
+		api.PUT("/channels/:id/keys/:keyId", controller.UpdateChannelKey)
+		api.DELETE("/channels/:id/keys/:keyId", controller.DeleteChannelKey)
+		api.POST("/channels/:id/keys/:keyId/reset", controller.ResetChannelKey)
+		api.POST("/channels/:id/keys/:keyId/test", controller.TestChannelKey)
+
 		api.GET("/models", controller.ListAggregatedModels)
 
 		api.GET("/settings/protocol-rules", controller.GetProtocolRules)

@@ -15,7 +15,9 @@ import (
 	"github.com/apirelay/apirelay/common/config"
 	"github.com/apirelay/apirelay/common/logger"
 	"github.com/apirelay/apirelay/model"
+	"github.com/apirelay/apirelay/relay"
 	"github.com/apirelay/apirelay/relay/circuitbreaker"
+	"github.com/apirelay/apirelay/relay/keypool"
 	"github.com/apirelay/apirelay/router"
 
 	"go.uber.org/zap"
@@ -78,6 +80,22 @@ func run() error {
 		WindowSeconds:      cfg.Relay.CircuitBreaker.WindowSeconds,
 		ChannelMaxRetries:  cfg.Relay.ChannelMaxRetries,
 	})
+
+	// 初始化渠道内 API Key 轮询管理器。
+	keypool.InitManager(keypool.Config{
+		Strategy:         cfg.Relay.KeyRotation.Strategy,
+		CooldownSeconds:  cfg.Relay.KeyRotation.CooldownSeconds,
+		FailureThreshold: cfg.Relay.KeyRotation.FailureThreshold,
+		AuthFailDisable:  cfg.Relay.KeyRotation.AuthFailDisable,
+	})
+	// 失效 Key 的主动探测恢复 worker（被动冷却恢复无需 worker）。
+	// 探测实现由 relay 包注入，避免 keypool ← relay 的循环依赖。
+	keypool.StartRecoveryWorker(keypool.RecoveryConfig{
+		Enabled:           cfg.Relay.KeyRotation.Enabled && cfg.Relay.KeyRotation.Recovery.Enabled,
+		IntervalSeconds:   cfg.Relay.KeyRotation.Recovery.IntervalSeconds,
+		MaxBackoffSeconds: cfg.Relay.KeyRotation.Recovery.MaxBackoffSeconds,
+	}, relay.RecoverProbe)
+	defer keypool.StopRecoveryWorker()
 
 	if err := bootstrap(cfg); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)

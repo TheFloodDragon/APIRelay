@@ -403,23 +403,29 @@ func (c *Channel) backfillModels() {
 	c.Models = strings.Join(c.EnabledModelNames(), ",")
 }
 
-// DeleteChannel 删除渠道及其 Ability 索引。
+// DeleteChannel 删除渠道及其 Ability 索引与 Key 子表。
 func DeleteChannel(id int) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("channel_id = ?", id).Delete(&Ability{}).Error; err != nil {
+			return err
+		}
+		if err := DeleteChannelKeysByChannel(tx, id); err != nil {
 			return err
 		}
 		return tx.Delete(&Channel{}, id).Error
 	})
 }
 
-// DeleteChannels 批量删除渠道及其 Ability 索引。
+// DeleteChannels 批量删除渠道及其 Ability 索引与 Key 子表。
 func DeleteChannels(ids []int) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("channel_id IN ?", ids).Delete(&Ability{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("channel_id IN ?", ids).Delete(&ChannelKey{}).Error; err != nil {
 			return err
 		}
 		return tx.Where("id IN ?", ids).Delete(&Channel{}).Error
@@ -565,4 +571,66 @@ func ClearChannelCooldown(id int) {
 		return
 	}
 	DB.Model(&Channel{}).Where("id = ? AND cooldown_until > 0", id).Update("cooldown_until", 0)
+}
+
+// BuildKeyOverlay 构造一个渠道副本，注入选中 Key 的凭据与模型配置覆盖，使下游适配器 /
+// 协议解析 / 计费无感知地使用该 Key 自己的配置（满足需求 4：切换 Key 不复用其它 Key 的模型设置）。
+//
+// 合并规则：
+//   - Key：替换为选中 Key 的凭据 → 适配器 info.Channel.Key 自动生效；
+//   - ModelConfigs：以渠道级为基底，Key 级同名模型按「非空字段覆盖」（Protocol/Upstream/Input/Output），
+//     与全局「空=继承」约定一致；不新增/删除模型，对外服务的模型集合仍由渠道级 Ability 决定；
+//   - 其余字段（Id/BaseURL/Type/Group/ProtocolRules/HeaderOverride/BodyOverride/Priority/Weight/Models）沿用渠道级。
+//
+// 渠道级 Id 保留：熔断、冷却、日志仍以渠道为粒度。
+//
+// 性能：Key 无模型配置覆盖时仅浅拷贝 + 改 Key，跳过 JSON 合并；
+// 虚拟 Key（回退兼容层，Id<=0）的凭据即渠道级 Key，直接复用原渠道对象，零开销。
+//
+// 不修改原渠道对象：对 overlay 的字段重新赋值只影响副本（字符串不可变，仅重新指向）。
+func BuildKeyOverlay(ch *Channel, key *ChannelKey) *Channel {
+	if ch == nil {
+		return nil
+	}
+	// 虚拟 Key：凭据即渠道级 Key，无 Key 级覆盖，直接复用原渠道（read-only 使用，安全）。
+	if key == nil || key.Id <= 0 {
+		return ch
+	}
+
+	overlay := *ch // 浅拷贝
+	overlay.Key = key.Key
+
+	keyCfgs := key.ModelConfigList()
+	if len(keyCfgs) == 0 {
+		return &overlay // 无模型覆盖，仅换凭据
+	}
+
+	// 合并模型配置：以渠道级为基底，Key 级同名模型按非空字段覆盖。
+	base := ch.ModelConfigList()
+	byName := make(map[string]int, len(base))
+	for i, m := range base {
+		byName[m.Name] = i
+	}
+	for _, km := range keyCfgs {
+		idx, ok := byName[km.Name]
+		if !ok {
+			continue // 不改变对外模型集合
+		}
+		if km.Protocol != "" {
+			base[idx].Protocol = km.Protocol
+		}
+		if strings.TrimSpace(km.Upstream) != "" {
+			base[idx].Upstream = km.Upstream
+		}
+		if km.Input > 0 {
+			base[idx].Input = km.Input
+		}
+		if km.Output > 0 {
+			base[idx].Output = km.Output
+		}
+	}
+	if data, err := json.Marshal(base); err == nil {
+		overlay.ModelConfigs = string(data)
+	}
+	return &overlay
 }
